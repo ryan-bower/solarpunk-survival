@@ -1,5 +1,5 @@
-# Install UE4SS + this mod into a Solarpunk install. Idempotent — re-run to update the mod.
-# Usage:  pwsh tools/install-dev-env.ps1 [-GameWin64 <path>]
+# Install UE4SS + this mod into a Solarpunk install. Idempotent - re-run to update the mod.
+# Usage:  powershell -File tools/install-dev-env.ps1 [-GameWin64 <path>]
 param(
   [string]$GameWin64 = 'C:\Program Files (x86)\Steam\steamapps\common\Solarpunk\Solarpunk\Binaries\Win64',
   [string]$Ue4ssUrl  = 'https://github.com/UE4SS-RE/RE-UE4SS/releases/download/experimental-latest/UE4SS_v3.0.1-1012-gc838a8ac.zip'
@@ -9,7 +9,7 @@ $repo   = Split-Path -Parent $PSScriptRoot
 $modSrc = Join-Path $repo 'mod\SolarpunkSurvival'
 
 if (-not (Test-Path (Join-Path $GameWin64 'SolarpunkSteam-Win64-Shipping.exe'))) {
-  throw "Game exe not found under $GameWin64 — pass -GameWin64 <path to ...\Binaries\Win64>"
+  throw ("Game exe not found under " + $GameWin64 + " - pass -GameWin64 with the path to Binaries\Win64")
 }
 
 # 1) Download + extract UE4SS (skip if already installed)
@@ -24,7 +24,7 @@ if (-not (Test-Path (Join-Path $GameWin64 'dwmapi.dll'))) {
   Copy-Item (Join-Path $tmp 'ue4ss') $GameWin64 -Recurse -Force
   Write-Host "UE4SS installed."
 } else {
-  Write-Host "UE4SS already present — leaving core files in place."
+  Write-Host "UE4SS already present - leaving core files in place."
 }
 
 $ue4ss = Join-Path $GameWin64 'ue4ss'
@@ -36,24 +36,27 @@ if (Test-Path $ini) {
   $txt = $txt -replace '(?m)^ConsoleEnabled\s*=.*$',    'ConsoleEnabled = 1'
   $txt = $txt -replace '(?m)^GuiConsoleEnabled\s*=.*$', 'GuiConsoleEnabled = 1'
   $txt = $txt -replace '(?m)^GuiConsoleVisible\s*=.*$', 'GuiConsoleVisible = 1'
-  Set-Content -Path $ini -Value $txt -Encoding utf8
-  Write-Host "Enabled UE4SS console."
+  # Game is Unreal Engine 5.7.1; UE4SS cannot auto-detect it, so override + allow a longer AOB scan.
+  $txt = $txt -replace '(?m)^MajorVersion\s*=.*$', 'MajorVersion = 5'
+  $txt = $txt -replace '(?m)^MinorVersion\s*=.*$', 'MinorVersion = 7'
+  $txt = $txt -replace '(?m)^SecondsToScanBeforeGivingUp\s*=.*$', 'SecondsToScanBeforeGivingUp = 120'
+  Set-Content -Path $ini -Value $txt -Encoding ascii
+  Write-Host "Enabled UE4SS console + set engine version override 5.7."
 }
 
-# 3) Copy the mod into UE4SS Mods (mirror, preserving no stale local save)
+# 3) Copy the mod into UE4SS Mods (mirror, dropping any stale local save)
 $modDst = Join-Path $ue4ss 'Mods\SolarpunkSurvival'
 New-Item -ItemType Directory -Force -Path $modDst | Out-Null
 Copy-Item (Join-Path $modSrc '*') $modDst -Recurse -Force
 $stale = Join-Path $modDst 'save\state.json'
 if (Test-Path $stale) { Remove-Item $stale -Force }
-Write-Host "Copied mod -> $modDst"
+Write-Host ("Copied mod -> " + $modDst)
 
 # 4) Ensure the mod is enabled in Mods/mods.txt
 $modsTxt = Join-Path $ue4ss 'Mods\mods.txt'
 if (Test-Path $modsTxt) {
   $lines = Get-Content $modsTxt
   if (-not ($lines -match '^\s*SolarpunkSurvival\s*:')) {
-    # insert before the "Keybinds" line if present, else append
     $out = @()
     $inserted = $false
     foreach ($l in $lines) {
@@ -61,7 +64,7 @@ if (Test-Path $modsTxt) {
       $out += $l
     }
     if (-not $inserted) { $out += 'SolarpunkSurvival : 1' }
-    Set-Content -Path $modsTxt -Value $out -Encoding utf8
+    Set-Content -Path $modsTxt -Value $out -Encoding ascii
     Write-Host "Enabled SolarpunkSurvival in mods.txt"
   } else {
     Write-Host "SolarpunkSurvival already enabled in mods.txt"
@@ -70,4 +73,4 @@ if (Test-Path $modsTxt) {
 
 Write-Host ""
 Write-Host "Done. Launch Solarpunk; the UE4SS console should open and log 'SolarpunkSurvival vX starting'."
-Write-Host "To uninstall UE4SS: delete dwmapi.dll and the ue4ss folder from $GameWin64"
+Write-Host ("To uninstall UE4SS: delete dwmapi.dll and the ue4ss folder from " + $GameWin64)
