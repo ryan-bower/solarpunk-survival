@@ -1,0 +1,2 @@
+# This folder holds the host-side mod save sidecar (state.json). Keep it present so the
+# save writer can create the file. Actual saves are git-ignored.

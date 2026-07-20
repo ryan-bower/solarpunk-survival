@@ -1,0 +1,17 @@
+{
+  "name": "SolarpunkSurvival",
+  "modVersion": "0.1.0",
+  "schemaVersion": 1,
+  "targetGame": "Solarpunk",
+  "steamAppId": 1805110,
+  "engine": "Unreal Engine 5 (IoStore; exe stamped UE5-CL-0, exact minor TBD via UE4SS dump)",
+  "testedGameBuilds": ["24038177"],
+  "ue4ssVersion": "TBD (install the Solarpunk-patched UE4SS before use)",
+  "requiresAllPlayersInstalled": true,
+  "logicModPaks": [
+    "BP_ModStateActor.pak",
+    "BP_HealthState.pak"
+  ],
+  "contentPaks": [],
+  "notes": "Pre-alpha scaffold. Game-specific hooks in Scripts/mapping.lua are unpopulated; the mod self-reports missing symbols until a dump is mapped for the tested build."
+}

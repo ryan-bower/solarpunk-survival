@@ -1,0 +1,33 @@
+# === NEVER commit copyrighted game content or debug symbols ===
+/dumps/
+/game/
+*.pak
+*.ucas
+*.utoc
+*.pdb
+*.exe
+*.dll
+*.so
+UE4SS*.log
+ue4ss.log
+
+# Build / release output
+/dist/
+/build/
+*.zip
+
+# Cooked assets staging (source .uasset live in a separate art repo, not here)
+/paks/**/*.uasset
+/paks/**/*.umap
+
+# Python tooling cruft
+__pycache__/
+*.pyc
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.tmp
+*.bak
+Thumbs.db
+.DS_Store

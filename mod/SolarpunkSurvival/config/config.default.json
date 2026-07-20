@@ -1,0 +1,35 @@
+{
+  "log_level": "info",
+  "imgui_key": "F7",
+
+  "lightning_chance": 1.0,
+  "strike_interval": 4.0,
+  "burst_chance": 0.35,
+  "burst_size": 2,
+  "telegraph_lead": 1.2,
+  "strike_radius": 350.0,
+  "storm_warning_lead": 20.0,
+
+  "player_max_hp": 100.0,
+  "player_strike_pct": 0.70,
+
+  "open_target_bias": 3.0,
+  "open_distance_threshold": 10000.0,
+  "open_distance_mult": 4.0,
+  "flying_strike_mult": 5.0,
+
+  "structure_hp_base": 200.0,
+  "strike_structure_dmg": 120.0,
+  "machine_two_hit": true,
+  "salvage_frac": 0.5,
+
+  "airship_max_hp": 300.0,
+  "airship_strike_frac": 0.3333,
+  "airship_fall_damage": 40.0,
+
+  "lightning_rod_range": 2500.0,
+  "rod_charges_battery": true,
+  "rod_takes_damage": false,
+
+  "friendly_fire": true
+}
