@@ -27,3 +27,14 @@ jobs:
           python-version: '3.x'
       - name: Byte-compile tools
         run: python -m py_compile tools/dump-diff.py
+
+  luatest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+      - name: Run unit tests
+        run: lua5.4 tests/spec.lua

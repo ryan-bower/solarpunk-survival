@@ -31,7 +31,7 @@ local ok, err = pcall(function()
   local ctx = {
     map = buildinfo.map, config = config, log = log, bus = bus, gate = gate,
     net = net, health = health, identity = identity, save = save,
-    uehelp = uehelp, buildinfo = buildinfo, services = {},
+    uehelp = uehelp, buildinfo = buildinfo, services = {}, modRoot = modRoot,
   }
 
   -- Load features before storms so their subscriptions/services exist when strikes fire. UI last.
@@ -42,6 +42,7 @@ local ok, err = pcall(function()
     "features.repair_tool",
     "features.storms",
     "ui.imgui_panel",
+    "dev.recapture",
   }
   for _, name in ipairs(features) do
     local okf, mod = pcall(require, name)
