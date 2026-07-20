@@ -1,7 +1,6 @@
 -- Runtime game-build detection + mapping-profile selection.
 local mapping = require("mapping")
 local config  = require("core.config")
-local log     = require("core.log")
 
 local M = {}
 
