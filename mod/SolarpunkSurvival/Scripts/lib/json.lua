@@ -57,12 +57,13 @@ end
 
 local function decode_array(s, i)
   i = skip_ws(s, i + 1)
-  local arr = {}
+  local arr, n = {}, 0
   if s:sub(i, i) == ']' then return arr, i + 1 end
   while true do
     local v
     v, i = decode_value(s, i)
-    arr[#arr + 1] = v
+    n = n + 1
+    arr[n] = v            -- explicit index preserves position across JSON null holes
     i = skip_ws(s, i)
     local c = s:sub(i, i)
     if c == ',' then i = skip_ws(s, i + 1)
