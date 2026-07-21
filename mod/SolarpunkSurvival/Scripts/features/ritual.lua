@@ -157,10 +157,12 @@ local function checkChain(tok)
         end
         striking = true
         ctx.services.strikeAt(loc, "ritual")
-        afterIfStorm(ctx.config.get("telegraph_lead") + 0.1, tok, function()
-          performSacrifice(sheep, loc)
-          striking = false
-        end)
+        -- the sheep dies at the bolt's big strike frame, not at the telegraph
+        afterIfStorm(ctx.config.get("telegraph_lead") + ctx.config.get("bolt_impact_delay") + 0.1,
+          tok, function()
+            performSacrifice(sheep, loc)
+            striking = false
+          end)
       end
     end
     checkChain(tok)

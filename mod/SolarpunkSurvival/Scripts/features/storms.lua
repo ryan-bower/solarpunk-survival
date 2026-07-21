@@ -19,6 +19,7 @@ local severity    = 1.0
 local strikeToken = 0       -- bumped on every start/stop; stale scheduled callbacks self-cancel
 local pingHooked  = false   -- the G-ping->lightning hook is armed once (needs a live controller)
 local preStormWind          -- wind intensity captured at storm start, restored on stop
+local modBolts    = {}      -- ids of bolt actors WE spawned (so the native-bolt tap skips them)
 
 -- Auto-strikes at the LOCAL player on a timer are OFF by default: with no visible bolt yet they read
 -- as invisible random damage + confusing soft-deaths (an "aimbot"). H just sets the weather; the
@@ -69,7 +70,12 @@ local function spawnBoltAt(loc)
   if not (w and w.boltActorClass) then return end
   local cls = ctx.uehelp.classByName(w.boltActorClass, w.boltActorPath)
   local pc  = localController()
-  if cls and pc then ctx.uehelp.spawnActorAt(pc, cls, loc) end
+  local a   = cls and pc and ctx.uehelp.spawnActorAt(pc, cls, loc)
+  if a then
+    local id = ctx.identity.idOf(a)
+    if id then modBolts[id] = true end  -- consumed by the native-bolt tap's delayed check
+  end
+  return a
 end
 
 -- Unwrap a hook's struct param (RemoteUnrealParam) into a plain {X,Y,Z}.
@@ -159,6 +165,7 @@ function F.stopStorm()
   if stormActive then
     stormActive = false
     strikeToken = strikeToken + 1  -- invalidate every pending strike
+    modBolts = {}                  -- leak backstop (entries are normally consumed by the tap)
     ctx.bus.emit("weather.changed", { storm = false, severity = 0 })
     ctx.log.info("storm stopped — skies clear")
   end
@@ -215,27 +222,34 @@ function F.fireBolt(token)
   afterIfActive(lead, token, function() F.resolveStrike(loc, rod) end)
 end
 
+-- Stage 1 of a landing strike: the bolt actor + thunder cue. The bolt's own BeginPlay timeline
+-- shows its ground telegraph FIRST and the big strike frame ~bolt_impact_delay later, so all
+-- consequences (damage + world effects) are deferred to F.impact at that moment -- leaving the
+-- radius while the ground crackles is a real dodge.
 function F.resolveStrike(loc, rod)
   if not ctx.net.isHost() then return end
-  local pawn = localPawn()
-  local cur  = pawn and locOf(pawn)
-  local r    = ctx.config.get("strike_radius")
-
-  -- Dodge: left the strike radius before it landed -> miss (rod strikes always land).
-  if not rod and cur and ctx.uehelp.dist2(cur, loc) > r * r then
-    ctx.bus.emit("lightning.strike", { location = loc, dodged = true })
-    ctx.log.info("...MISS -- you moved clear")
-    return
-  end
-
-  -- Land it: real bolt actor at the spot + game thunder cue + real damage to whoever is inside.
   spawnBoltAt(loc)
   local mgr = weatherMgr()
   if mgr and ctx.map.weather.thunderFn then ctx.uehelp.call(mgr, ctx.map.weather.thunderFn) end
   ctx.net.multicast("Multicast_Bolt", { X = loc.X, Y = loc.Y, Z = loc.Z })
+  afterIfActive(ctx.config.get("bolt_impact_delay"), strikeToken, function() F.impact(loc, rod) end)
+end
+
+-- Stage 2: the big strike frame. Damage whoever is STILL inside the radius now, and let the
+-- world (batteries, trees, tech, rod grounding) react at the visible moment of impact.
+function F.impact(loc, rod)
+  if not ctx.net.isHost() then return end
   ctx.bus.emit("lightning.strike", { location = loc })
   if rod then ctx.bus.emit("strike.rod", { actor = rod, location = loc }) end
-  F.damagePawnsAt(loc)
+  local hits = F.damagePawnsAt(loc)
+  local pawn = localPawn()
+  local cur  = pawn and locOf(pawn)
+  local r    = ctx.config.get("strike_radius")
+  if hits == 0 and cur and ctx.uehelp.dist2(cur, loc) > r * r then
+    ctx.log.info("...bolt landed -- MISS, you moved clear")
+  else
+    ctx.log.info("...bolt landed")
+  end
 end
 
 -- Every player pawn inside the strike radius takes the hit -- in co-op the HOST damages each
@@ -245,20 +259,22 @@ function F.damagePawnsAt(loc)
   local pcls = ctx.map.pawn and ctx.map.pawn.class
   if not pcls then
     F.damageController(localController())  -- unmapped-build fallback: local player only
-    return
+    return 1
   end
-  local r2 = ctx.config.get("strike_radius") ^ 2
+  local r2, hits = ctx.config.get("strike_radius") ^ 2, 0
   for _, pawn in ipairs(ctx.uehelp.findAll(pcls)) do
     local pl = locOf(pawn)
     if pl and ctx.uehelp.dist2(pl, loc) <= r2 then
       local pc
       pcall(function() pc = pawn.Controller end)
       if ctx.uehelp.isValid(pc) then
+        hits = hits + 1
         ctx.bus.emit("strike.player", { actor = pawn, location = loc })
         F.damageController(pc)
       end
     end
   end
+  return hits
 end
 
 -- Deal a lightning hit through the game's own damage path. "Reduce Health" natively handles the
@@ -352,11 +368,29 @@ function F.strikeAt(loc, tag)
       if ctx.map.weather.thunderFn then ctx.uehelp.call(mgr, ctx.map.weather.thunderFn) end
     end
     ctx.net.multicast("Multicast_Bolt", { X = loc.X, Y = loc.Y, Z = loc.Z })
-    ctx.bus.emit("lightning.strike", { location = loc })
-    if rod then ctx.bus.emit("strike.rod", { actor = rod, location = loc }) end
-    F.damagePawnsAt(loc)
-    ctx.log.info("...bolt landed")
+    -- damage + world effects land with the big strike frame (see F.impact), not at spawn
+    afterIfActive(ctx.config.get("bolt_impact_delay"), token, function() F.impact(loc, rod) end)
   end)
+end
+
+--------------------------------------------------------------------- native lightning tap
+-- The game's OWN storms spawn the same BP_LightningPlayer_C bolt actor and apply their own player
+-- damage (the "vanilla lightning sometimes hurts" mechanic). Tap every bolt the GAME spawns and run
+-- our world effects (charge batteries, fell trees, break tech) at its impact frame too -- but no
+-- extra player damage, or native strikes would hit twice. Our own bolts are skipped via modBolts.
+function F.onBoltSpawned(bolt)
+  if not ctx.net.isHost() or not ctx.config.get("native_strike_effects") then return end
+  local id = ctx.identity.idOf(bolt)
+  local ms = math.floor(ctx.config.get("bolt_impact_delay") * 1000)
+  pcall(ExecuteWithDelay, ms, ctx.log.guard("bolt.native", function()
+    onGameThread(function()
+      if id and modBolts[id] then modBolts[id] = nil; return end  -- ours: F.impact handles it
+      local loc = locOf(bolt)
+      if not loc then return end
+      ctx.bus.emit("lightning.strike", { location = loc, native = true })
+      ctx.log.info(string.format("native bolt tapped at (%.0f,%.0f) -- world feels the strike", loc.X, loc.Y))
+    end)
+  end))
 end
 
 --------------------------------------------------------------------- init
@@ -387,6 +421,12 @@ function F.init(c)
 
   -- G-ping -> lightning at the pinged spot (while a storm is active).
   F.hookPing()
+
+  -- Tap every bolt actor the game (or we) spawn, so NATIVE storm lightning also affects the world.
+  if ctx.map.weather and ctx.map.weather.boltActorClass then
+    ctx.uehelp.onNewInstance("/Script/Engine.Actor", ctx.map.weather.boltActorClass,
+      ctx.log.guard("bolt.spawned", function(b) F.onBoltSpawned(b) end))
+  end
 
   -- Expose for the remote dev channel / other features.
   ctx.services.startStorm = F.startStorm

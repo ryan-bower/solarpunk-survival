@@ -93,7 +93,19 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   replicating actors. `ctx.net.multicast` stays a no-op until the BP carrier pak exists — nothing
   in M2 depends on it.
 
+## Strike timing (2026-07-21)
+- A strike is two stages: bolt actor spawn (its BeginPlay timeline shows the ground telegraph) and
+  the **big strike frame** `bolt_impact_delay` (default 1.5 s) later. Damage, world effects, the
+  ritual sacrifice, and rod grounding all land at the strike frame — leaving `strike_radius` during
+  the telegraph is a real dodge (pawns are re-scanned at impact).
+- **Native lightning tap**: every `BP_LightningPlayer_C` the *game* spawns (vanilla storm strikes,
+  which carry the game's own player damage) triggers our world effects at its strike frame too —
+  batteries charge, trees fall, tech breaks under natural lightning. No extra player damage is
+  added (vanilla already hurts); our own bolts are excluded via a spawn-id set.
+
 ## Known approximations to revisit (next live session)
+- `bolt_impact_delay` = 1.5 s is an estimate of the bolt timeline's telegraph length — calibrate
+  live (watch one strike, tune via the sps console) and bake the measured value in.
 - Machine/furnace/battery prop names: candidate-probed; capture a dump at the player's base to pin
   them (`sps_dump`).
 - Candle lit-prop name; fence class names.

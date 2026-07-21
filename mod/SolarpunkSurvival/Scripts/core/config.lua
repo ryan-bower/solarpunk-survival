@@ -15,6 +15,10 @@ M.defaults = {
   burst_size          = 2,       -- max bolts in a burst
   telegraph_lead      = 1.2,     -- seconds of ground-decal warning before a bolt lands
   strike_radius       = 350.0,   -- cm; leave this radius before impact to dodge
+  bolt_impact_delay   = 1.5,     -- seconds from bolt-actor spawn to its BIG strike frame; damage
+                                 -- and world effects land then (dodgeable). Calibrate live via sps.
+  native_strike_effects = true,  -- the game's own storm bolts also run our world effects (no extra
+                                 -- player damage: native bolts already carry the game's damage)
   storm_warning_lead  = 20.0,    -- seconds of "storm incoming" warning before lightning starts
 
   -- player
