@@ -19,9 +19,10 @@ M.defaults = {
                                  -- and world effects land then (dodgeable). Calibrate live via sps.
   native_strike_effects = true,  -- the game's own storm bolts also run our world effects (no extra
                                  -- player damage: native bolts already carry the game's damage)
-  lightning_damage_guard = true, -- ground ALL bolt damage (native included) unless the victim is
-                                 -- inside strike_radius of a live bolt -- vanilla splash reached ~10m
-  lightning_guard_range  = 3000.0, -- cm; a bolt within this range marks damage as lightning splash
+  lightning_damage_guard = true, -- ground native bolt damage (vanilla splash reached ~10m); every
+                                 -- bolt hurts through OUR radius-checked path at the impact frame
+  lightning_guard_window = 4.0,  -- seconds after any bolt spawns during which non-mod damage is
+                                 -- treated as lightning splash and grounded to 0
   storm_warning_lead  = 20.0,    -- seconds of "storm incoming" warning before lightning starts
 
   -- player

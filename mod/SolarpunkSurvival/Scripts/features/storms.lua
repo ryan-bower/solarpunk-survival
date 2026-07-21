@@ -20,6 +20,8 @@ local strikeToken = 0       -- bumped on every start/stop; stale scheduled callb
 local pingHooked  = false   -- the G-ping->lightning hook is armed once (needs a live controller)
 local preStormWind          -- wind intensity captured at storm start, restored on stop
 local modBolts    = {}      -- ids of bolt actors WE spawned (so the native-bolt tap skips them)
+local selfDamage   = false  -- true while OUR damageController call is on the stack
+local lastBoltSeen = -1e9   -- os.clock() when a bolt actor last appeared (ours or the game's)
 
 -- Auto-strikes at the LOCAL player on a timer are OFF by default: with no visible bolt yet they read
 -- as invisible random damage + confusing soft-deaths (an "aimbot"). H just sets the weather; the
@@ -70,6 +72,7 @@ local function spawnBoltAt(loc)
   if not (w and w.boltActorClass) then return end
   local cls = ctx.uehelp.classByName(w.boltActorClass, w.boltActorPath)
   local pc  = localController()
+  lastBoltSeen = os.clock()  -- open the damage-guard window BEFORE BeginPlay can deal native damage
   local a   = cls and pc and ctx.uehelp.spawnActorAt(pc, cls, loc)
   if a then
     local id = ctx.identity.idOf(a)
@@ -298,11 +301,13 @@ function F.damageController(pc)
   end
   local dmg = math.max(1, math.floor(maxhp * ctx.config.get("player_strike_pct")))
 
+  selfDamage = true  -- lets our call through the lightning damage guard
   if pl.reduceHealthFn then
     ctx.uehelp.call(pc, pl.reduceHealthFn, dmg)
   else
     ctx.uehelp.call(pc, pl.addHealthFn, -dmg)  -- unmapped-build fallback (no native death handling)
   end
+  selfDamage = false
 
   local hpNow
   if pl.curHealthProp then
@@ -345,42 +350,29 @@ end
 
 --------------------------------------------------------------------- lightning damage guard
 -- The game's own bolt logic hurts players far outside our kill radius (killed the user from ~10 m
--- during a ritual). Unify the rule: while any bolt actor is live near you, damage only lands if
--- you are INSIDE strike_radius of a bolt -- splash beyond that is grounded to 0 by rewriting the
--- ReduceBy param of the game's "Reduce Health" before it runs. Armed on every machine, so
--- client-local native bolt damage in co-op is grounded too; host-authoritative mod damage only
--- ever targets pawns inside the radius, so it always passes untouched.
+-- during a ritual). Unified rule: NATIVE bolt damage is grounded to 0; instead every bolt (native
+-- or ours) damages through our own radius-checked path at the impact frame.
+--
+-- REENTRANCY RULE (native "Abort" crash, live 2026-07-21): this hook fires INSIDE "Reduce Health",
+-- which both the bolt's BeginPlay and our own Lua (damageController, inside FinishSpawningActor
+-- call chains) invoke. A previous version scanned actors and read locations here and killed the
+-- process. The callback must touch NO UObjects: plain Lua state + the one param write only.
 local damageGuardHooked = false
 function F.hookDamageGuard()
   if damageGuardHooked or not ctx.config.get("lightning_damage_guard") then return end
-  local pl, w = ctx.map.player, ctx.map.weather
-  if not (pl and pl.controllerClass and pl.reduceHealthFn and w and w.boltActorClass) then return end
+  local pl = ctx.map.player
+  if not (pl and pl.controllerClass and pl.reduceHealthFn) then return end
   local pc = ctx.uehelp.findFirst(pl.controllerClass)
   if not pc then return end  -- menu; re-armed on storm start
   local path = fullFuncPath(pc, pl.reduceHealthFn)
   if not path then return end
-  local ok = pcall(RegisterHook, path, ctx.log.guard("damage.guard", function(selfParam, ReduceBy)
-    local bolts = ctx.uehelp.findAll(w.boltActorClass)
-    if #bolts == 0 then return end
-    local victim
-    pcall(function() victim = selfParam:get():K2_GetPawn() end)
-    local vl = victim and locOf(victim)
-    if not vl then return end
-    local r2, guard2 = ctx.config.get("strike_radius") ^ 2, ctx.config.get("lightning_guard_range") ^ 2
-    local nearBolt, inKillZone = false, false
-    for _, b in ipairs(bolts) do
-      local bl = locOf(b)
-      if bl then
-        local d = ctx.uehelp.dist2(bl, vl)
-        if d <= r2 then inKillZone = true; break end
-        if d <= guard2 then nearBolt = true end
-      end
-    end
-    if nearBolt and not inKillZone then
+  local ok = pcall(RegisterHook, path, function(_, ReduceBy)
+    if selfDamage then return end  -- our own radius-checked damage: always passes
+    if os.clock() - lastBoltSeen <= ctx.config.get("lightning_guard_window") then
       pcall(function() ReduceBy:set(0) end)
-      ctx.log.info("lightning splash grounded -- you were outside the kill radius")
+      ctx.log.info("lightning splash grounded -- only the strike core hurts")
     end
-  end))
+  end)
   damageGuardHooked = ok or false
   if damageGuardHooked then
     ctx.log.info("storms: lightning damage guard armed -- bolts only hurt inside strike_radius")
@@ -424,6 +416,8 @@ end
 -- our world effects (charge batteries, fell trees, break tech) at its impact frame too -- but no
 -- extra player damage, or native strikes would hit twice. Our own bolts are skipped via modBolts.
 function F.onBoltSpawned(bolt)
+  -- open the damage-guard window on EVERY machine (clients see replicated native bolts too)
+  lastBoltSeen = os.clock()
   if not ctx.net.isHost() or not ctx.config.get("native_strike_effects") then return end
   local ms = math.floor(ctx.config.get("bolt_impact_delay") * 1000)
   pcall(ExecuteWithDelay, ms, ctx.log.guard("bolt.native", function()
@@ -435,6 +429,8 @@ function F.onBoltSpawned(bolt)
       local loc = locOf(bolt)
       if not loc then return end
       ctx.bus.emit("lightning.strike", { location = loc, native = true })
+      -- the guard grounded this bolt's own wide-range damage; deal ours (radius-checked) instead
+      F.damagePawnsAt(loc)
       ctx.log.info(string.format("native bolt tapped at (%.0f,%.0f) -- world feels the strike", loc.X, loc.Y))
     end)
   end))
