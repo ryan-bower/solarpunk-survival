@@ -16,6 +16,7 @@ local stormOn   = false
 local token     = 0        -- bumped when the storm state flips; stale delays self-cancel
 local announced = false    -- "the pentagram hums" fires once per readiness
 local striking  = false    -- a ritual bolt is in flight
+local pendingSheep, pendingLoc  -- the offering the in-flight bolt is aimed at
 
 local function onGameThread(fn)
   if ExecuteInGameThread then
@@ -156,13 +157,10 @@ local function checkChain(tok)
             " candles)... the storm has noticed the offering ***")
         end
         striking = true
+        pendingSheep, pendingLoc = sheep, loc
+        -- the sacrifice itself fires on the "lightning.strike" IMPACT event (see init), so the
+        -- sheep dies exactly on the bolt's big strike frame -- no parallel timer to race it.
         ctx.services.strikeAt(loc, "ritual")
-        -- the sheep dies at the bolt's big strike frame, not at the telegraph
-        afterIfStorm(ctx.config.get("telegraph_lead") + ctx.config.get("bolt_impact_delay") + 0.1,
-          tok, function()
-            performSacrifice(sheep, loc)
-            striking = false
-          end)
       end
     end
     checkChain(tok)
@@ -181,7 +179,21 @@ function F.init(c)
     stormOn = now
     token = token + 1
     announced, striking = false, false
+    pendingSheep, pendingLoc = nil, nil
     if stormOn then checkChain(token) end
+  end))
+
+  -- The sacrifice lands WITH the bolt: storms emits "lightning.strike" at the big strike frame.
+  -- A strike near the pending offering consumes it; a strike drawn elsewhere (a lightning rod
+  -- grounding the rite) releases the latch so the chain simply tries again.
+  ctx.bus.on("lightning.strike", ctx.log.guard("ritual.impact", function(e)
+    if not (striking and pendingLoc and e and e.location) then return end
+    if ctx.uehelp.dist2(e.location, pendingLoc) <= 400 * 400 then
+      performSacrifice(pendingSheep, pendingLoc)
+    else
+      ctx.log.info("...the bolt was drawn away from the circle -- the rite holds (a rod nearby?)")
+    end
+    striking, pendingSheep, pendingLoc = false, nil, nil
   end))
   ctx.log.info("ritual: the dark arts are listening (sheep + 15 fences + 5 candles + wand, in a storm)")
   return true
