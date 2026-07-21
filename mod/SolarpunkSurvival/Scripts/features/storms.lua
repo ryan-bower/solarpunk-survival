@@ -22,6 +22,10 @@ local preStormWind          -- wind intensity captured at storm start, restored 
 local modBolts    = {}      -- ids of bolt actors WE spawned (so the native-bolt tap skips them)
 local selfDamage   = false  -- true while OUR damageController call is on the stack
 local lastBoltSeen = -1e9   -- os.clock() when a bolt actor last appeared (ours or the game's)
+local naturalStorm = false  -- a GAME-weather storm detected via its own bolts (no H press)
+
+-- "Is lightning weather happening?" -- ours or the game's own.
+local function stormy() return stormActive or naturalStorm end
 
 -- Auto-strikes at the LOCAL player on a timer are OFF by default: with no visible bolt yet they read
 -- as invisible random damage + confusing soft-deaths (an "aimbot"). H just sets the weather; the
@@ -109,7 +113,7 @@ end
 local function afterIfActive(seconds, token, fn)
   local guarded = ctx.log.guard("storm.delay", function()
     onGameThread(function()
-      if stormActive and token == strikeToken then fn() end
+      if stormy() and token == strikeToken then fn() end
     end)
   end)
   local ms = math.floor((seconds or 0) * 1000)
@@ -326,6 +330,26 @@ function F.damageController(pc)
   end
 end
 
+-- Natural storms have no "stopped" signal, so a chained one-shot watchdog (timestamps only --
+-- it touches NO UObjects) declares the storm over when no bolt has fallen for
+-- natural_storm_timeout seconds.
+function F.naturalWatchdog()
+  pcall(ExecuteWithDelay, 60000, ctx.log.guard("storm.natural", function()
+    if not naturalStorm then return end
+    if os.clock() - lastBoltSeen > ctx.config.get("natural_storm_timeout") then
+      naturalStorm = false
+      if not stormActive then
+        onGameThread(function()
+          ctx.bus.emit("weather.changed", { storm = false, severity = 0 })
+          ctx.log.info("the natural storm has passed")
+        end)
+      end
+      return
+    end
+    F.naturalWatchdog()
+  end))
+end
+
 --------------------------------------------------------------------- ping -> lightning
 -- Hook the vanilla ping (G). While a storm is active, a ping calls down a bolt at the pinged spot.
 function F.hookPing()
@@ -340,7 +364,7 @@ function F.hookPing()
   local path = fullFuncPath(pc, pl.pingFn)
   if not path then ctx.log.warn("storms: could not resolve ping path for " .. pl.pingFn); return end
   local ok, r = pcall(RegisterHook, path, ctx.log.guard("ping.hook", function(_, Location)
-    if not stormActive then return end
+    if not stormy() then return end  -- works in OUR storms and the game's natural ones
     local loc = readVecParam(Location)
     if loc then F.strikeAt(loc, "ping") end
   end))
@@ -381,7 +405,7 @@ end
 
 -- Call a bolt down at an explicit world location (used by the ping; scheduler uses fireBolt).
 function F.strikeAt(loc, tag)
-  if not ctx.net.isHost() or not stormActive then return end
+  if not ctx.net.isHost() or not stormy() then return end
 
   -- Lightning rod: pings/ritual bolts within range of a Weather Station ground at the rod.
   local rod
@@ -448,6 +472,14 @@ function F.onBoltSpawned(bolt)
       if id and modBolts[id] then modBolts[id] = nil; return end  -- ours: F.impact handles it
       local loc = locOf(bolt)
       if not loc then return end
+      -- a bolt we did not spawn, outside our storm = the GAME's weather is storming. Arm the
+      -- machinery (ritual chain, ping-strikes) exactly as if H had been pressed.
+      if not stormy() then
+        naturalStorm = true
+        ctx.bus.emit("weather.changed", { storm = true, natural = true })
+        ctx.log.info("*** a natural storm rages -- the dark arts are listening ***")
+        F.naturalWatchdog()
+      end
       ctx.bus.emit("lightning.strike", { location = loc, native = true })
       -- the guard grounded this bolt's own wide-range damage; deal ours (radius-checked) instead
       F.damagePawnsAt(loc)

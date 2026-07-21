@@ -25,6 +25,8 @@ M.defaults = {
                                  -- bolt hurts through OUR radius-checked path at the impact frame
   lightning_guard_window = 4.0,  -- seconds after any bolt spawns during which non-mod damage is
                                  -- treated as lightning splash and grounded to 0
+  natural_storm_timeout  = 180.0, -- seconds without a native bolt before a game-weather storm is
+                                  -- declared over (natural storms have no stop signal to hook)
 
   -- electric wand
   wand_cast_range      = 15000.0, -- cm; max aim distance for a cast bolt (150 m)

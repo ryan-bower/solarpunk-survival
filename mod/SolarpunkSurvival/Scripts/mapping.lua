@@ -34,6 +34,8 @@ M.schema = {
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
   furnace  = { "classHints", "fuelPropCandidates", "fuelFnCandidates" },
   rod      = { "stationClassCandidates", "copperItemRow" },
+  wand     = { "tillEventPrefix", "heldItemProps", "handSlotProps", "toolChangeFn",
+               "cobaltRow", "diamondRow", "meshCompCandidates", "niagaraCandidates" },
 }
 
 M.profiles = {
