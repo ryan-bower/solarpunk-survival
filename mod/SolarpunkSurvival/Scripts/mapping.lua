@@ -122,6 +122,17 @@ M.profiles = {
       excludeHints   = { "Candle", "Fence", "Deco_", "Sign", "Torch", "Preview" },
       salvageDefault = { ScrapMetal = 1, Iron = 1 },  -- half-components fallback (recipes unreadable from Lua)
     },
+    -- Mundane/electric wand (RE'd live 2026-07-21 off BP_MainPlayerCharacter_C):
+    wand = {
+      tillEventPrefix = "InpActEvt_IA_Till",     -- hoe left-click = the IA_Till input events
+      heldItemProps   = { "CurHandItemThirdPerson", "CurHandItemFirstPerson" }, -- held-tool visuals
+      handSlotProps   = { "Mesh_Slot_3rdPerson_Hand_R", "Mesh_Slot_1Person_Hand_R" },
+      toolChangeFn    = "ChangeHandTool",
+      cobaltRow       = "Cobalt",
+      diamondRow      = "Diamond",
+      meshCompCandidates = { "StaticMesh", "Mesh", "ItemMesh", "SM_Item", "StaticMeshComponent" },
+      niagaraCandidates  = { "NS_Electricity", "NS_Sparks", "NS_Dizzle" },
+    },
     rod = {
       stationClassCandidates = {
         -- Placed class inferred from the live preview BP_WeatherStation_AdvancedPlaceablePreview_C.

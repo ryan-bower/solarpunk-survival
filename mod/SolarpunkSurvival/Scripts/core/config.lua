@@ -25,6 +25,13 @@ M.defaults = {
                                  -- bolt hurts through OUR radius-checked path at the impact frame
   lightning_guard_window = 4.0,  -- seconds after any bolt spawns during which non-mod damage is
                                  -- treated as lightning splash and grounded to 0
+
+  -- electric wand
+  wand_cast_range      = 15000.0, -- cm; max aim distance for a cast bolt (150 m)
+  wand_cast_debounce   = 0.5,     -- seconds between cast attempts (IA_Till fires multiple phases)
+  wand_recharge_radius = 500.0,   -- cm; stand this close to a strike (not your own) to recharge
+  wand_cobalt_scale    = 3.0,     -- the wand-tip cobalt is 3x the dropped model
+  wand_tip_up          = 55.0,    -- cm above the hand slot where the cobalt sits (tune live)
   storm_warning_lead  = 20.0,    -- seconds of "storm incoming" warning before lightning starts
 
   -- player

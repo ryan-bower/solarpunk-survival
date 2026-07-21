@@ -410,6 +410,26 @@ function F.strikeAt(loc, tag)
   end)
 end
 
+-- Cast a bolt at an explicit location in ANY weather (the electric wand). No storm gate and no
+-- telegraph lead: the bolt's own ground-crackle phase IS the warning; consequences land at the
+-- big strike frame. castBy tags the strike so the caster's own bolt cannot recharge their wand.
+function F.castBolt(loc, casterId)
+  if not ctx.net.isHost() or not loc then return false end
+  spawnBoltAt(loc)
+  local mgr = weatherMgr()
+  if mgr and ctx.map.weather.thunderFn then ctx.uehelp.call(mgr, ctx.map.weather.thunderFn) end
+  ctx.net.multicast("Multicast_Bolt", { X = loc.X, Y = loc.Y, Z = loc.Z })
+  local ms = math.floor(ctx.config.get("bolt_impact_delay") * 1000)
+  pcall(ExecuteWithDelay, ms, ctx.log.guard("cast.impact", function()
+    onGameThread(function()
+      ctx.bus.emit("lightning.strike", { location = loc, castBy = casterId })
+      F.damagePawnsAt(loc)
+      ctx.log.info("...the cast bolt lands")
+    end)
+  end))
+  return true
+end
+
 --------------------------------------------------------------------- native lightning tap
 -- The game's OWN storms spawn the same BP_LightningPlayer_C bolt actor and apply their own player
 -- damage (the "vanilla lightning sometimes hurts" mechanic). Tap every bolt the GAME spawns and run
@@ -476,6 +496,7 @@ function F.init(c)
   ctx.services.startStorm = F.startStorm
   ctx.services.stopStorm  = F.stopStorm
   ctx.services.strikeAt   = F.strikeAt
+  ctx.services.castBolt   = F.castBolt
 
   ctx.log.info("storms: ready -- H toggles storm on/off; during a storm, ping (G) calls a bolt there.")
   return true

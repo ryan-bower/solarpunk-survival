@@ -44,7 +44,8 @@ local ok, err = pcall(function()
     "features.strike_fx",
     "features.strike_world",
     "features.storms",
-    "features.ritual",       -- after storms: consumes services.strikeAt
+    "features.wand",         -- after storms: consumes services.castBolt; provides chargeWands
+    "features.ritual",       -- after storms/wand: consumes services.strikeAt + chargeWands
     "ui.imgui_panel",
     "dev.recapture",
     "dev.remote",

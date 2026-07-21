@@ -140,7 +140,13 @@ local function performSacrifice(sheep, loc)
   -- the bolt itself (VFX + thunder + radius damage) is delivered by storms.strikeAt
   if ctx.uehelp.isValid(sheep) then pcall(function() sheep:K2_DestroyActor() end) end
   ctx.log.info("*** the sacrifice is accepted -- the sheep is no more ***")
-  transformWandHolders(loc)
+  -- The wand feature owns the payout now: held wands become CHARGED electric wands in place.
+  -- (transformWandHolders' Weather-Station grant remains only as a fallback for old builds.)
+  if ctx.services.chargeWands then
+    ctx.services.chargeWands(loc, ctx.config.get("ritual_radius"))
+  else
+    transformWandHolders(loc)
+  end
   ctx.bus.emit("ritual.completed", { location = loc })
 end
 
