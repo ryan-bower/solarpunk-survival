@@ -1,12 +1,17 @@
--- The Mundane Wand -> Charged Electric Wand.
+-- Mundane Wand -> Lightning Wand (charged) -> Lightning Wand (uncharged).
 --
--- The wand ITEM is the Diamond Hoe (a new cooked item cannot be authored from Lua). While it is
--- held, the mod redresses it: the hoe's held visual is hidden and an oversized cobalt (3x the
--- dropped model) is stood at the hand slot -- handle + cobalt tip, the Mundane Wand. The ritual
--- charges it: the cobalt takes the diamond's material and crackles with electricity (Charged
--- Electric Wand). Left click (the hoe's IA_Till input) while charged casts a real bolt at the
--- aimed point in ANY weather, spending the charge. Standing within wand_recharge_radius (5 m) of
--- any OTHER lightning strike while holding the spent wand recharges it.
+-- The wand ITEM rides the Kickstarter hoe (a truly new item ID needs a cooked pak). While held,
+-- the mod redresses it into the wand model: the hoe's held visual is hidden (its mesh is one
+-- piece, so the metal head cannot be cut off from Lua), a stick stands in as the bare handle,
+-- and an oversized cobalt (3x the dropped model) caps its tip -- that is the Mundane Wand.
+-- The ritual forges it into the Lightning Wand (charged): the cobalt takes the diamond's
+-- material and crackles with electricity. Left click (the hoe's IA_Till input) while charged
+-- casts a real bolt at the aimed point in ANY weather, spending the charge -- the wand becomes
+-- the Lightning Wand (uncharged): still diamond-colored, but the crackle is gone. Standing
+-- within wand_recharge_radius (5 m) of any OTHER lightning strike while holding it recharges it.
+--
+-- (Inventory display names cannot be edited from Lua -- the tooltip still reads as the hoe; the
+-- wand's name/state is surfaced via the HUD log lines and `sps_wand`.)
 --
 -- States per player: "mundane" (never ritual-forged; tills like a normal hoe), "charged",
 -- "uncharged" (spent; recharges near strikes). MP: state + casting are host-side; a client's
@@ -15,10 +20,13 @@ local F = {}
 local ctx
 
 local states  = {}   -- playerId -> "mundane" | "charged" | "uncharged"
-local dressed = {}   -- pawnId -> { cobalt=actor, fx=NiagaraComponent, origMat=mat, hidden=bool }
+local dressed = {}   -- pawnId -> { cobalt=actor, handle=actor, fx=NiagaraComponent, origMat=mat }
 local castHooked, toolHooked = false, false
 local lastCast = -1e9
 local diamondMat     -- the diamond item's material, fetched lazily once
+
+local STATE_NAMES = { mundane = "Mundane Wand", charged = "Lightning Wand (charged)",
+                      uncharged = "Lightning Wand (uncharged)" }
 
 local function onGameThread(fn)
   if ExecuteInGameThread then
@@ -133,13 +141,15 @@ local function undress(pawn)
   end
   pcall(function() if d.fx then d.fx:Deactivate(); d.fx:DestroyComponent(d.fx) end end)
   pcall(function() if ctx.uehelp.isValid(d.cobalt) then d.cobalt:K2_DestroyActor() end end)
+  pcall(function() if ctx.uehelp.isValid(d.handle) then d.handle:K2_DestroyActor() end end)
   if ctx.uehelp.isValid(pawn) then setHeldToolHidden(pawn, false) end
   dressed[id] = nil
 end
 
--- Dress the held wand: hide the hoe visual, stand the 3x cobalt at the hand slot; when charged,
--- give the cobalt the diamond's material + electricity. All best-effort and pcall-guarded --
--- failures degrade to "plain hoe" cosmetics, never errors.
+-- Dress the held wand: hide the hoe visual, stand a stick (the bare handle) + the 3x cobalt at
+-- the hand slot. Forged wands (charged/uncharged) keep the diamond material; only charged gets
+-- the electricity crackle. All best-effort and pcall-guarded -- failures degrade to "plain hoe"
+-- cosmetics, never errors.
 local function dress(pawn)
   if not ctx.uehelp.isValid(pawn) then return end
   local id = ctx.identity.idOf(pawn)
@@ -178,25 +188,49 @@ local function dress(pawn)
     local s = ctx.config.get("wand_cobalt_scale")
     pcall(function() cobalt:SetActorScale3D({ X = s, Y = s, Z = s }) end)
     local orig; pcall(function() local mc = meshCompOf(cobalt); if mc then orig = mc:GetMaterial(0) end end)
-    d = { cobalt = cobalt, origMat = orig }
+    -- the bare handle: a stick stood under the cobalt (the closest Lua gets to a head-less hoe)
+    local handle
+    local hcls = ctx.map.wand.handleRow and ctx.items.classFor(ctx.map.wand.handleRow)
+    if hcls then
+      handle = ctx.uehelp.spawnActorAt(pc, hcls, { X = pl.X, Y = pl.Y, Z = pl.Z + 60 })
+    end
+    if handle then
+      pcall(function() handle:SetActorEnableCollision(false) end)
+      pcall(function() local mc = meshCompOf(handle); if mc then mc:SetSimulatePhysics(false) end end)
+      pcall(function()
+        if slot then
+          handle:K2_AttachToComponent(slot, "None", 0, 0, 0, false)
+          handle:K2_SetActorRelativeLocation({ X = 0, Y = 0, Z = ctx.config.get("wand_tip_up") * 0.5 },
+                                             false, {}, false)
+        else
+          handle:K2_AttachToActor(pawn, "None", 1, 1, 1, false)
+        end
+      end)
+    end
+    d = { cobalt = cobalt, handle = handle, origMat = orig }
     dressed[id] = d
   end
 
-  if state == "charged" then
+  -- forged wands (charged AND uncharged) wear the diamond's color; mundane keeps plain cobalt
+  if state == "charged" or state == "uncharged" then
     pcall(function()
       local mat = pc and fetchDiamondMat(pc, ctx.identity.locationOf(pawn) or { X = 0, Y = 0, Z = 0 })
       local mc = meshCompOf(d.cobalt)
       if mat and mc then mc:SetMaterial(0, mat) end
     end)
-    if not d.fx then
-      local mc = meshCompOf(d.cobalt)
-      d.fx = mc and spawnElectricity(mc) or nil
-    end
   else
     pcall(function()
       local mc = meshCompOf(d.cobalt)
       if d.origMat and mc then mc:SetMaterial(0, d.origMat) end
     end)
+  end
+  -- only the CHARGED wand crackles
+  if state == "charged" then
+    if not d.fx then
+      local mc = meshCompOf(d.cobalt)
+      d.fx = mc and spawnElectricity(mc) or nil
+    end
+  else
     pcall(function() if d.fx then d.fx:Deactivate(); d.fx:DestroyComponent(d.fx); d.fx = nil end end)
   end
 end
@@ -214,9 +248,9 @@ local function setState(pawn, state, quiet)
   states[id] = state
   if not quiet then
     if state == "charged" then
-      ctx.log.info("*** CHARGED ELECTRIC WAND *** the cobalt burns diamond-bright. Left click to cast.")
+      ctx.log.info("*** LIGHTNING WAND (CHARGED) *** the cobalt burns diamond-bright. Left click to cast.")
     elseif state == "uncharged" then
-      ctx.log.info("the wand is spent -- stand within 5 m of a lightning strike to recharge it")
+      ctx.log.info("Lightning Wand (uncharged) -- the crackle fades. Stand within 5 m of a strike to recharge.")
     end
   end
   redress(pawn, 0.1)
@@ -239,7 +273,7 @@ function F.chargeWands(center, radius)
     end
   end
   if blessed > 0 then
-    ctx.log.info("*** the wand drinks the bolt -- " .. blessed .. " CHARGED ELECTRIC WAND(s) forged ***")
+    ctx.log.info("*** the wand drinks the bolt -- " .. blessed .. " LIGHTNING WAND(s) (charged) forged ***")
   else
     ctx.log.info("ritual: the bolt found no wand-bearer inside the circle")
   end
@@ -393,14 +427,14 @@ function F.init(c)
         end
         if pawn then
           local id = playerIdOf(pawn)
-          ctx.log.info("wand state: " .. tostring(states[id] or "mundane"))
+          ctx.log.info("wand state: " .. (STATE_NAMES[states[id] or "mundane"] or "Mundane Wand"))
         end
       end)
       return true
     end)
   end)
 
-  ctx.log.info("wand: the Mundane Wand awaits its ritual (hold the Diamond Hoe)")
+  ctx.log.info("wand: the Mundane Wand awaits its ritual (the collector's hoe is its vessel)")
   return true
 end
 

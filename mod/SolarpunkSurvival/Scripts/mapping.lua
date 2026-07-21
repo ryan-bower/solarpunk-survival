@@ -35,7 +35,7 @@ M.schema = {
   furnace  = { "classHints", "fuelPropCandidates", "fuelFnCandidates" },
   rod      = { "stationClassCandidates", "copperItemRow" },
   wand     = { "tillEventPrefix", "heldItemProps", "handSlotProps", "toolChangeFn",
-               "cobaltRow", "diamondRow", "meshCompCandidates", "niagaraCandidates" },
+               "cobaltRow", "diamondRow", "handleRow", "meshCompCandidates", "niagaraCandidates" },
 }
 
 M.profiles = {
@@ -136,6 +136,7 @@ M.profiles = {
       toolChangeFn    = "ChangeHandTool",
       cobaltRow       = "Cobalt",
       diamondRow      = "Diamond",
+      handleRow       = "Stick",                 -- the wand's bare-handle stand-in model
       meshCompCandidates = { "StaticMesh", "Mesh", "ItemMesh", "SM_Item", "StaticMeshComponent" },
       niagaraCandidates  = { "NS_Electricity", "NS_Sparks", "NS_Dizzle" },
     },
