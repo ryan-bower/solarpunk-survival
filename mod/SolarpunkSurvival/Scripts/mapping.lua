@@ -30,12 +30,12 @@ M.schema = {
   items    = { "classFmt", "assetDir" },
   tree     = { "classPrefix" },
   animal   = { "sheepClass" },
-  ritual   = { "wandItemRow", "bookItemRow", "rodItemRow" },
+  ritual   = { "bookItemRow" },
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
   furnace  = { "classHints", "fuelPropCandidates", "fuelFnCandidates" },
   rod      = { "stationClassCandidates", "copperItemRow" },
-  wand     = { "tillEventPrefix", "heldItemProps", "handSlotProps", "toolChangeFn",
-               "cobaltRow", "diamondRow", "handleRow", "meshCompCandidates", "niagaraCandidates" },
+  wand     = { "castFnExact", "castFnPrefix", "handSlotProps", "stickRow", "cobaltRow",
+               "diamondRow", "meshCompCandidates", "niagaraCandidates", "smActorPath" },
 }
 
 M.profiles = {
@@ -43,6 +43,7 @@ M.profiles = {
   default = {
     pawn = { worldLocationFn = "K2_GetActorLocation" }, -- standard AActor UFUNCTION
     net  = { hasAuthorityFn  = "HasAuthority" },         -- standard AActor UFUNCTION
+    wand = { smActorPath = "/Script/Engine.StaticMeshActor" }, -- engine prop carrier for the rig
   },
 
   -- ---- Current tested build. Mapped live from re_capture_latest.txt (build 24038177). ----
@@ -96,15 +97,10 @@ M.profiles = {
     items  = { classFmt = "BP_%s_Item_C", assetDir = "/Game/Code/Inventory_Items/ItemActors/" },
     tree   = { classPrefix = "BP_Tree_" },     -- BP_Tree_Birch_C confirmed live; suffix names the type
     animal = { sheepClass = "BP_Animal_Sheep_C" },
-    -- Stand-ins until a cooked pak can add real items (docs/MILESTONE-2.md):
+    -- The wand is NOT an inventory item: it is a mod-managed tool (see features/wand.lua).
+    -- A truly new inventory item ID requires a cooked content pak (docs/MILESTONE-2.md).
     ritual = {
-      -- The wand item: the Kickstarter-exclusive hoe. Hoe family = the IA_Till (left-click)
-      -- input works for casting; backer-exclusive = unobtainable in normal play, so it cannot
-      -- collide with items players earn or with future game items. Swap this one row if the
-      -- game ever repurposes it. (A truly new item ID requires a cooked content pak.)
-      wandItemRow = "Hoe_Kickstarter",
       bookItemRow = "Handbook",     -- the dark-arts book prop
-      rodItemRow  = "Weather_Station", -- legacy fallback payout (old builds without wand.lua)
     },
     fx = {
       clientDamageRpcFn = "CLIENT_ReduceHealth", -- game's own client RPC: fires ON the victim's machine
@@ -128,16 +124,17 @@ M.profiles = {
       excludeHints   = { "Candle", "Fence", "Deco_", "Sign", "Torch", "Preview" },
       salvageDefault = { ScrapMetal = 1, Iron = 1 },  -- half-components fallback (recipes unreadable from Lua)
     },
-    -- Mundane/electric wand (RE'd live 2026-07-21 off BP_MainPlayerCharacter_C):
+    -- The wand tool (RE'd from the pawn capture, re_capture_latest.txt):
     wand = {
-      tillEventPrefix = "InpActEvt_IA_Till",     -- hoe left-click = the IA_Till input events
-      heldItemProps   = { "CurHandItemThirdPerson", "CurHandItemFirstPerson" }, -- held-tool visuals
-      handSlotProps   = { "Mesh_Slot_3rdPerson_Hand_R", "Mesh_Slot_1Person_Hand_R" },
-      toolChangeFn    = "ChangeHandTool",
-      cobaltRow       = "Cobalt",
-      diamondRow      = "Diamond",
-      handleRow       = "Stick",                 -- the wand's bare-handle stand-in model
-      meshCompCandidates = { "StaticMesh", "Mesh", "ItemMesh", "SM_Item", "StaticMeshComponent" },
+      -- Generic left click, independent of the held tool (fires with empty hands). AltHandInteract
+      -- is right click -- the prefix below deliberately does not match it.
+      castFnExact  = "PressedHandInteraction",
+      castFnPrefix = "InpActEvt_IA_HandInteract",
+      handSlotProps = { "Mesh_Slot_3rdPerson_Hand_R", "Mesh_Slot_1Person_Hand_R" },
+      stickRow   = "Stick",     -- mesh donor: the wand's bare handle
+      cobaltRow  = "Cobalt",    -- mesh donor: the dropped-cobalt tip
+      diamondRow = "Diamond",   -- material donor for the forged (diamond-colored) tip
+      meshCompCandidates = { "StaticMesh", "StaticMesh1", "Mesh", "ItemMesh", "SM_Item", "StaticMeshComponent" },
       niagaraCandidates  = { "NS_Electricity", "NS_Sparks", "NS_Dizzle" },
     },
     rod = {

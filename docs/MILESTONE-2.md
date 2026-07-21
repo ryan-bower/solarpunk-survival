@@ -72,20 +72,28 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   2026-07-21). Verified live: 27x `BP_WoodenFence_Buildable_C` + 5x `BP_Candle_Plate_Buildable_C`
   detected, ritual strike + sacrifice completed.
 - While satisfied: storm strikes target the sheep. On impact: sheep is sacrificed (bolt +
-  destroy — no kill function known for animals yet), and every player within 20 m holding the
-  wand gets a Weather Station (lightning rod) item; lore lines narrate the rite.
-- **Mundane wand** = `HoeDiamond` stand-in (holdable, already gated late in the tech tree). A real
-  new item (1 Cobalt + 1 Stick recipe) needs a cooked pak — documented as future work; the
-  recipe/unlock functions (`UnlockResearch`, `Playerdata_AddUnlockedRecipyForSelf`) only toggle
-  EXISTING entries.
+  destroy — no kill function known for animals yet), and every player within 20 m receives the
+  payout: a **Lightning Wand (charged)** — newly forged if they owned none, charged in place if
+  they did; lore lines narrate the rite.
+- **The wand is a mod-managed TOOL, not an inventory item** (2026-07-21 redesign after the user
+  rejected the redressed-hoe stand-in). Lua cannot mint a new item ID — that needs a cooked pak
+  (future work; the recipe/unlock functions `UnlockResearch` /
+  `Playerdata_AddUnlockedRecipyForSelf` only toggle EXISTING entries). Instead the wand lives
+  outside the inventory: state machine Mundane -> charged -> uncharged in `features/wand.lua`;
+  draw/stow with **V**; model = engine `StaticMeshActor`s wearing the Stick item's mesh (handle)
+  + dropped Cobalt mesh (3x, tip), meshes read from the item classes' DEFAULT objects (spawning
+  bare item-BP actors as props crashes the game — see gotchas); forged tip wears the Diamond
+  item's material, charged adds a Niagara crackle. Cast = generic left click
+  (`PressedHandInteraction` / `IA_HandInteract`), works with empty hands, any weather.
 - **Dark-arts book** = `Handbook` item as the physical prop + `docs/DARK-ARTS.md` ritual guide +
   in-game lore via log lines when the ritual stages fire.
 
 ## 5. Test staging (user's save)
 - Pentagram center (user's candle pentagram): **X=6506 Y=-1165 Z=-5221**.
 - `sps_ritual_test` console command (and staged auto-run via the remote channel on next launch):
-  gives 1 wand (HoeDiamond) + 1 Handbook, teleports the player to ~6 m from the center, spawns a
-  sheep at the center. No-ops safely in menus; auto-run rearms itself until a world is loaded.
+  gives 1 Handbook, teleports the player to ~6 m from the center, spawns a sheep at the center
+  (the wand is forged by the ritual itself). No-ops safely in menus; auto-run rearms itself until
+  a world is loaded. `sps_wand forge|charge|draw` covers wand-only testing.
 
 ## MP notes
 - All authoritative logic behind `ctx.net.isHost()`. Victim FX ride the game's own
@@ -111,7 +119,9 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   them (`sps_dump`).
 - Candle lit-prop name; fence class names.
 - Sheep kill anim (currently destroy), tree fell anim (currently destroy + drops).
-- Wand/book/rod-item are stand-ins (HoeDiamond / Handbook / Weather_Station).
+- Book is a stand-in (Handbook). The wand is now its own mod-managed tool; a true inventory item
+  (name/icon/stacking) still needs the cooked pak. Wand rig offsets (`wand_tip_up`, scale,
+  stick orientation) need live eye-tuning; wand states are not yet persisted across restarts.
 - Buzz sound is pitched thunder until a real electricity cue is found.
 - Ground-drop of salvage/loot uses nearest-player inventory until `SpawnLeftoverItem`'s struct is
   mapped.

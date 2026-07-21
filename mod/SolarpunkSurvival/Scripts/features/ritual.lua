@@ -1,14 +1,15 @@
--- The Dark Arts: sacrifice a sheep inside a candle-ringed pentagram to forge a lightning rod.
+-- The Dark Arts: sacrifice a sheep inside a candle-ringed pentagram to forge the Lightning Wand.
 --
 -- While a storm rages, the host checks every `ritual_check_interval` seconds for a live sheep
 -- with >= `ritual_fences` fence pieces and >= `ritual_candles` candles (any state -- the storm's
--- rain snuffs flames, so lit cannot be required) within `ritual_radius` (20 m). When the rite is ready, the storm turns on the sheep: the next bolts target it. When a
--- bolt lands, the sheep is consumed, and every player within the circle holding the mundane wand
--- has it transmuted into a lightning rod (Weather Station).
+-- rain snuffs flames, so lit cannot be required) within `ritual_radius` (20 m). When the rite is
+-- ready, the storm turns on the sheep: the next bolts target it. When a bolt lands, the sheep is
+-- consumed and every player inside the circle receives the payout (features/wand.lua): a
+-- Lightning Wand (charged) -- newly forged if they had none, awakened if they did.
 --
--- MP: everything here is host-side; the bolt, the sheep's demise and the granted items all ride
--- native replication. The check is a chain of one-shot delays alive only during storms -- never a
--- free-running UObject timer (those native-crash on level transitions).
+-- MP: everything here is host-side; the bolt and the sheep's demise ride native replication.
+-- The check is a chain of one-shot delays alive only during storms -- never a free-running
+-- UObject timer (those native-crash on level transitions).
 local F = {}
 local ctx
 
@@ -87,65 +88,16 @@ local function findRitualSheep()
 end
 
 --------------------------------------------------------------------- the rite
--- Best-effort read of what a pawn holds; nil when unreadable (struct layout not yet mapped).
-local function heldItemClassName(pawn)
-  local name
-  pcall(function()
-    local held = pawn.CurItemdataInHand
-    if held == nil then return end
-    for _, field in ipairs({ "ItemClass", "Item Class", "Class", "Item" }) do
-      local okf, v = pcall(function() return held[field] end)
-      if okf and v ~= nil then
-        local okn, n = pcall(function() return v:GetFName():ToString() end)
-        if okn and n then name = n; return end
-      end
-    end
-  end)
-  return name
-end
-
-local function transformWandHolders(center)
-  local rit = ctx.map.ritual
-  local wandCls = ctx.items.classFor(rit.wandItemRow)
-  local wandName = nil
-  pcall(function() wandName = wandCls and wandCls:GetFName():ToString() end)
-  local rodCls = ctx.items.classFor(rit.rodItemRow)
-  if not rodCls then ctx.log.warn("ritual: rod item class missing"); return end
-
-  local r2 = ctx.config.get("ritual_radius") ^ 2
-  local blessed = 0
-  for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
-    local pl = ctx.identity.locationOf(pawn)
-    if pl and ctx.uehelp.dist2(pl, center) <= r2 then
-      local held = heldItemClassName(pawn)
-      -- unreadable held-item = accept (approximation, logged in docs/MILESTONE-2.md)
-      if held == nil or (wandName and held == wandName) then
-        local pc
-        pcall(function() pc = pawn.Controller end)
-        if ctx.uehelp.isValid(pc) then
-          if pcall(function() pc:DEBUG_SpawnItems(rodCls, 1) end) then blessed = blessed + 1 end
-        end
-      end
-    end
-  end
-  if blessed > 0 then
-    ctx.log.info("*** the wand drinks the bolt -- " .. blessed ..
-      " lightning rod(s) forged. Place your Weather Station; the storm will bend to it.")
-  else
-    ctx.log.info("ritual: the bolt found no wand-bearer inside the circle")
-  end
-end
-
 local function performSacrifice(sheep, loc)
   -- the bolt itself (VFX + thunder + radius damage) is delivered by storms.strikeAt
   if ctx.uehelp.isValid(sheep) then pcall(function() sheep:K2_DestroyActor() end) end
   ctx.log.info("*** the sacrifice is accepted -- the sheep is no more ***")
-  -- The wand feature owns the payout now: held wands become CHARGED electric wands in place.
-  -- (transformWandHolders' Weather-Station grant remains only as a fallback for old builds.)
+  -- The wand feature owns the payout: everyone in the circle gets a Lightning Wand (charged) --
+  -- forged on the spot for those without one. (The old Weather-Station item grant is gone.)
   if ctx.services.chargeWands then
     ctx.services.chargeWands(loc, ctx.config.get("ritual_radius"))
   else
-    transformWandHolders(loc)
+    ctx.log.warn("ritual: wand feature disabled -- the bolt finds no vessel")
   end
   ctx.bus.emit("ritual.completed", { location = loc })
 end
@@ -176,7 +128,7 @@ end
 function F.init(c)
   ctx = c
   if not ctx.gate.require(ctx.log, ctx.map, "ritual",
-      { "animal.sheepClass", "ritual.wandItemRow", "ritual.rodItemRow", "items.classFmt", "pawn.class" }) then
+      { "animal.sheepClass", "pawn.class" }) then
     return false
   end
   ctx.bus.on("weather.changed", ctx.log.guard("ritual.weather", function(e)
@@ -201,7 +153,7 @@ function F.init(c)
     end
     striking, pendingSheep, pendingLoc = false, nil, nil
   end))
-  ctx.log.info("ritual: the dark arts are listening (sheep + 15 fences + 5 candles + wand, in a storm)")
+  ctx.log.info("ritual: the dark arts are listening (sheep + 15 fences + 5 candles, in a storm -- the rite forges the wand)")
   return true
 end
 

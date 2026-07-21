@@ -28,12 +28,14 @@ M.defaults = {
   natural_storm_timeout  = 180.0, -- seconds without a native bolt before a game-weather storm is
                                   -- declared over (natural storms have no stop signal to hook)
 
-  -- electric wand
+  -- lightning wand (a mod-managed tool, not an inventory item -- features/wand.lua)
   wand_cast_range      = 15000.0, -- cm; max aim distance for a cast bolt (150 m)
-  wand_cast_debounce   = 0.5,     -- seconds between cast attempts (IA_Till fires multiple phases)
+  wand_cast_debounce   = 0.5,     -- seconds between cast attempts (input events fire multiple phases)
   wand_recharge_radius = 500.0,   -- cm; stand this close to a strike (not your own) to recharge
   wand_cobalt_scale    = 3.0,     -- the wand-tip cobalt is 3x the dropped model
   wand_tip_up          = 55.0,    -- cm above the hand slot where the cobalt sits (tune live)
+  wand_draw_key        = "V",     -- key that draws/stows the wand (any UE4SS Key name)
+  wand_fx              = true,    -- electricity crackle on the charged wand (kill-switch)
   storm_warning_lead  = 20.0,    -- seconds of "storm incoming" warning before lightning starts
 
   -- player

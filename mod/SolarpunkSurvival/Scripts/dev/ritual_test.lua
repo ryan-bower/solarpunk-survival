@@ -26,19 +26,17 @@ function F.stage()
   pcall(function() pawn = pc:K2_GetPawn() end)
   if not ctx.uehelp.isValid(pawn) then ctx.log.warn("ritual_test: no pawn yet"); return false end
 
-  -- 1) the implements of the rite (granted ONCE per install -- repeat stagings were piling
-  --    spare wands into the inventory)
+  -- 1) the book of the rite (granted ONCE per install; the wand is NOT an item -- the ritual
+  --    itself forges it, features/wand.lua)
   local rit = ctx.map.ritual
   local grantFlag = (ctx.modRoot or "") .. "dump/wand_granted.txt"
   local gf = io.open(grantFlag, "r")
   if gf then
     gf:close()
-    ctx.log.info("ritual_test: implements already granted (delete dump/wand_granted.txt to regrant)")
+    ctx.log.info("ritual_test: book already granted (delete dump/wand_granted.txt to regrant)")
   else
-    for _, row in ipairs({ rit.wandItemRow, rit.bookItemRow }) do
-      if not ctx.items.give(pc, row, 1) then
-        ctx.log.warn("ritual_test: item class missing for " .. tostring(row))
-      end
+    if not ctx.items.give(pc, rit.bookItemRow, 1) then
+      ctx.log.warn("ritual_test: item class missing for " .. tostring(rit.bookItemRow))
     end
     local wf = io.open(grantFlag, "w")
     if wf then wf:write("granted\n"); wf:close() end
@@ -56,8 +54,8 @@ function F.stage()
     { X = CENTER.X, Y = CENTER.Y, Z = CENTER.Z + 80 })
   if not sheep then ctx.log.warn("ritual_test: could not spawn the sheep (class not loaded?)") end
 
-  ctx.log.info("*** RITUAL STAGED *** wand + book granted, sheep at the pentagram.")
-  ctx.log.info("    Hold the wand, press H for a storm, and stay within the circle... (docs/DARK-ARTS.md)")
+  ctx.log.info("*** RITUAL STAGED *** sheep at the pentagram.")
+  ctx.log.info("    Press H for a storm and stay within the circle -- the rite forges the wand. (docs/DARK-ARTS.md)")
   return true
 end
 
