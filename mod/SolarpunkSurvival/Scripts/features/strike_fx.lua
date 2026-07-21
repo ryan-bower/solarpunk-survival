@@ -140,9 +140,11 @@ function F.init(c)
   end
   F.arm()
   -- Re-arm when a controller comes to life (fresh world load / joined a session).
-  pcall(NotifyOnNewObject, ctx.map.player.controllerClass, ctx.log.guard("strikefx.newpc", function()
-    onGameThread(function() F.arm() end)
-  end))
+  -- NotifyOnNewObject needs a FULL path -- register on the native parent, filter to our BP class.
+  ctx.uehelp.onNewInstance("/Script/Engine.PlayerController", ctx.map.player.controllerClass,
+    ctx.log.guard("strikefx.newpc", function()
+      onGameThread(function() F.arm() end)
+    end))
   ctx.bus.on("weather.changed", function() F.arm() end)  -- belt & braces: storm start re-tries
   ctx.services.strikeFx = function() F.playLocal() end   -- manual trigger for other features/tests
   return true

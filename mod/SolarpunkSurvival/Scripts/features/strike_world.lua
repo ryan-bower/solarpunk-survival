@@ -43,12 +43,6 @@ local function probeNumberProp(obj, candidates)
   return nil
 end
 
-local function itemClassFor(row)
-  local fmt = ctx.map.items and ctx.map.items.classFmt
-  if not (fmt and row) then return nil end
-  return ctx.uehelp.classByName(string.format(fmt, row))
-end
-
 -- Nearest player controller to a location (for granting salvage/drops -- ground-spawning items
 -- needs SpawnLeftoverItem's struct layout, still unmapped).
 local function nearestController(loc)
@@ -70,14 +64,12 @@ local function nearestController(loc)
 end
 
 local function giveItems(loc, row, amount)
-  local cls = itemClassFor(row)
   local pc = nearestController(loc)
-  if not (cls and pc) then
+  if not (pc and ctx.items.give(pc, row, amount)) then
     ctx.log.warn("strike_world: cannot grant " .. tostring(amount) .. "x " .. tostring(row))
     return false
   end
-  local ok = pcall(function() pc:DEBUG_SpawnItems(cls, amount) end)
-  return ok == true
+  return true
 end
 
 --------------------------------------------------------------------- handlers

@@ -66,9 +66,11 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
 
 - Ritual check runs host-side only while a storm is active (chained one-shot delays, every ~8 s —
   never a free-running UObject timer). Conditions: a live `BP_Animal_Sheep_C` with >= 15 fence
-  actors (class name contains `Fence`) and >= 5 lit candle buildables (class contains `Candle`;
-  lit-state probed from candidate bool props, presence counts as lit until the prop is verified)
-  within 20 m (2000 uu).
+  actors (class name contains `Fence`) and >= 5 candle buildables in ANY state (class contains
+  `Candle`) within 20 m (2000 uu). **Lit is deliberately NOT required** — the storm's rain snuffs
+  candles, which would make the rite impossible in the weather it needs (user rule change
+  2026-07-21). Verified live: 27x `BP_WoodenFence_Buildable_C` + 5x `BP_Candle_Plate_Buildable_C`
+  detected, ritual strike + sacrifice completed.
 - While satisfied: storm strikes target the sheep. On impact: sheep is sacrificed (bolt +
   destroy — no kill function known for animals yet), and every player within 20 m holding the
   wand gets a Weather Station (lightning rod) item; lore lines narrate the rite.

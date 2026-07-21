@@ -27,7 +27,7 @@ M.schema = {
   smoke    = { "shipDamageVfxFn" },
   net      = { "hasAuthorityFn", "playerStateClass" },
   save     = { "saveFn", "loadFn" },
-  items    = { "classFmt" },
+  items    = { "classFmt", "assetDir" },
   tree     = { "classPrefix" },
   animal   = { "sheepClass" },
   ritual   = { "wandItemRow", "bookItemRow", "rodItemRow" },
@@ -88,9 +88,10 @@ M.profiles = {
       -- visible marker). Verified live 2026-07-20: SERVER_Ping -> MULTI_Ping, identical Location.
       pingFn          = "MULTI_Ping",
     },
-    -- Every inventory item's actor class is BP_<DBItemsRow>_Item_C (verified live:
-    -- BP_Log_Item_C, BP_Raspberry_Item_C, BP_Candle_Plate_Item_C). Row names from DB_Items.
-    items  = { classFmt = "BP_%s_Item_C" },
+    -- Every inventory item's actor class is BP_<Name>_Item_C, but row->name is NOT 1:1
+    -- (HoeDiamond -> Hoe_Diamond, Weather_Station -> WeatherStation): core/items.lua tries the
+    -- variants. All 300 item classes live flat in assetDir (verified live via full-object scan).
+    items  = { classFmt = "BP_%s_Item_C", assetDir = "/Game/Code/Inventory_Items/ItemActors/" },
     tree   = { classPrefix = "BP_Tree_" },     -- BP_Tree_Birch_C confirmed live; suffix names the type
     animal = { sheepClass = "BP_Animal_Sheep_C" },
     -- Stand-ins until a cooked pak can add real items (docs/MILESTONE-2.md):

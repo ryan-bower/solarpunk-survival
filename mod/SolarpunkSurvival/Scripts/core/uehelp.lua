@@ -90,15 +90,30 @@ end
 -- nothing -- only FindObject(kind, name) resolves class objects.
 function M.classByName(name, path)
   if not name then return nil end
-  for _, kind in ipairs({ "BlueprintGeneratedClass", "Class" }) do
-    local ok, c = pcall(FindObject, kind, name)
-    if ok and c and M.isValid(c) then return c end
+  local function find()
+    for _, kind in ipairs({ "BlueprintGeneratedClass", "Class" }) do
+      local ok, c = pcall(FindObject, kind, name)
+      if ok and c and M.isValid(c) then return c end
+    end
+    return nil
   end
+  local c = find()
+  if c then return c end
   if path and LoadAsset then
-    local ok, c = pcall(LoadAsset, path)
-    if ok and c and M.isValid(c) then return c end
+    pcall(LoadAsset, path)
+    -- LoadAsset's return value is unreliable, but it loads the package as a side effect --
+    -- ALWAYS re-query after it (verified live: trusting the return left the bolt invisible).
+    return find()
   end
   return nil
+end
+
+-- NotifyOnNewObject REJECTS short class names ("must contain at least two parts") -- it needs a
+-- full object path. Register on a native parent path and filter to the BP class in the callback.
+function M.onNewInstance(nativePath, shortClass, cb)
+  return pcall(NotifyOnNewObject, nativePath, function(obj)
+    if not shortClass or M.className(obj) == shortClass then cb(obj) end
+  end)
 end
 
 -- Deferred-spawn an actor class at a world location so its BeginPlay (VFX, timelines) runs at the

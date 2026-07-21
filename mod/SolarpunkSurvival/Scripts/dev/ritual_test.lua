@@ -19,12 +19,6 @@ end
 local function flagPath() return (ctx.modRoot or "") .. "dump/ritual_test_pending.txt" end
 local function flagSet() local f = io.open(flagPath(), "r"); if f then f:close(); return true end return false end
 
-local function itemClassFor(row)
-  local fmt = ctx.map.items and ctx.map.items.classFmt
-  if not (fmt and row) then return nil end
-  return ctx.uehelp.classByName(string.format(fmt, row))
-end
-
 function F.stage()
   local pc = ctx.uehelp.findFirst(ctx.map.player and ctx.map.player.controllerClass)
   if not pc then ctx.log.warn("ritual_test: no controller (load a world first)"); return false end
@@ -35,9 +29,9 @@ function F.stage()
   -- 1) the implements of the rite
   local rit = ctx.map.ritual
   for _, row in ipairs({ rit.wandItemRow, rit.bookItemRow }) do
-    local cls = itemClassFor(row)
-    if cls then pcall(function() pc:DEBUG_SpawnItems(cls, 1) end)
-    else ctx.log.warn("ritual_test: item class missing for " .. tostring(row)) end
+    if not ctx.items.give(pc, row, 1) then
+      ctx.log.warn("ritual_test: item class missing for " .. tostring(row))
+    end
   end
 
   -- 2) to the circle's edge (~6 m out, facing the center)
@@ -80,7 +74,8 @@ function F.init(c)
         end)
       end))
     end
-    pcall(NotifyOnNewObject, ctx.map.player and ctx.map.player.controllerClass or "PlayerController",
+    ctx.uehelp.onNewInstance("/Script/Engine.PlayerController",
+      ctx.map.player and ctx.map.player.controllerClass,
       ctx.log.guard("ritual_test.newpc", tryAuto))
     if ctx.uehelp.findFirst(ctx.map.player and ctx.map.player.controllerClass) then tryAuto() end
     ctx.log.info("ritual_test: pending -- will stage automatically once you're in the world")

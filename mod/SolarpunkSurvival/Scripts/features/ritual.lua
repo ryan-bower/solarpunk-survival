@@ -1,8 +1,8 @@
--- The Dark Arts: sacrifice a sheep inside a candle-lit pentagram to forge a lightning rod.
+-- The Dark Arts: sacrifice a sheep inside a candle-ringed pentagram to forge a lightning rod.
 --
 -- While a storm rages, the host checks every `ritual_check_interval` seconds for a live sheep
--- with >= `ritual_fences` fence pieces and >= `ritual_candles` LIT candles within `ritual_radius`
--- (20 m). When the rite is ready, the storm turns on the sheep: the next bolts target it. When a
+-- with >= `ritual_fences` fence pieces and >= `ritual_candles` candles (any state -- the storm's
+-- rain snuffs flames, so lit cannot be required) within `ritual_radius` (20 m). When the rite is ready, the storm turns on the sheep: the next bolts target it. When a
 -- bolt lands, the sheep is consumed, and every player within the circle holding the mundane wand
 -- has it transmuted into a lightning rod (Weather Station).
 --
@@ -35,22 +35,10 @@ local function afterIfStorm(seconds, tok, fn)
   if not pcall(ExecuteWithDelay, ms, guarded) then guarded() end
 end
 
-local function itemClassFor(row)
-  local fmt = ctx.map.items and ctx.map.items.classFmt
-  if not (fmt and row) then return nil end
-  return ctx.uehelp.classByName(string.format(fmt, row))
-end
 
 --------------------------------------------------------------------- condition checks
-local CANDLE_LIT_PROPS = { "Lit?", "IsLit?", "IsLit", "Lit", "IsOn?", "On?", "TurnedOn?" }
-
-local function candleIsLit(actor)
-  for _, p in ipairs(CANDLE_LIT_PROPS) do
-    local ok, v = ctx.uehelp.get(actor, p)
-    if ok and type(v) == "boolean" then return v end
-  end
-  return true  -- lit-prop not mapped yet: presence counts (documented approximation)
-end
+-- Candles count in ANY state: the storm's own rain snuffs the flames, so requiring "lit" would
+-- make the rite impossible in the very weather it needs (user-decided rule change).
 
 -- A sheep whose surroundings satisfy the pentagram, or nil.
 local function findRitualSheep()
@@ -88,7 +76,7 @@ local function findRitualSheep()
         local nc = 0
         for _, cd in ipairs(candles) do
           local cl = ctx.identity.locationOf(cd)
-          if cl and ctx.uehelp.dist2(cl, sl) <= r2 and candleIsLit(cd) then nc = nc + 1 end
+          if cl and ctx.uehelp.dist2(cl, sl) <= r2 then nc = nc + 1 end
         end
         if nf >= needF and nc >= needC then return s, sl, nf, nc end
       end
@@ -117,10 +105,10 @@ end
 
 local function transformWandHolders(center)
   local rit = ctx.map.ritual
-  local wandCls = itemClassFor(rit.wandItemRow)
+  local wandCls = ctx.items.classFor(rit.wandItemRow)
   local wandName = nil
   pcall(function() wandName = wandCls and wandCls:GetFName():ToString() end)
-  local rodCls = itemClassFor(rit.rodItemRow)
+  local rodCls = ctx.items.classFor(rit.rodItemRow)
   if not rodCls then ctx.log.warn("ritual: rod item class missing"); return end
 
   local r2 = ctx.config.get("ritual_radius") ^ 2
@@ -165,7 +153,7 @@ local function checkChain(tok)
         if not announced then
           announced = true
           ctx.log.info("*** the pentagram hums (" .. nf .. " fences, " .. nc ..
-            " lit candles)... the storm has noticed the offering ***")
+            " candles)... the storm has noticed the offering ***")
         end
         striking = true
         ctx.services.strikeAt(loc, "ritual")
@@ -193,7 +181,7 @@ function F.init(c)
     announced, striking = false, false
     if stormOn then checkChain(token) end
   end))
-  ctx.log.info("ritual: the dark arts are listening (sheep + 15 fences + 5 lit candles + wand, in a storm)")
+  ctx.log.info("ritual: the dark arts are listening (sheep + 15 fences + 5 candles + wand, in a storm)")
   return true
 end
 

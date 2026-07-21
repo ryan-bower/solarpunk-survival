@@ -27,10 +27,11 @@ local ok, err = pcall(function()
   local identity = require("core.identity").init(buildinfo.map)
   local health   = require("core.health")
   local save     = require("core.save").init(buildinfo.map, modRoot)
+  local items    = require("core.items").init(buildinfo.map)
 
   local ctx = {
     map = buildinfo.map, config = config, log = log, bus = bus, gate = gate,
-    net = net, health = health, identity = identity, save = save,
+    net = net, health = health, identity = identity, save = save, items = items,
     uehelp = uehelp, buildinfo = buildinfo, services = {}, modRoot = modRoot,
   }
 

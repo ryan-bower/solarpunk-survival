@@ -43,10 +43,8 @@ local function dressStation(st)
   if not ctx.net.isHost() then return end
   local id = ctx.identity.idOf(st)
   if not id or (toppers[id] and ctx.uehelp.isValid(toppers[id])) then return end
-  local fmt = ctx.map.items and ctx.map.items.classFmt
   local row = ctx.map.rod and ctx.map.rod.copperItemRow
-  if not (fmt and row) then return end
-  local cls = ctx.uehelp.classByName(string.format(fmt, row))
+  local cls = row and ctx.items.classFor(row)
   local sl = cls and ctx.identity.locationOf(st)
   if not sl then return end
   local pc = ctx.uehelp.playerController()

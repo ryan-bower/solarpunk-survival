@@ -10,7 +10,9 @@ function F.init(c)
   ctx.bus.on("strike.airship", function(e) F.onStrikeAirship(e) end)
 
   if ctx.map.pawn and ctx.map.pawn.class then
-    pcall(NotifyOnNewObject, ctx.map.pawn.class, ctx.log.guard("pawn.new", function(o) F.onNewPawn(o) end))
+    -- NotifyOnNewObject needs a full path; register on the native Character, filter to our pawn BP.
+    ctx.uehelp.onNewInstance("/Script/Engine.Character", ctx.map.pawn.class,
+      ctx.log.guard("pawn.new", function(o) F.onNewPawn(o) end))
     for _, p in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do F.onNewPawn(p) end
   else
     ctx.gate.require(ctx.log, ctx.map, "player_effects", { "pawn.class" })
