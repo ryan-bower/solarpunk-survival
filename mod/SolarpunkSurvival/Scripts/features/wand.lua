@@ -156,16 +156,16 @@ local function refreshRig(pawn)
   if not (r and r.handle and r.tip) then
     tearRig(pawnId)
     -- offsets are relative to the pawn root (capsule center): X fwd, Y right, Z up
-    local fwd, side = ctx.config.get("wand_fwd"), ctx.config.get("wand_side")
+    local fwd, side, up = ctx.config.get("wand_fwd"), ctx.config.get("wand_side"), ctx.config.get("wand_up")
     local handle = addMeshComp(pawn, meshByName(ctx.map.wand.stickMesh),
-      { X = fwd, Y = side, Z = 0 }, 1.0)
+      { X = fwd, Y = side, Z = up }, 1.0)
     local tip = addMeshComp(pawn, meshByName(ctx.map.wand.cobaltMesh),
-      { X = fwd, Y = side, Z = ctx.config.get("wand_tip_up") }, ctx.config.get("wand_cobalt_scale"))
+      { X = fwd, Y = side, Z = up + ctx.config.get("wand_tip_up") }, ctx.config.get("wand_cobalt_scale"))
     if not (handle or tip) then
       ctx.log.warn("wand: no rig components -- the wand is in your hand, just unseen")
       return
     end
-    r = { handle = handle, tip = tip }
+    r = { handle = handle, tip = tip, pawn = pawn }
     rigs[pawnId] = r
   end
 
@@ -388,6 +388,18 @@ function F.init(c)
       end))
     end))
   ctx.bus.on("weather.changed", ctx.log.guard("wand.rearm", function() hookCast() end))
+
+  -- Live rig tuning: any wand_* config change rebuilds drawn rigs immediately (no restart).
+  ctx.bus.on("config.changed", ctx.log.guard("wand.retune", function(e)
+    if not (e and type(e.key) == "string" and e.key:sub(1, 5) == "wand_") then return end
+    onGameThread(function()
+      for pawnId, r in pairs(rigs) do
+        local p = r.pawn
+        tearRig(pawnId)
+        if ctx.uehelp.isValid(p) then refreshRig(p) end
+      end
+    end)
+  end))
 
   pcall(function()
     RegisterConsoleCommandHandler("sps_wand", function(_, params)

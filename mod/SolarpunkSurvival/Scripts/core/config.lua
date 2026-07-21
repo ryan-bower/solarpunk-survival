@@ -33,8 +33,10 @@ M.defaults = {
   wand_cast_debounce   = 0.5,     -- seconds between cast attempts (input events fire multiple phases)
   wand_recharge_radius = 500.0,   -- cm; stand this close to a strike (not your own) to recharge
   wand_cobalt_scale    = 3.0,     -- the wand-tip cobalt is 3x the dropped model
-  wand_fwd             = 35.0,    -- cm forward of the pawn root where the wand sits (tune live)
-  wand_side            = 40.0,    -- cm to the right of the pawn root
+  wand_fwd             = 50.0,    -- cm forward of the pawn root where the wand sits (tune live --
+                                  -- any wand_* change rebuilds the rig immediately)
+  wand_side            = 30.0,    -- cm to the right of the pawn root
+  wand_up              = -30.0,   -- cm above the pawn root (negative = hand height, out of the face)
   wand_tip_up          = 55.0,    -- cm above the handle base where the cobalt sits
   wand_draw_key        = "V",     -- key that draws/stows the wand (any UE4SS Key name)
   wand_fx              = false,   -- electricity crackle on the charged wand -- OFF until the
