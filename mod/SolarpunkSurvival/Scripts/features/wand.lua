@@ -9,16 +9,16 @@
 -- HotbarSlotChanged fires when the player switches tools. The drawn wand rides exactly that
 -- machinery:
 --
---   model    = drawing puts the Stick mesh INTO the game's hand slots (the game's own tool
---              path), and the cobalt tip is a StaticMeshComponent attached to each slot, seated
---              at the stick's far end -- computed from the mesh bounds, not eye-tuned offsets --
---              at wand_cobalt_scale (0.75: the dropped-cobalt model is ~4x too big for a tip).
---              Kill-switch wand_in_hand=false reverts to the proven capsule-relative rig
---              (AddComponentByClass on the pawn -- the only crash-free recipe, probe P6).
---              Attaching ACTORS to the pawn is fatal, as is reading CDO component templates --
---              neither appears here (see the gotchas memory). The one call new to this rig,
---              tip:K2_AttachToComponent(slot), is step-logged to dump/wand_steps.txt so a fatal
---              names itself.
+--   model    = stick + seated cobalt tip built as OUR pawn-root components (AddComponentByClass,
+--              the only crash-free recipe -- probe P6), auto-seated at the world position of the
+--              game's right-hand tool slot (read-only) so it sits in the hand with no eye-tuned
+--              offsets. The tip sits at the stick's far end computed from mesh bounds, at
+--              wand_cobalt_scale (0.75: the dropped-cobalt model is ~4x too big for a tip).
+--              The rig does NOT put the mesh into the slot components and does NOT attach to
+--              them: component->component K2_AttachToComponent is a NATIVE CRASH on this build
+--              (proven 2026-07-21 12:22, step-log bisection), same family as actor attach and
+--              CDO template reads (gotchas memory). Risky steps append to dump/wand_steps.txt.
+--              Kill-switch wand_in_hand=false reverts to fixed capsule offsets (wand_fwd/side/up).
 --   obtain   = the dark-arts ritual forges it (`sps_wand forge` grants a test Mundane Wand).
 --   carry    = press the draw key (V) or `sps_wand draw` to draw/stow. Drawing stashes the held
 --              item (the game's own StashHandItem); stowing restores it; picking a hotbar tool
@@ -230,8 +230,8 @@ local function addMeshComp(pawn, mesh, rel, scale)
   return comp
 end
 
--- opts.handsBack=false skips the slot restore + item re-equip (used when the game itself just
--- took the hand back, e.g. the player picked a hotbar tool while the wand was out).
+-- opts.handsBack=false skips the stashed-item re-equip (used when the game itself just took
+-- the hand back, e.g. the player picked a hotbar tool while the wand was out).
 local function tearRig(id, opts)
   local r = id and rigs[id]
   if not r then return end
@@ -241,101 +241,70 @@ local function tearRig(id, opts)
     pcall(function() tip:DestroyComponent(tip) end)
   end
   pcall(function() if r.handle then r.handle:DestroyComponent(r.handle) end end)
-  if r.mode == "hand" and handsBack then
-    for _, s in ipairs(r.slots or {}) do
-      pcall(function() s.comp:SetStaticMesh(s.prev ~= false and s.prev or nil) end)
-    end
-  end
-  -- an item stashed by the draw must come back even if the hand rig later fell back to capsule
   if r.stashed and handsBack and ctx.map.wand.restoreFn and ctx.uehelp.isValid(r.pawn) then
     lastHandAction = os.clock()
-    mark("hand: restore item")
+    mark("restore held item")
     ctx.uehelp.call(r.pawn, ctx.map.wand.restoreFn)
   end
   rigs[id] = nil
 end
 
--- The in-hand rig: the stick into the game's own right-hand tool slots, a cobalt tip attached
--- to each slot at the stick's computed far end. Sets r.mode="hand" on success.
-local function buildHandRig(pawn, r)
-  local m = ctx.map.wand
-  local stick = meshByName(m.stickMesh)
-  if not stick then return end
-  -- the game's hand-slot components (live instance property reads -- safe)
-  for _, sname in ipairs({ m.handSlot1P, m.handSlot3P }) do
-    local slot
-    pcall(function() slot = pawn[sname] end)
-    if ctx.uehelp.isValid(slot) then
-      r.slots[#r.slots + 1] = { comp = slot, name = sname, prev = false }
-    end
-  end
-  if #r.slots == 0 then mark("hand: no slot comps"); return end
-  -- park the held item the way the game itself does (local player only; harmless when empty)
-  if isLocalPawn(pawn) and m.stashFn then
-    lastHandAction = os.clock()
-    mark("hand: stash held item")
-    if ctx.uehelp.call(pawn, m.stashFn) then r.stashed = true end
-  end
-  -- snapshot AFTER the stash so "previous" is the emptied-hand state we must put back on stow
-  for _, s in ipairs(r.slots) do
-    local prev; pcall(function() prev = s.comp.StaticMesh end)
-    s.prev = prev or false
-  end
-  -- the stick into the hand: the game's own both-slots setter first, direct writes as fallback
-  mark("hand: set stick mesh")
-  local okSet = m.handMeshFn and ctx.uehelp.call(pawn, m.handMeshFn, stick)
-  if not okSet then
-    local n = 0
-    for _, s in ipairs(r.slots) do
-      if pcall(function() s.comp:SetStaticMesh(stick) end) then n = n + 1 end
-    end
-    if n == 0 then mark("hand: stick set FAILED"); return end
-  end
-  -- the cobalt tip, seated at the stick's far end. K2_AttachToComponent(component -> component)
-  -- is the ONE call in this rig without a live proof; it is bracketed by marks and if it fails
-  -- as a plain Lua error the wand degrades to a bare stick instead of dying.
-  local rel, scale = tipTransform()
-  if rel then
-    for _, s in ipairs(r.slots) do
-      local tip = addMeshComp(pawn, meshByName(m.cobaltMesh), rel, scale)
-      if tip then
-        mark("hand: attach tip -> " .. tostring(s.name))
-        local att = pcall(function()
-          tip:K2_AttachToComponent(s.comp, "None", 0, 0, 0, false) -- KeepRelative x3, no weld
-        end)
-        if att then
-          r.tips[#r.tips + 1] = tip
-        else
-          pcall(function() tip:DestroyComponent(tip) end)
+-- Where the wand sits, relative to the pawn root: the world position of the game's own
+-- right-hand tool slot when readable (the wand seats itself at the hand -- nothing to eye-tune),
+-- else the configured capsule offsets. READ-ONLY on the slot: nothing is attached to it and no
+-- game component is written. tip:K2_AttachToComponent(slot) was the maiden-flight fatal
+-- (2026-07-21 12:22, step log) -- component->component attach crashes natively on this build,
+-- same family as actor attach. Do not reintroduce any attach call here.
+local function baseOffset(pawn)
+  if ctx.config.get("wand_in_hand") then
+    local u = ctx.uehelp
+    for _, sname in ipairs({ ctx.map.wand.handSlot3P, ctx.map.wand.handSlot1P }) do
+      local slot
+      if sname then pcall(function() slot = pawn[sname] end) end
+      if u.isValid(slot) then
+        local okL, wl = u.call(slot, "K2_GetComponentLocation")
+        local sl = okL and u.vec(wl) or nil
+        local pl = ctx.identity.locationOf(pawn)
+        local yaw
+        local okR, rot = u.call(pawn, "K2_GetActorRotation")
+        if okR then pcall(function() yaw = rot.Yaw end) end
+        if sl and pl and yaw then
+          -- world delta -> pawn-local (the root component only ever yaws)
+          local dx, dy, dz = sl.X - pl.X, sl.Y - pl.Y, sl.Z - pl.Z
+          local c, s = math.cos(math.rad(yaw)), math.sin(math.rad(yaw))
+          return { X = c * dx + s * dy, Y = -s * dx + c * dy, Z = dz }, "hand"
         end
       end
     end
-    if #r.tips == 0 then
-      ctx.log.warn("wand: tip attach failed -- a bare stick in hand (cobalt hidden)")
-    end
-  else
-    ctx.log.warn("wand: stick bounds unreadable -- no tip seat, bare stick in hand")
   end
-  mark("hand: rig ok")
-  r.mode = "hand"
+  return { X = ctx.config.get("wand_fwd"), Y = ctx.config.get("wand_side"),
+           Z = ctx.config.get("wand_up") }, "capsule"
 end
 
--- The fallback rig (kill-switch wand_in_hand=false, or the hand path came up empty): the proven
--- capsule-relative recipe, with the tip seated by the same bounds math instead of an eye-tuned
--- offset. Sets r.mode="capsule" on success.
-local function buildCapsuleRig(pawn, r)
+-- Build the stick + seated cobalt as OUR OWN pawn-root components (the proven P6 recipe).
+-- Acting like a tool comes from the game's item machinery AROUND the rig: drawing stashes the
+-- held item (StashHandItem -- survived live), stowing restores it, a hotbar switch auto-stows.
+-- The rig is seated AT the hand but rides the pawn root -- a safe hand-follow recipe does not
+-- exist yet (see baseOffset).
+local function buildRig(pawn, r)
   local m = ctx.map.wand
-  -- offsets are relative to the pawn root (capsule center): X fwd, Y right, Z up
-  local fwd, side, up = ctx.config.get("wand_fwd"), ctx.config.get("wand_side"), ctx.config.get("wand_up")
-  local handle = addMeshComp(pawn, meshByName(m.stickMesh), { X = fwd, Y = side, Z = up }, 1.0)
+  -- park the held item the way the game itself does (local player only; harmless when empty)
+  if ctx.config.get("wand_in_hand") and m.stashFn and isLocalPawn(pawn) then
+    lastHandAction = os.clock()
+    mark("stash held item")
+    if ctx.uehelp.call(pawn, m.stashFn) then r.stashed = true end
+  end
+  local base, how = baseOffset(pawn)
+  mark("build rig (" .. how .. " seat)")
+  local handle = addMeshComp(pawn, meshByName(m.stickMesh), base, 1.0)
   local rel, scale = tipTransform()
-  local tipRel = rel and { X = fwd + rel.X, Y = side + rel.Y, Z = up + rel.Z }
-                      or { X = fwd, Y = side, Z = up + 55.0 }  -- bounds unreadable: old seat
+  local tipRel = rel and { X = base.X + rel.X, Y = base.Y + rel.Y, Z = base.Z + rel.Z }
+                      or { X = base.X, Y = base.Y, Z = base.Z + 55.0 } -- bounds unreadable: old seat
   local tip = addMeshComp(pawn, meshByName(m.cobaltMesh), tipRel, scale)
   if not (handle or tip) then return end
   r.handle = handle
   if tip then r.tips[1] = tip end
-  r.mode = "capsule"
+  r.mode = how
 end
 
 -- Repaint tips + fx for the owner's current state. Forged wands (charged AND uncharged) wear
@@ -367,9 +336,8 @@ local function refreshRig(pawn)
   local r = rigs[id]
   if not (r and r.mode) then
     tearRig(id)
-    r = { pawn = pawn, tips = {}, slots = {} }
-    if ctx.config.get("wand_in_hand") then buildHandRig(pawn, r) end
-    if not r.mode then buildCapsuleRig(pawn, r) end
+    r = { pawn = pawn, tips = {} }
+    buildRig(pawn, r)
     if not r.mode then
       -- total failure: give back anything the hand attempt stashed before giving up
       if r.stashed and ctx.map.wand.restoreFn then

@@ -83,21 +83,21 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   draw/stow with **V**; forged tip wears the Diamond item's material, charged adds a Niagara
   crackle. Cast = generic left click (`PressedHandInteraction` / `IA_HandInteract`), works with
   empty hands, any weather.
-- **The wand is HELD like the game's own tools** (2026-07-21, "act like a tool item" pass). RE
+- **The wand BEHAVES like the game's own tools** (2026-07-21, "act like a tool item" pass). RE
   capture: a held tool = its mesh in two right-hand slot components on the pawn
   (`Mesh_Slot_1Person_Hand_R` / `Mesh_Slot_3rdPerson_Hand_R`, set via `SetHandRMeshForBoth`),
   with `StashHandItem`/`RestoreHandItem` parking the held item and `HotbarSlotChanged` firing on
-  tool switches. Drawing the wand stashes the held item and puts the Stick mesh into those slots
-  (game-native grip, 1P + 3P); the cobalt tip is a `StaticMeshComponent` attached to each slot,
-  seated at the stick's far end **computed from mesh bounds** (no eye-tuned offsets) at 0.75
-  scale (the dropped-cobalt model reads ~4x too large as a tip). Stowing restores the stashed
-  item; picking a hotbar tool auto-stows the wand. Kill-switch `wand_in_hand=false` reverts to
-  the proven capsule rig; risky steps append to `dump/wand_steps.txt` (`wand_step_log`). Player
-  identity now keys off the game's `UniquePlayerID` (pawn + controller) — the old
-  location-derived fallback id drifted as the player walked, silently orphaning wand state.
-  NOT yet live-proven: `SetHandRMeshForBoth`/stash/restore arities and the component->component
-  `K2_AttachToComponent` tip attach (actor attach is fatal; component attach is the one new
-  call — the step log will name it if it turns out equally hostile).
+  tool switches. Drawing the wand stashes the held item (game's own stash — survived live);
+  stowing restores it; picking a hotbar tool auto-stows the wand. The rig (stick + cobalt tip at
+  0.75 scale, seated at the stick's far end **computed from mesh bounds**) is built from our own
+  pawn-root components and **auto-seated at the hand slot's world position (read-only)**.
+  **Maiden flight 2026-07-21 12:22 proved `K2_AttachToComponent` (component→component, tip →
+  hand slot) is a NATIVE CRASH** — same family as actor attach; the step log
+  (`dump/wand_steps.txt`) named it on the first try. The slot mesh-set call itself survived but
+  is unused for now (a slot-held stick would animate away from a root-held tip). Kill-switch
+  `wand_in_hand=false` = fixed capsule offsets, no stash. Player identity keys off the game's
+  `UniquePlayerID` (pawn + controller) — the old location-derived fallback id drifted as the
+  player walked, silently orphaning wand state.
 - **Dark-arts book** = `Handbook` item as the physical prop + `docs/DARK-ARTS.md` ritual guide +
   in-game lore via log lines when the ritual stages fire.
 
@@ -133,10 +133,11 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
 - Candle lit-prop name; fence class names.
 - Sheep kill anim (currently destroy), tree fell anim (currently destroy + drops).
 - Book is a stand-in (Handbook). The wand is now its own mod-managed tool; a true inventory item
-  (name/icon/stacking) still needs the cooked pak. The in-hand rig (hand slots + tip attach +
-  stash/restore) is implemented but NOT live-proven — first launch should watch
-  `dump/wand_steps.txt`; `wand_in_hand=false` falls back to the proven capsule rig. Wand states
-  are not yet persisted across restarts.
+  (name/icon/stacking) still needs the cooked pak. The rig is hand-SEATED but root-attached (no
+  safe recipe exists yet for a mesh that FOLLOWS the hand: slot attach crashes, per-tick
+  follow = the timer gotcha). Candidate next probes: `PlaceholderR`/`UpgradeR` pawn comps (are
+  they hand-socketed mesh slots we could mesh-set?), a wand/staff-shaped mesh in the game's
+  assets for a single-mesh slot equip. Wand states are not yet persisted across restarts.
 - Buzz sound is pitched thunder until a real electricity cue is found.
 - Ground-drop of salvage/loot uses nearest-player inventory until `SpawnLeftoverItem`'s struct is
   mapped.

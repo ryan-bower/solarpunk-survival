@@ -142,9 +142,13 @@ M.profiles = {
       -- How the game holds tools (from the capture): the selected hotbar item's mesh lives in
       -- two right-hand slot components on the pawn; the fns below are the game's own equip
       -- machinery, which the drawn wand rides (features/wand.lua).
+      -- WARNING (proven fatal 2026-07-21 12:22, step-log): ATTACHING a component to these slot
+      -- comps (K2_AttachToComponent) native-crashes -- the slots are position-READ only. The
+      -- mesh-set path (handMeshFn) survived its live call but is currently unused.
       handMeshFn      = "SetHandRMeshForBoth",        -- set a tool mesh into both slots at once
       handSlot1P      = "Mesh_Slot_1Person_Hand_R",   -- first-person right-hand tool slot
-      handSlot3P      = "Mesh_Slot_3rdPerson_Hand_R", -- third-person right-hand tool slot
+      handSlot3P      = "Mesh_Slot_3rdPerson_Hand_R", -- third-person right-hand tool slot (the
+                                                      -- wand rig's hand-seat position source)
       stashFn         = "StashHandItem",              -- park the held item (drawing does this first)
       restoreFn       = "RestoreHandItem",            -- re-equip the parked item (stowing)
       hotbarChangedFn = "HotbarSlotChanged",          -- fires on tool switch -> the wand stows
