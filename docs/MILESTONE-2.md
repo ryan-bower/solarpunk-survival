@@ -104,8 +104,9 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   added (vanilla already hurts); our own bolts are excluded via a spawn-id set.
 
 ## Known approximations to revisit (next live session)
-- `bolt_impact_delay` = 1.5 s is an estimate of the bolt timeline's telegraph length — calibrate
-  live (watch one strike, tune via the sps console) and bake the measured value in.
+- ~~`bolt_impact_delay` estimate~~ MEASURED live 2026-07-21 by hooking the bolt's timeline event
+  functions: `Timeline__NewTrack_2__EventFunc` (the explode) fires at **+1.97 s** after BeginPlay,
+  `NewTrack_0` at +2.07 s, Finished at +2.68 s. Default set to 2.0 s.
 - Machine/furnace/battery prop names: candidate-probed; capture a dump at the player's base to pin
   them (`sps_dump`).
 - Candle lit-prop name; fence class names.
