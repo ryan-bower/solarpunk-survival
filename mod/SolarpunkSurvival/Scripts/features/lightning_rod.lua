@@ -19,10 +19,13 @@ local function resolveStationClass()
       return stationClass
     end
   end
-  -- one-off scan: find any live actor whose class name smells like the weather station
+  -- one-off scan: find any live actor whose class name smells like the weather station.
+  -- MUST skip placement previews (attaching to a *PlaceablePreview_C ghost is a native AV crash
+  -- pcall cannot catch -- happened live 2026-07-21) and the carryable _Item actor.
   for _, a in ipairs(ctx.uehelp.findAll("Actor")) do
     local cls = ctx.uehelp.className(a)
-    if cls and (cls:find("Weather_Station", 1, true) or cls:find("WeatherStation", 1, true)) then
+    if cls and (cls:find("Weather_Station", 1, true) or cls:find("WeatherStation", 1, true))
+        and not cls:find("Preview", 1, true) and not cls:find("_Item", 1, true) then
       stationClass = cls
       ctx.log.info("lightning_rod: station class discovered live = " .. cls)
       return stationClass
@@ -41,6 +44,9 @@ end
 local function dressStation(st)
   if not ctx.config.get("rod_copper_topper") then return end
   if not ctx.net.isHost() then return end
+  -- Never touch a placement preview or an item actor: attach on a preview is a native crash.
+  local cn = ctx.uehelp.className(st)
+  if not cn or cn:find("Preview", 1, true) or cn:find("_Item", 1, true) then return end
   local id = ctx.identity.idOf(st)
   if not id or (toppers[id] and ctx.uehelp.isValid(toppers[id])) then return end
   local row = ctx.map.rod and ctx.map.rod.copperItemRow

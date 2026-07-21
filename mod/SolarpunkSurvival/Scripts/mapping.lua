@@ -124,6 +124,8 @@ M.profiles = {
     },
     rod = {
       stationClassCandidates = {
+        -- Placed class inferred from the live preview BP_WeatherStation_AdvancedPlaceablePreview_C.
+        "BP_WeatherStation_AdvancedPlaceable_C",
         "BP_Weather_Station_Buildable_C", "BP_WeatherStation_Buildable_C",
         "BP_Weather_Station_Placeable_C", "BP_WeatherStation_Placeable_C",
       },
