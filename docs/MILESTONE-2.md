@@ -75,14 +75,20 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   destroy — no kill function known for animals yet), and every player within 20 m receives the
   payout: a **Lightning Wand (charged)** — newly forged if they owned none, charged in place if
   they did; lore lines narrate the rite.
-- **The wand is a mod-managed TOOL, not an inventory item** (2026-07-21 redesign after the user
-  rejected the redressed-hoe stand-in). Lua cannot mint a new item ID — that needs a cooked pak
-  (future work; the recipe/unlock functions `UnlockResearch` /
-  `Playerdata_AddUnlockedRecipyForSelf` only toggle EXISTING entries). Instead the wand lives
-  outside the inventory: state machine Mundane -> charged -> uncharged in `features/wand.lua`;
-  draw/stow with **V**; forged tip wears the Diamond item's material, charged adds a Niagara
-  crackle. Cast = generic left click (`PressedHandInteraction` / `IA_HandInteract`), works with
-  empty hands, any weather.
+- **The wand is now a REAL cooked inventory item** (2026-07-21, `tools/pakkit`). The earlier
+  "Lua can't mint an item ID" limitation is LIFTED by a content pak: `MundaneWand` +
+  `ElectricWand` are added to the game's `DB_Items` DataTable and shipped with two new
+  item-actor Blueprints, all cooked offline (retoc + UAssetAPI, no Unreal Editor). Install as
+  `Solarpunk-Windows_1_P.{utoc,ucas,pak}` in `Content/Paks` (Order 204 > the base 104, so the
+  DataTable override wins). Live-proven: clean boot, 311 rows, both wands present, item class
+  resolves from the pak. Grant with `sps_wand give [mundane|electric]`. See
+  `tools/pakkit/HOWTO.md` for the build + the retoc row-key name-index gotcha.
+- **The mod-managed rig still exists in parallel** (state machine Mundane -> charged ->
+  uncharged in `features/wand.lua`; draw/stow with **V**; forged tip wears the Diamond material,
+  charged adds a Niagara crackle; cast = generic left click `PressedHandInteraction` /
+  `IA_HandInteract`, empty hands, any weather). Now that the real item exists, the rig's job
+  narrows to the cast/charge behavior; the in-hand look can come from the real item once its BP
+  carries the cobalt tip. Not yet wired: ritual grants the real item; real item casts.
 - **The wand BEHAVES like the game's own tools** (2026-07-21, "act like a tool item" pass). RE
   capture: a held tool = its mesh in two right-hand slot components on the pawn
   (`Mesh_Slot_1Person_Hand_R` / `Mesh_Slot_3rdPerson_Hand_R`, set via `SetHandRMeshForBoth`),
@@ -132,12 +138,13 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   them (`sps_dump`).
 - Candle lit-prop name; fence class names.
 - Sheep kill anim (currently destroy), tree fell anim (currently destroy + drops).
-- Book is a stand-in (Handbook). The wand is now its own mod-managed tool; a true inventory item
-  (name/icon/stacking) still needs the cooked pak. The rig is hand-SEATED but root-attached (no
-  safe recipe exists yet for a mesh that FOLLOWS the hand: slot attach crashes, per-tick
-  follow = the timer gotcha). Candidate next probes: `PlaceholderR`/`UpgradeR` pawn comps (are
-  they hand-socketed mesh slots we could mesh-set?), a wand/staff-shaped mesh in the game's
-  assets for a single-mesh slot equip. Wand states are not yet persisted across restarts.
+- Book is a stand-in (Handbook). ~~The wand needs a cooked pak for a true inventory item~~ DONE
+  (`tools/pakkit`): the wand is a real item now. Remaining wand polish: the cooked item BP wears
+  only `SM_Stick` (no cobalt tip on the item mesh yet — add an `SM_Cobalt` SCS node to
+  `BP_MundaneWand_Item`/`BP_ElectricWand_Item`); the ritual/forge still grants the mod rig, not
+  the real item; the real item doesn't yet drive the cast/charge state. The rig is hand-SEATED
+  but root-attached (no safe recipe for a mesh that FOLLOWS the hand: slot attach crashes,
+  per-tick follow = the timer gotcha). Wand states are not persisted across restarts.
 - Buzz sound is pitched thunder until a real electricity cue is found.
 - Ground-drop of salvage/loot uses nearest-player inventory until `SpawnLeftoverItem`'s struct is
   mapped.
