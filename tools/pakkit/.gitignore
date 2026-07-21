@@ -1,0 +1,38 @@
+# pakkit working tree -- everything here is either a downloaded tool, extracted
+# game content (copyrighted, multi-GB), or a build artifact. NONE of it is committed.
+# The build is reproducible from build_wand_pak.py + the checked-in tools list below.
+
+# downloaded third-party tools
+retoc.exe
+retoc.zip
+UAssetGUI.exe
+UAssetAPI/
+LICENSE
+README.md
+
+# extracted game content (copyright; regenerate with `retoc to-legacy <game Paks> legacy`)
+legacy/
+Solarpunk.usmap
+
+# build inputs/outputs and scratch
+staged/
+out/
+verify*/
+ctl_*/
+id_*/
+unpk/
+wandsmith/bin/
+wandsmith/obj/
+
+# the shipped pak lives under out/ and is copied to the game; the release copy is
+# tracked separately in paks/ per the release process
+*.pak
+*.ucas
+*.utoc
+
+# scratch dumps from RE/inspection (regenerated on demand)
+db_items.json
+toc_list.txt
+toc_err.txt
+uag_out.txt
+*.usmap
