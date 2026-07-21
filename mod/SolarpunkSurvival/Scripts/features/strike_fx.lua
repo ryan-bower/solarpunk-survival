@@ -123,7 +123,9 @@ function F.arm()
   local ok = pcall(RegisterHook, path, ctx.log.guard("strikefx.hook", function(_, ReduceBy)
     local dmg = ReduceBy
     pcall(function() dmg = ReduceBy:get() end)
-    if type(dmg) ~= "number" or dmg < ctx.config.get("fx_min_damage") then return end
+    if type(dmg) ~= "number" then return end
+    if dmg > 0 then ctx.log.info("hit taken: -" .. math.floor(dmg) .. " HP") end  -- damage fingerprinting
+    if dmg < ctx.config.get("fx_min_damage") then return end
     onGameThread(function() F.playLocal() end)
   end))
   if ok then

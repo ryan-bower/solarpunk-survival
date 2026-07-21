@@ -112,7 +112,10 @@ end
 -- full object path. Register on a native parent path and filter to the BP class in the callback.
 function M.onNewInstance(nativePath, shortClass, cb)
   return pcall(NotifyOnNewObject, nativePath, function(obj)
-    if not shortClass or M.className(obj) == shortClass then cb(obj) end
+    -- the notify callback runs mid-construction with no outer guard: never let an error escape
+    pcall(function()
+      if not shortClass or M.className(obj) == shortClass then cb(obj) end
+    end)
   end)
 end
 
@@ -143,6 +146,10 @@ end
 -- FVector -> plain table {X,Y,Z}, or nil.
 function M.vec(v)
   if not v then return nil end
+  -- stale hook params have leaked plain functions here (seen live 2026-07-21); only userdata and
+  -- tables can carry an FVector
+  local tv = type(v)
+  if tv ~= "userdata" and tv ~= "table" then return nil end
   local okx, x = pcall(function() return v.X end)
   local oky, y = pcall(function() return v.Y end)
   local okz, z = pcall(function() return v.Z end)

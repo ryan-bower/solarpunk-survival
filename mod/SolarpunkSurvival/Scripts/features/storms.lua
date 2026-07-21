@@ -130,7 +130,8 @@ function F.startStorm()
   ctx.uehelp.call(mgr, ctx.map.weather.startStormFn)  -- InstantThunderstorm()
   -- NOTE: do NOT call StartThunderLoop -- it's a persistent native loop that keeps cracking thunder
   -- and does NOT stop on InstantSunny (runaway). The weather visuals alone are enough for the storm.
-  F.hookPing()  -- (re)arm the ping hook now that a controller definitely exists
+  F.hookPing()        -- (re)arm the ping hook now that a controller definitely exists
+  F.hookDamageGuard() -- likewise the lightning damage guard
 
   if not stormActive then
     stormActive = true
@@ -342,6 +343,50 @@ function F.hookPing()
   else ctx.log.warn("storms: could not hook ping: " .. tostring(r)) end
 end
 
+--------------------------------------------------------------------- lightning damage guard
+-- The game's own bolt logic hurts players far outside our kill radius (killed the user from ~10 m
+-- during a ritual). Unify the rule: while any bolt actor is live near you, damage only lands if
+-- you are INSIDE strike_radius of a bolt -- splash beyond that is grounded to 0 by rewriting the
+-- ReduceBy param of the game's "Reduce Health" before it runs. Armed on every machine, so
+-- client-local native bolt damage in co-op is grounded too; host-authoritative mod damage only
+-- ever targets pawns inside the radius, so it always passes untouched.
+local damageGuardHooked = false
+function F.hookDamageGuard()
+  if damageGuardHooked or not ctx.config.get("lightning_damage_guard") then return end
+  local pl, w = ctx.map.player, ctx.map.weather
+  if not (pl and pl.controllerClass and pl.reduceHealthFn and w and w.boltActorClass) then return end
+  local pc = ctx.uehelp.findFirst(pl.controllerClass)
+  if not pc then return end  -- menu; re-armed on storm start
+  local path = fullFuncPath(pc, pl.reduceHealthFn)
+  if not path then return end
+  local ok = pcall(RegisterHook, path, ctx.log.guard("damage.guard", function(selfParam, ReduceBy)
+    local bolts = ctx.uehelp.findAll(w.boltActorClass)
+    if #bolts == 0 then return end
+    local victim
+    pcall(function() victim = selfParam:get():K2_GetPawn() end)
+    local vl = victim and locOf(victim)
+    if not vl then return end
+    local r2, guard2 = ctx.config.get("strike_radius") ^ 2, ctx.config.get("lightning_guard_range") ^ 2
+    local nearBolt, inKillZone = false, false
+    for _, b in ipairs(bolts) do
+      local bl = locOf(b)
+      if bl then
+        local d = ctx.uehelp.dist2(bl, vl)
+        if d <= r2 then inKillZone = true; break end
+        if d <= guard2 then nearBolt = true end
+      end
+    end
+    if nearBolt and not inKillZone then
+      pcall(function() ReduceBy:set(0) end)
+      ctx.log.info("lightning splash grounded -- you were outside the kill radius")
+    end
+  end))
+  damageGuardHooked = ok or false
+  if damageGuardHooked then
+    ctx.log.info("storms: lightning damage guard armed -- bolts only hurt inside strike_radius")
+  end
+end
+
 -- Call a bolt down at an explicit world location (used by the ping; scheduler uses fireBolt).
 function F.strikeAt(loc, tag)
   if not ctx.net.isHost() or not stormActive then return end
@@ -380,10 +425,12 @@ end
 -- extra player damage, or native strikes would hit twice. Our own bolts are skipped via modBolts.
 function F.onBoltSpawned(bolt)
   if not ctx.net.isHost() or not ctx.config.get("native_strike_effects") then return end
-  local id = ctx.identity.idOf(bolt)
   local ms = math.floor(ctx.config.get("bolt_impact_delay") * 1000)
   pcall(ExecuteWithDelay, ms, ctx.log.guard("bolt.native", function()
     onGameThread(function()
+      -- id must be read HERE: deferred-spawned actors only get their final name after
+      -- FinishSpawningActor, so an id captured at notify time never matches modBolts
+      local id = ctx.identity.idOf(bolt)
       if id and modBolts[id] then modBolts[id] = nil; return end  -- ours: F.impact handles it
       local loc = locOf(bolt)
       if not loc then return end
@@ -421,6 +468,7 @@ function F.init(c)
 
   -- G-ping -> lightning at the pinged spot (while a storm is active).
   F.hookPing()
+  F.hookDamageGuard()
 
   -- Tap every bolt actor the game (or we) spawn, so NATIVE storm lightning also affects the world.
   if ctx.map.weather and ctx.map.weather.boltActorClass then
