@@ -70,9 +70,9 @@ do
   eq(m.ritual.bookItemRow, "Handbook", "mapping: ritual book item")
   eq(m.wand.castFnExact, "PressedHandInteraction", "mapping: wand cast rides the generic left click")
   eq(m.wand.castFnPrefix, "InpActEvt_IA_HandInteract", "mapping: wand cast input-event prefix")
-  eq(m.wand.stickRow, "Stick", "mapping: wand handle mesh donor")
-  eq(m.wand.cobaltRow, "Cobalt", "mapping: wand tip mesh donor")
-  eq(m.wand.smActorPath, "/Script/Engine.StaticMeshActor", "mapping: wand props ride engine StaticMeshActors")
+  eq(m.wand.stickMesh, "SM_Stick", "mapping: wand handle mesh asset")
+  eq(m.wand.cobaltMesh, "SM_Cobalt", "mapping: wand tip mesh asset")
+  eq(m.wand.smcPath, "/Script/Engine.StaticMeshComponent", "mapping: rig comps live on the pawn")
   eq(m.animal.sheepClass, "BP_Animal_Sheep_C", "mapping: sheep class")
   eq(m.tree.classPrefix, "BP_Tree_", "mapping: tree prefix")
   ok(type(m.battery.chargePropCandidates) == "table" and #m.battery.chargePropCandidates > 0,

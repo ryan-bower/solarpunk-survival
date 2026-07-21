@@ -1,37 +1,37 @@
 -- The wand: a REAL standalone tool, not a redressed inventory item.
 --
 -- Lua cannot mint a new inventory item ID (that needs a cooked content pak -- see
--- docs/MILESTONE-2.md), and redressing an existing item both wore the wrong name and needed
--- bare item-BP actors as props -- which crashed the game (item actors AV in BeginPlay with no
--- item payload, 2026-07-21 10:55). So the wand lives OUTSIDE the inventory entirely:
+-- docs/MILESTONE-2.md), so the wand lives OUTSIDE the inventory entirely:
 --
---   model    = engine StaticMeshActors carrying the game's own assets: the Stick item's mesh
---              as the handle + the dropped Cobalt item's mesh (3x) at its tip. Meshes are read
---              off the item classes' DEFAULT objects -- no item actor is ever spawned.
+--   model    = StaticMeshComponents created ON the pawn via AddComponentByClass -- the ONLY
+--              crash-free rig recipe (proven live 2026-07-21, probe P6). The Stick mesh is the
+--              handle, the dropped-Cobalt mesh (3x) the tip; meshes are found BY NAME from the
+--              loaded StaticMesh assets. Attaching ANY actor to the pawn (K2_AttachToActor or
+--              K2_AttachToComponent) is a fatal engine error, as is reading properties off CDO
+--              component templates -- neither appears here. See the gotchas memory.
 --   obtain   = the dark-arts ritual forges it (`sps_wand forge` grants a test Mundane Wand).
 --   carry    = press the draw key (V) or `sps_wand draw` to draw/stow it.
 --   states   = Mundane Wand -> Lightning Wand (charged) -> Lightning Wand (uncharged).
---              charged: the cobalt wears the Diamond item's material + an electricity crackle.
+--              charged: the cobalt wears the Diamond ore mesh's material + (optional) crackle.
 --              uncharged: keeps the diamond color, loses only the crackle.
---   cast     = left click (PressedHandInteraction / IA_HandInteract -- fires with EMPTY hands,
---              no held tool required) while drawn + charged: a real bolt lands at the aimed
---              point, in ANY weather. Casting spends the charge.
---   recharge = stand within wand_recharge_radius (5 m) of any strike that isn't your own cast
+--   cast     = left click (PressedHandInteraction / IA_HandInteract -- fires with EMPTY hands)
+--              while drawn + charged: a real bolt at the aimed point, ANY weather.
+--   recharge = stand within wand_recharge_radius (5 m) of a strike that isn't your own cast
 --              while the wand is drawn.
 --
 -- MP: wand state lives on the host (fully functional for the host player; remote players'
 -- states are tracked host-side, but their draw key/visuals run on their own machine -- a
--- client->host carrier is future work, docs/MILESTONE-2.md). The visual rig is cosmetic only.
+-- client->host carrier is future work, docs/MILESTONE-2.md). The rig is cosmetic only.
 local F = {}
 local ctx
 
 local wands = {}    -- playerId -> "mundane" | "charged" | "uncharged"  (nil = owns no wand)
 local drawn = {}    -- playerId -> true while the wand is out
-local rigs  = {}    -- pawnId  -> { handle=actor, tip=actor, fx=NiagaraComponent }
+local rigs  = {}    -- pawnId  -> { handle=comp, tip=comp, fx=NiagaraComponent }
 local castHooked = false
 local lastCast = -1e9
-local meshes = {}   -- row -> UStaticMesh asset (false = resolution failed; resolved once)
-local diamondMat    -- the Diamond item's material, read off its mesh asset once
+local meshCache     -- assetName -> UStaticMesh, filled once from the loaded-asset scan
+local diamondMat    -- the diamond mesh asset's material, read once
 
 local STATE_NAMES = { mundane = "Mundane Wand", charged = "Lightning Wand (charged)",
                       uncharged = "Lightning Wand (uncharged)" }
@@ -64,85 +64,44 @@ local function localPlayerPawn()
 end
 
 --------------------------------------------------------------------- mesh + material donors
--- The mesh an item shows when dropped, read from the item class's DEFAULT object. NEVER spawn a
--- bare item-BP actor for its looks -- that is exactly what crashed the game; the CDO read is free.
-local function itemMesh(row)
-  if meshes[row] ~= nil then return meshes[row] or nil end
-  local mesh
-  local cls, short = ctx.items.classFor(row)
-  if cls and short then
-    local cdo
-    pcall(function() cdo = cls:GetDefaultObject() end)
-    if not ctx.uehelp.isValid(cdo) and StaticFindObject then
-      local dir = (ctx.map.items.assetDir or "")
-      local base = short:gsub("_C$", "")
-      pcall(function() cdo = StaticFindObject(dir .. base .. ".Default__" .. short) end)
-    end
-    if cdo then
-      for _, p in ipairs(ctx.map.wand.meshCompCandidates or {}) do
-        local okc, comp = pcall(function() return cdo[p] end)
-        if okc and comp ~= nil then
-          local okm, m = pcall(function() return comp.StaticMesh end)
-          if okm and m ~= nil then mesh = m; break end
-        end
-      end
-    end
+-- One-shot scan of loaded StaticMesh assets by NAME. Names-only iteration -- never read
+-- properties off CDOs/templates (fatal, proven P1), never spawn item BPs for their looks.
+local function meshByName(assetName)
+  if not assetName then return nil end
+  if meshCache then return meshCache[assetName] end
+  meshCache = {}
+  local want = {}
+  for _, k in ipairs({ ctx.map.wand.stickMesh, ctx.map.wand.cobaltMesh, ctx.map.wand.diamondMesh }) do
+    if k then want[k] = true end
   end
-  meshes[row] = mesh or false
-  if mesh then
-    local nm = "?"; pcall(function() nm = mesh:GetFName():ToString() end)
-    ctx.log.info("wand: " .. row .. " mesh resolved (" .. nm .. ")")
-  else
-    ctx.log.warn("wand: could not read the " .. row .. " item's mesh -- wand visual degrades")
+  local all = {}
+  pcall(function() all = FindAllOf("StaticMesh") or {} end)
+  for _, m in ipairs(all) do
+    local nm; pcall(function() nm = m:GetFName():ToString() end)
+    if nm and want[nm] then meshCache[nm] = m end
   end
-  return mesh
+  for k in pairs(want) do
+    if not meshCache[k] then ctx.log.warn("wand: mesh asset '" .. k .. "' not loaded -- visual degrades") end
+  end
+  return meshCache[assetName]
 end
 
 local function diamondMaterial()
   if diamondMat ~= nil then return diamondMat or nil end
   local mat
-  local m = itemMesh(ctx.map.wand.diamondRow)
+  local m = meshByName(ctx.map.wand.diamondMesh)
   if m then pcall(function() mat = m:GetMaterial(0) end) end
   diamondMat = mat or false
   return mat
 end
 
 --------------------------------------------------------------------- the visual rig
--- A bare engine StaticMeshActor showing `mesh`: initialization-free BeginPlay, collision off,
--- mobility forced Movable (runtime-spawned SMAs default to Static and refuse to attach/move).
-local function spawnProp(pc, mesh, near)
-  if not (mesh and StaticFindObject) then return nil end
-  local cls
-  pcall(function() cls = StaticFindObject(ctx.map.wand.smActorPath) end)
-  if not cls then return nil end
-  local a = ctx.uehelp.spawnActorAt(pc, cls, { X = near.X, Y = near.Y, Z = near.Z + 40 })
-  if not a then return nil end
-  pcall(function() a:SetActorEnableCollision(false) end)
-  pcall(function()
-    local comp = a.StaticMeshComponent
-    comp:SetMobility(2)                       -- EComponentMobility::Movable
-    comp:SetStaticMesh(mesh)
-  end)
-  return a
-end
-
-local function attachTo(a, slot, pawn, rel)
-  pcall(function()
-    if slot then
-      a:K2_AttachToComponent(slot, "None", 0, 0, 0, false)  -- keep-relative snap
-    else
-      a:K2_AttachToActor(pawn, "None", 0, 0, 0, false)
-    end
-    a:K2_SetActorRelativeLocation(rel, false, {}, false)
-  end)
-end
-
 local function tearRig(pawnId)
   local r = pawnId and rigs[pawnId]
   if not r then return end
   pcall(function() if r.fx then r.fx:Deactivate(); r.fx:DestroyComponent(r.fx) end end)
   for _, k in ipairs({ "tip", "handle" }) do
-    pcall(function() if ctx.uehelp.isValid(r[k]) then r[k]:K2_DestroyActor() end end)
+    pcall(function() if r[k] then r[k]:DestroyComponent(r[k]) end end)
   end
   rigs[pawnId] = nil
 end
@@ -156,6 +115,7 @@ local function spawnElectricity(comp)
       local fx
       local zero, rot = { X = 0, Y = 0, Z = 0 }, { Pitch = 0, Yaw = 0, Roll = 0 }
       -- reflected signature varies across engine versions; try the two common arities
+      -- (a wrong arity is a SAFE Lua error -- UE4SS validates the param count)
       if not pcall(function() fx = nfl:SpawnSystemAttached(sys, comp, "None", zero, rot, 1, false) end) then
         pcall(function() fx = nfl:SpawnSystemAttached(sys, comp, "None", zero, rot, 1, false, true, 0, false) end)
       end
@@ -165,75 +125,64 @@ local function spawnElectricity(comp)
   return nil
 end
 
+-- Create one StaticMeshComponent ON the pawn (born attached to its root -- no attach call).
+local function addMeshComp(pawn, mesh, rel, scale)
+  if not mesh then return nil end
+  local smcCls
+  pcall(function() smcCls = StaticFindObject(ctx.map.wand.smcPath) end)
+  if not smcCls then return nil end
+  local xf = {
+    Rotation    = { X = 0, Y = 0, Z = 0, W = 1 },
+    Translation = rel,
+    Scale3D     = { X = scale, Y = scale, Z = scale },
+  }
+  local comp
+  pcall(function() comp = pawn:AddComponentByClass(smcCls, false, xf, false) end)
+  if not comp then return nil end
+  pcall(function() comp:SetStaticMesh(mesh) end)
+  return comp
+end
+
 -- Build/refresh the in-hand wand model for a pawn according to its owner's state.
--- Gated behind config `wand_rig`: the rig build crashed the game on its maiden run
--- (2026-07-21 11:11) and stays OFF until the crashing op is bisected via the remote channel
--- (flip live with `ctx.config.set("wand_rig", true)`). The wand FUNCTIONS either way --
--- only the visual is gated.
 local function refreshRig(pawn)
   if not ctx.config.get("wand_rig") then return end
-  ctx.log.info("wand.rig 1: enter")
   if not ctx.uehelp.isValid(pawn) then return end
   local pawnId = ctx.identity.idOf(pawn)
   local id = playerIdOf(pawn)
   if not (pawnId and id) then return end
   if not (wands[id] and drawn[id]) then tearRig(pawnId); return end
 
-  local pc = pawnController(pawn)
-  local pl = ctx.identity.locationOf(pawn)
-  if not (pc and pl) then return end
-
   local r = rigs[pawnId]
-  if not (r and ctx.uehelp.isValid(r.handle) and ctx.uehelp.isValid(r.tip)) then
+  if not (r and r.handle and r.tip) then
     tearRig(pawnId)
-    local slot
-    for _, p in ipairs(ctx.map.wand.handSlotProps or {}) do
-      local okp, c = pcall(function() return pawn[p] end)
-      if okp and c ~= nil then slot = c; break end
-    end
-    ctx.log.info("wand.rig 2: slot " .. (slot and "found" or "MISSING"))
-    local stickMesh = itemMesh(ctx.map.wand.stickRow)
-    local cobaltMesh = itemMesh(ctx.map.wand.cobaltRow)
-    ctx.log.info("wand.rig 3: meshes read")
-    local handle = spawnProp(pc, stickMesh, pl)
-    ctx.log.info("wand.rig 4: handle " .. (handle and "spawned" or "nil"))
-    local tip = spawnProp(pc, cobaltMesh, pl)
-    ctx.log.info("wand.rig 5: tip " .. (tip and "spawned" or "nil"))
+    -- offsets are relative to the pawn root (capsule center): X fwd, Y right, Z up
+    local fwd, side = ctx.config.get("wand_fwd"), ctx.config.get("wand_side")
+    local handle = addMeshComp(pawn, meshByName(ctx.map.wand.stickMesh),
+      { X = fwd, Y = side, Z = 0 }, 1.0)
+    local tip = addMeshComp(pawn, meshByName(ctx.map.wand.cobaltMesh),
+      { X = fwd, Y = side, Z = ctx.config.get("wand_tip_up") }, ctx.config.get("wand_cobalt_scale"))
     if not (handle or tip) then
-      ctx.log.warn("wand: no meshes resolved -- the wand is in your hand, just unseen")
+      ctx.log.warn("wand: no rig components -- the wand is in your hand, just unseen")
       return
     end
-    if handle then attachTo(handle, slot, pawn, { X = 0, Y = 0, Z = 0 }) end
-    ctx.log.info("wand.rig 6: handle attached")
-    if tip then
-      attachTo(tip, slot, pawn, { X = 0, Y = 0, Z = ctx.config.get("wand_tip_up") })
-      local s = ctx.config.get("wand_cobalt_scale")
-      pcall(function() tip:SetActorRelativeScale3D({ X = s, Y = s, Z = s }) end)
-      pcall(function() tip:SetActorScale3D({ X = s, Y = s, Z = s }) end)  -- fallback form
-    end
-    ctx.log.info("wand.rig 7: tip attached + scaled")
     r = { handle = handle, tip = tip }
     rigs[pawnId] = r
   end
 
   -- forged wands (charged AND uncharged) wear the diamond's color; a fresh rig is plain cobalt,
   -- and no state ever returns to mundane, so there is nothing to paint back
-  local comp
-  pcall(function() comp = r.tip and r.tip.StaticMeshComponent end)
-  if comp then
-    local state = wands[id]
+  local state = wands[id]
+  if r.tip then
     if state == "charged" or state == "uncharged" then
       local mat = diamondMaterial()
-      if mat then pcall(function() comp:SetMaterial(0, mat) end) end
+      if mat then pcall(function() r.tip:SetMaterial(0, mat) end) end
     end
-    ctx.log.info("wand.rig 8: material set")
-    -- only the CHARGED wand crackles
+    -- only the CHARGED wand crackles (wand_fx: OFF until the Niagara call is live-proven)
     if state == "charged" then
-      if not r.fx and ctx.config.get("wand_fx") then r.fx = spawnElectricity(comp) end
+      if not r.fx and ctx.config.get("wand_fx") then r.fx = spawnElectricity(r.tip) end
     else
       pcall(function() if r.fx then r.fx:Deactivate(); r.fx:DestroyComponent(r.fx); r.fx = nil end end)
     end
-    ctx.log.info("wand.rig 9: done")
   end
 end
 
@@ -393,8 +342,8 @@ end
 function F.init(c)
   ctx = c
   if not ctx.gate.require(ctx.log, ctx.map, "wand",
-      { "pawn.class", "player.controllerClass", "items.classFmt",
-        "wand.smActorPath", "wand.stickRow", "wand.cobaltRow", "wand.handSlotProps" }) then
+      { "pawn.class", "player.controllerClass",
+        "wand.smcPath", "wand.stickMesh", "wand.cobaltMesh" }) then
     return false
   end
 
@@ -429,7 +378,7 @@ function F.init(c)
   end)
 
   -- Arm the cast hooks as soon as a pawn exists (now, on pawn spawn, and on storms as a retry);
-  -- rebuild the rig after respawns (the old rig died with the old pawn).
+  -- rebuild the rig after respawns (the old rig's components died with the old pawn).
   hookCast()
   ctx.uehelp.onNewInstance("/Script/Engine.Character", ctx.map.pawn.class,
     ctx.log.guard("wand.newpawn", function(p)

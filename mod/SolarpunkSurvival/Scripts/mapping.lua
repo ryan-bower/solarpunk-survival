@@ -34,8 +34,8 @@ M.schema = {
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
   furnace  = { "classHints", "fuelPropCandidates", "fuelFnCandidates" },
   rod      = { "stationClassCandidates", "copperItemRow" },
-  wand     = { "castFnExact", "castFnPrefix", "handSlotProps", "stickRow", "cobaltRow",
-               "diamondRow", "meshCompCandidates", "niagaraCandidates", "smActorPath" },
+  wand     = { "castFnExact", "castFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
+               "diamondMesh", "niagaraCandidates" },
 }
 
 M.profiles = {
@@ -43,7 +43,7 @@ M.profiles = {
   default = {
     pawn = { worldLocationFn = "K2_GetActorLocation" }, -- standard AActor UFUNCTION
     net  = { hasAuthorityFn  = "HasAuthority" },         -- standard AActor UFUNCTION
-    wand = { smActorPath = "/Script/Engine.StaticMeshActor" }, -- engine prop carrier for the rig
+    wand = { smcPath = "/Script/Engine.StaticMeshComponent" }, -- rig comps live ON the pawn
   },
 
   -- ---- Current tested build. Mapped live from re_capture_latest.txt (build 24038177). ----
@@ -124,18 +124,17 @@ M.profiles = {
       excludeHints   = { "Candle", "Fence", "Deco_", "Sign", "Torch", "Preview" },
       salvageDefault = { ScrapMetal = 1, Iron = 1 },  -- half-components fallback (recipes unreadable from Lua)
     },
-    -- The wand tool (RE'd from the pawn capture, re_capture_latest.txt):
+    -- The wand tool (RE'd live 2026-07-21, probes P1-P6 -- see the gotchas memory):
     wand = {
       -- Generic left click, independent of the held tool (fires with empty hands). AltHandInteract
       -- is right click -- the prefix below deliberately does not match it.
       castFnExact  = "PressedHandInteraction",
       castFnPrefix = "InpActEvt_IA_HandInteract",
-      handSlotProps = { "Mesh_Slot_3rdPerson_Hand_R", "Mesh_Slot_1Person_Hand_R" },
-      stickRow   = "Stick",     -- mesh donor: the wand's bare handle
-      cobaltRow  = "Cobalt",    -- mesh donor: the dropped-cobalt tip
-      diamondRow = "Diamond",   -- material donor for the forged (diamond-colored) tip
-      meshCompCandidates = { "StaticMesh", "StaticMesh1", "Mesh", "ItemMesh", "SM_Item", "StaticMeshComponent" },
-      niagaraCandidates  = { "NS_Electricity", "NS_Sparks", "NS_Dizzle" },
+      -- Mesh ASSETS by name (loaded-StaticMesh scan; CDO template reads are fatal):
+      stickMesh   = "SM_Stick",       -- the wand handle
+      cobaltMesh  = "SM_Cobalt",      -- the dropped-cobalt tip
+      diamondMesh = "SM_Ore_Diamond", -- material donor for the forged tip
+      niagaraCandidates = { "NS_Electricity", "NS_Sparks", "NS_Dizzle" },
     },
     rod = {
       stationClassCandidates = {
