@@ -36,6 +36,9 @@ M.defaults = {
   wand_tip_up          = 55.0,    -- cm above the hand slot where the cobalt sits (tune live)
   wand_draw_key        = "V",     -- key that draws/stows the wand (any UE4SS Key name)
   wand_fx              = true,    -- electricity crackle on the charged wand (kill-switch)
+  wand_rig             = false,   -- build the in-hand stick+cobalt visual. OFF until the rig's
+                                  -- crashing op is bisected (2026-07-21 11:11 fatal on maiden
+                                  -- run); the wand still functions fully while off
   storm_warning_lead  = 20.0,    -- seconds of "storm incoming" warning before lightning starts
 
   -- player

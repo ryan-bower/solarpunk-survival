@@ -166,7 +166,13 @@ local function spawnElectricity(comp)
 end
 
 -- Build/refresh the in-hand wand model for a pawn according to its owner's state.
+-- Gated behind config `wand_rig`: the rig build crashed the game on its maiden run
+-- (2026-07-21 11:11) and stays OFF until the crashing op is bisected via the remote channel
+-- (flip live with `ctx.config.set("wand_rig", true)`). The wand FUNCTIONS either way --
+-- only the visual is gated.
 local function refreshRig(pawn)
+  if not ctx.config.get("wand_rig") then return end
+  ctx.log.info("wand.rig 1: enter")
   if not ctx.uehelp.isValid(pawn) then return end
   local pawnId = ctx.identity.idOf(pawn)
   local id = playerIdOf(pawn)
@@ -185,19 +191,27 @@ local function refreshRig(pawn)
       local okp, c = pcall(function() return pawn[p] end)
       if okp and c ~= nil then slot = c; break end
     end
-    local handle = spawnProp(pc, itemMesh(ctx.map.wand.stickRow), pl)
-    local tip    = spawnProp(pc, itemMesh(ctx.map.wand.cobaltRow), pl)
+    ctx.log.info("wand.rig 2: slot " .. (slot and "found" or "MISSING"))
+    local stickMesh = itemMesh(ctx.map.wand.stickRow)
+    local cobaltMesh = itemMesh(ctx.map.wand.cobaltRow)
+    ctx.log.info("wand.rig 3: meshes read")
+    local handle = spawnProp(pc, stickMesh, pl)
+    ctx.log.info("wand.rig 4: handle " .. (handle and "spawned" or "nil"))
+    local tip = spawnProp(pc, cobaltMesh, pl)
+    ctx.log.info("wand.rig 5: tip " .. (tip and "spawned" or "nil"))
     if not (handle or tip) then
       ctx.log.warn("wand: no meshes resolved -- the wand is in your hand, just unseen")
       return
     end
     if handle then attachTo(handle, slot, pawn, { X = 0, Y = 0, Z = 0 }) end
+    ctx.log.info("wand.rig 6: handle attached")
     if tip then
       attachTo(tip, slot, pawn, { X = 0, Y = 0, Z = ctx.config.get("wand_tip_up") })
       local s = ctx.config.get("wand_cobalt_scale")
       pcall(function() tip:SetActorRelativeScale3D({ X = s, Y = s, Z = s }) end)
       pcall(function() tip:SetActorScale3D({ X = s, Y = s, Z = s }) end)  -- fallback form
     end
+    ctx.log.info("wand.rig 7: tip attached + scaled")
     r = { handle = handle, tip = tip }
     rigs[pawnId] = r
   end
@@ -212,12 +226,14 @@ local function refreshRig(pawn)
       local mat = diamondMaterial()
       if mat then pcall(function() comp:SetMaterial(0, mat) end) end
     end
+    ctx.log.info("wand.rig 8: material set")
     -- only the CHARGED wand crackles
     if state == "charged" then
       if not r.fx and ctx.config.get("wand_fx") then r.fx = spawnElectricity(comp) end
     else
       pcall(function() if r.fx then r.fx:Deactivate(); r.fx:DestroyComponent(r.fx); r.fx = nil end end)
     end
+    ctx.log.info("wand.rig 9: done")
   end
 end
 
