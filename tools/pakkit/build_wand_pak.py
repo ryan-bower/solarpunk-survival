@@ -98,16 +98,10 @@ def add_bp_imports(d, bp_name):
     return cls_idx
 
 def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx):
-    # Base the wand on the HOE, not the Stick: the Hoe is a real held hand-tool, so its full type
-    # taxonomy (ItemType, ItemInteractionType, DefaultAttribues/durability) drives the game's
-    # hand system to actually swap the tool into the hand and apply its material. A Stick is a
-    # RESOURCE (interaction type 0) -- equipping it showed an untextured mesh and tool->tool
-    # switches didn't update the hand. The hoe's grip orientation also reads best for a wand (user
-    # call). Only the mesh differs: our ItemActor points at a stick-meshed clone, so the held
-    # object is a stick, held the way a hoe is held.
-    hoe = next(r for r in rows if r["Name"] == "Hoe")
+    stick = next(r for r in rows if r["Name"] == "Stick")
+    repair = next(r for r in rows if r["Name"] == "Repairkit")
     cobalt = next(r for r in rows if r["Name"] == "Cobalt")
-    row = copy.deepcopy(hoe)
+    row = copy.deepcopy(stick)
     row["Name"] = row_name
 
     dn = field(row, "DisplayName")
@@ -117,6 +111,10 @@ def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx):
     field(row, "MaxStackSize")["Value"] = 1
     field(row, "Icon")["Value"] = icon_idx
     field(row, "ItemActor")["Value"] = actor_idx
+    # tool taxonomy copied from the Repairkit (a hold-only tool with no durability)
+    field(row, "ItemType")["Value"] = copy.deepcopy(field(repair, "ItemType")["Value"])
+    it = field(row, "ItemInteractionType")
+    it["Value"] = copy.deepcopy(field(repair, "ItemInteractionType")["Value"])
     # description: clone the Cobalt's populated text property, swap key + string
     di = next(i for i, p in enumerate(row["Value"]) if p["Name"].split("_")[0] == "Description")
     dp = copy.deepcopy(field(cobalt, "Description"))
@@ -124,9 +122,10 @@ def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx):
     dp["Value"] = key32()
     dp["CultureInvariantString"] = desc
     row["Value"][di] = dp
+    field(row, "BurnTime")["Value"] = 0
     rows.append(row)
     add_rowkey_name(d, row_name)
-    print(f"row {row_name} (hoe-based) -> icon {icon_idx} actor {actor_idx}")
+    print(f"row {row_name} -> icon {icon_idx} actor {actor_idx}")
 
 def patch_db_items():
     src = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "DB_Items.uasset")
