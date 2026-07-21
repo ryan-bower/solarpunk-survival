@@ -96,9 +96,13 @@ M.profiles = {
     animal = { sheepClass = "BP_Animal_Sheep_C" },
     -- Stand-ins until a cooked pak can add real items (docs/MILESTONE-2.md):
     ritual = {
-      wandItemRow = "HoeDiamond",   -- "mundane wand": holdable + already late in the tech tree
+      -- The wand item: the Kickstarter-exclusive hoe. Hoe family = the IA_Till (left-click)
+      -- input works for casting; backer-exclusive = unobtainable in normal play, so it cannot
+      -- collide with items players earn or with future game items. Swap this one row if the
+      -- game ever repurposes it. (A truly new item ID requires a cooked content pak.)
+      wandItemRow = "Hoe_Kickstarter",
       bookItemRow = "Handbook",     -- the dark-arts book prop
-      rodItemRow  = "Weather_Station", -- what the wand transforms into (the lightning rod)
+      rodItemRow  = "Weather_Station", -- legacy fallback payout (old builds without wand.lua)
     },
     fx = {
       clientDamageRpcFn = "CLIENT_ReduceHealth", -- game's own client RPC: fires ON the victim's machine

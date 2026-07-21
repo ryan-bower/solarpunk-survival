@@ -67,7 +67,7 @@ do
   eq(string.format(m.items.classFmt, "Log"), "BP_Log_Item_C", "mapping: item class formats a row")
   eq(m.player.pingFn, "MULTI_Ping", "mapping: ping hook is the validated broadcast")
   eq(m.player.reduceHealthFn, "Reduce Health", "mapping: damage goes through Reduce Health")
-  eq(m.ritual.wandItemRow, "HoeDiamond", "mapping: wand stand-in")
+  eq(m.ritual.wandItemRow, "Hoe_Kickstarter", "mapping: wand item is the KS-exclusive hoe (collision-proof)")
   eq(m.ritual.rodItemRow, "Weather_Station", "mapping: rod item")
   eq(m.animal.sheepClass, "BP_Animal_Sheep_C", "mapping: sheep class")
   eq(m.tree.classPrefix, "BP_Tree_", "mapping: tree prefix")

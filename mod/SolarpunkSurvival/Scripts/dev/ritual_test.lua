@@ -26,12 +26,22 @@ function F.stage()
   pcall(function() pawn = pc:K2_GetPawn() end)
   if not ctx.uehelp.isValid(pawn) then ctx.log.warn("ritual_test: no pawn yet"); return false end
 
-  -- 1) the implements of the rite
+  -- 1) the implements of the rite (granted ONCE per install -- repeat stagings were piling
+  --    spare wands into the inventory)
   local rit = ctx.map.ritual
-  for _, row in ipairs({ rit.wandItemRow, rit.bookItemRow }) do
-    if not ctx.items.give(pc, row, 1) then
-      ctx.log.warn("ritual_test: item class missing for " .. tostring(row))
+  local grantFlag = (ctx.modRoot or "") .. "dump/wand_granted.txt"
+  local gf = io.open(grantFlag, "r")
+  if gf then
+    gf:close()
+    ctx.log.info("ritual_test: implements already granted (delete dump/wand_granted.txt to regrant)")
+  else
+    for _, row in ipairs({ rit.wandItemRow, rit.bookItemRow }) do
+      if not ctx.items.give(pc, row, 1) then
+        ctx.log.warn("ritual_test: item class missing for " .. tostring(row))
+      end
     end
+    local wf = io.open(grantFlag, "w")
+    if wf then wf:write("granted\n"); wf:close() end
   end
 
   -- 2) to the circle's edge (~6 m out, facing the center)

@@ -34,6 +34,11 @@ local function pawnController(pawn)
   return nil
 end
 
+-- The wand's item class, from mapping (Hoe_Kickstarter -> BP_Hoe_Kickstarter_Item_C).
+local function wandClassName()
+  return string.format(ctx.map.items.classFmt, ctx.map.ritual.wandItemRow)
+end
+
 -- Best-effort read of the held item's class name (same probing ritual.lua uses; pcall-safe).
 local function heldItemClassName(pawn)
   local name
@@ -55,7 +60,7 @@ local function isWandHeld(pawn)
   local held = heldItemClassName(pawn)
   -- unreadable held-item = accept only if the player HAS a state already (they proved ownership)
   if held == nil then return states[ctx.identity.idOf(pawnController(pawn) or pawn)] ~= nil end
-  return held == "BP_Hoe_Diamond_Item_C"
+  return held == wandClassName()
 end
 
 local function playerIdOf(pawn)
@@ -227,7 +232,7 @@ function F.chargeWands(center, radius)
     local pl = ctx.identity.locationOf(pawn)
     if pl and ctx.uehelp.dist2(pl, center) <= r2 then
       local held = heldItemClassName(pawn)
-      if held == nil or held == "BP_Hoe_Diamond_Item_C" then
+      if held == nil or held == wandClassName() then
         setState(pawn, "charged")
         blessed = blessed + 1
       end
