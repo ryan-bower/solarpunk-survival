@@ -40,9 +40,14 @@ local ok, err = pcall(function()
     "features.destruction",
     "features.lightning_rod",
     "features.repair_tool",
+    "features.strike_fx",
+    "features.strike_world",
     "features.storms",
+    "features.ritual",       -- after storms: consumes services.strikeAt
     "ui.imgui_panel",
     "dev.recapture",
+    "dev.remote",
+    "dev.ritual_test",
   }
   for _, name in ipairs(features) do
     local okf, mod = pcall(require, name)

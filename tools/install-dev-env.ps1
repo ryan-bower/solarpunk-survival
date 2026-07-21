@@ -2,7 +2,10 @@
 # Usage:  powershell -File tools/install-dev-env.ps1 [-GameWin64 <path>]
 param(
   [string]$GameWin64 = 'C:\Program Files (x86)\Steam\steamapps\common\Solarpunk\Solarpunk\Binaries\Win64',
-  [string]$Ue4ssUrl  = 'https://github.com/UE4SS-RE/RE-UE4SS/releases/download/experimental-latest/UE4SS_v3.0.1-1012-gc838a8ac.zip'
+  [string]$Ue4ssUrl  = 'https://github.com/UE4SS-RE/RE-UE4SS/releases/download/experimental-latest/UE4SS_v3.0.1-1012-gc838a8ac.zip',
+  # Path to a local UE4SS zip (e.g. the Solarpunk-patched build from Nexus). If set, install from it
+  # (overwriting core files) instead of downloading stock. Required for UE 5.7.1 - stock cannot scan it.
+  [string]$LocalUe4ssZip = ''
 )
 $ErrorActionPreference = 'Stop'
 $repo   = Split-Path -Parent $PSScriptRoot
@@ -12,17 +15,28 @@ if (-not (Test-Path (Join-Path $GameWin64 'SolarpunkSteam-Win64-Shipping.exe')))
   throw ("Game exe not found under " + $GameWin64 + " - pass -GameWin64 with the path to Binaries\Win64")
 }
 
-# 1) Download + extract UE4SS (skip if already installed)
-if (-not (Test-Path (Join-Path $GameWin64 'dwmapi.dll'))) {
+# 1) Install UE4SS core. From a local zip (patched build) if given, else download stock, else leave.
+if ($LocalUe4ssZip) {
+  if (-not (Test-Path $LocalUe4ssZip)) { throw ("LocalUe4ssZip not found: " + $LocalUe4ssZip) }
+  $tmp = Join-Path $env:TEMP ('ue4ss_' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+  Expand-Archive -LiteralPath $LocalUe4ssZip -DestinationPath $tmp -Force
+  $dll = Get-ChildItem $tmp -Recurse -Filter 'dwmapi.dll' | Select-Object -First 1
+  if (-not $dll) { throw ("No dwmapi.dll found inside " + $LocalUe4ssZip) }
+  $srcRoot = $dll.Directory.FullName
+  Copy-Item (Join-Path $srcRoot 'dwmapi.dll') $GameWin64 -Force
+  Copy-Item (Join-Path $srcRoot 'ue4ss') $GameWin64 -Recurse -Force
+  Write-Host ("Installed UE4SS (patched) from " + $LocalUe4ssZip)
+} elseif (-not (Test-Path (Join-Path $GameWin64 'dwmapi.dll'))) {
   $tmp = Join-Path $env:TEMP ('ue4ss_' + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
   $zip = Join-Path $tmp 'ue4ss.zip'
-  Write-Host "Downloading UE4SS..."
+  Write-Host "Downloading UE4SS (stock)..."
   Invoke-WebRequest -Uri $Ue4ssUrl -OutFile $zip -UseBasicParsing -Headers @{ 'User-Agent' = 'sps' }
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   Copy-Item (Join-Path $tmp 'dwmapi.dll') $GameWin64 -Force
   Copy-Item (Join-Path $tmp 'ue4ss') $GameWin64 -Recurse -Force
-  Write-Host "UE4SS installed."
+  Write-Host "UE4SS (stock) installed."
 } else {
   Write-Host "UE4SS already present - leaving core files in place."
 }
@@ -48,6 +62,8 @@ if (Test-Path $ini) {
 $modDst = Join-Path $ue4ss 'Mods\SolarpunkSurvival'
 New-Item -ItemType Directory -Force -Path $modDst | Out-Null
 Copy-Item (Join-Path $modSrc '*') $modDst -Recurse -Force
+# dev/recapture.lua writes RE dumps here via io.open, which cannot create the directory itself.
+New-Item -ItemType Directory -Force -Path (Join-Path $modDst 'dump') | Out-Null
 $stale = Join-Path $modDst 'save\state.json'
 if (Test-Path $stale) { Remove-Item $stale -Force }
 Write-Host ("Copied mod -> " + $modDst)

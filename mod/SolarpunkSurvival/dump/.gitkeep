@@ -1,0 +1,3 @@
+# Keeps the dump/ directory present in deploys. dev/recapture.lua writes RE captures here
+# (re_capture_latest.txt etc.). Lua's io.open cannot create the directory, so it must exist.
+# Actual dump files are git-ignored.

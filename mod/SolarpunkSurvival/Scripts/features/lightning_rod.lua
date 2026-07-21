@@ -1,87 +1,131 @@
--- Lightning Rod: a buildable that redirects every strike within `lightning_rod_range` to itself
--- and safely grounds it — or, if linked to a battery, fully charges that battery. Registers into
--- the game's existing build menu + unlock system.
+-- Lightning Rod: the game's own Weather Station buildable IS the rod -- a vane on a pole, already
+-- researchable in the weather-tech group and placeable beside/on batteries (a genuinely new cooked
+-- mesh cannot be authored from UE4SS Lua; docs/MILESTONE-2.md). Cosmetic best-effort: a Copper
+-- item is stood vertically at the pole top of each station. Any strike targeted within
+-- `lightning_rod_range` (25 m) of a station is redirected to the rod's ground position; grounded
+-- strikes charge the nearest battery within 3 m.
 local F = {}
 local ctx
-local ROD_CLASS = "BP_LightningRod_C"   -- the mod's cooked rod asset (LogicMod); tracked once it exists
-local rods = {}
+local stationClass = nil   -- exact class name, resolved from candidates or a one-off scan
+local toppers = {}         -- station id -> copper actor (cosmetic)
 
-function F.init(c)
-  ctx = c
-
-  if ctx.gate.require(ctx.log, ctx.map, "lightning_rod:register",
-        { "buildmenu.registerFn", "unlock.registerFn" }) then
-    F.register()
+local function resolveStationClass()
+  if stationClass then return stationClass end
+  local r = ctx.map.rod
+  for _, cand in ipairs((r and r.stationClassCandidates) or {}) do
+    if ctx.uehelp.classByName(cand) then
+      stationClass = cand
+      ctx.log.info("lightning_rod: station class = " .. cand)
+      return stationClass
+    end
   end
-
-  pcall(NotifyOnNewObject, ROD_CLASS, ctx.log.guard("rod.new", function(o)
-    if ctx.uehelp.isValid(o) then rods[#rods + 1] = o end
-  end))
-  for _, a in ipairs(ctx.uehelp.findAll(ROD_CLASS)) do rods[#rods + 1] = a end
-
-  -- Expose interception to the storm targeting code.
-  ctx.services.rodIntercept = function(loc) return F.intercept(loc) end
-  ctx.bus.on("strike.rod", function(e) F.onStrikeRod(e) end)
-  return true
+  -- one-off scan: find any live actor whose class name smells like the weather station
+  for _, a in ipairs(ctx.uehelp.findAll("Actor")) do
+    local cls = ctx.uehelp.className(a)
+    if cls and (cls:find("Weather_Station", 1, true) or cls:find("WeatherStation", 1, true)) then
+      stationClass = cls
+      ctx.log.info("lightning_rod: station class discovered live = " .. cls)
+      return stationClass
+    end
+  end
+  return nil
 end
 
--- Return a rod actor whose range covers `loc` (nearest wins), or nil.
+local function stations()
+  local cls = resolveStationClass()
+  if not cls then return {} end
+  return ctx.uehelp.findAll(cls)
+end
+
+-- Cosmetic copper topper: stand the copper item vertically at the pole top. Purely best-effort.
+local function dressStation(st)
+  if not ctx.config.get("rod_copper_topper") then return end
+  if not ctx.net.isHost() then return end
+  local id = ctx.identity.idOf(st)
+  if not id or (toppers[id] and ctx.uehelp.isValid(toppers[id])) then return end
+  local fmt = ctx.map.items and ctx.map.items.classFmt
+  local row = ctx.map.rod and ctx.map.rod.copperItemRow
+  if not (fmt and row) then return end
+  local cls = ctx.uehelp.classByName(string.format(fmt, row))
+  local sl = cls and ctx.identity.locationOf(st)
+  if not sl then return end
+  local pc = ctx.uehelp.playerController()
+  local copper = pc and ctx.uehelp.spawnActorAt(pc, cls, { X = sl.X, Y = sl.Y, Z = sl.Z + 260 })
+  if not copper then return end
+  pcall(function()
+    copper:K2_AttachToActor(st, "None", 1, 1, 1, false)   -- keep-world attach to the pole
+    copper:K2_SetActorRotation({ Pitch = 90, Yaw = 0, Roll = 0 }, false)
+    copper:SetActorEnableCollision(false)
+  end)
+  toppers[id] = copper
+end
+
+-- Return rodActor, groundLoc for a strike aimed at `loc`, or nil (nearest station wins).
 function F.intercept(loc)
+  if not loc then return nil end
   local range = ctx.config.get("lightning_rod_range")
-  local best, bestD = nil, range * range
-  for i = #rods, 1, -1 do
-    local rod = rods[i]
-    if not ctx.uehelp.isValid(rod) then
-      table.remove(rods, i)
-    else
-      local rl = ctx.identity.locationOf(rod)
-      if rl then
-        local d = ctx.uehelp.dist2(rl, loc)
-        if d <= bestD then best, bestD = rod, d end
+  local best, bestL, bestD = nil, nil, range * range
+  for _, st in ipairs(stations()) do
+    if ctx.uehelp.isValid(st) then
+      local sl = ctx.identity.locationOf(st)
+      if sl then
+        local d = ctx.uehelp.dist2(sl, loc)
+        if d <= bestD then best, bestL, bestD = st, sl, d end
+      end
+    end
+  end
+  if best then return best, bestL end
+  return nil
+end
+
+function F.onStrikeRod(e)
+  if not ctx.net.isHost() then return end
+  if ctx.config.get("rod_charges_battery") and ctx.services.chargeBattery then
+    local batt = F.linkedBattery(e.actor)
+    if batt then
+      ctx.services.chargeBattery(batt, ctx.uehelp.className(batt) or "battery")
+    end
+  end
+  ctx.log.info("lightning grounded by the rod")
+end
+
+-- The battery under/next to the rod (3 m), probed by class-name hint.
+function F.linkedBattery(rod)
+  local hints = ctx.map.battery and ctx.map.battery.classHints
+  local rl = ctx.identity.locationOf(rod)
+  if not (hints and rl) then return nil end
+  local LINK2 = 300 * 300
+  local best, bestD = nil, LINK2
+  for _, a in ipairs(ctx.uehelp.findAll("Actor")) do
+    local cls = ctx.uehelp.className(a)
+    if cls then
+      for _, h in ipairs(hints) do
+        if cls:find(h, 1, true) then
+          local bl = ctx.identity.locationOf(a)
+          if bl then
+            local d = ctx.uehelp.dist2(rl, bl)
+            if d <= bestD then best, bestD = a, d end
+          end
+          break
+        end
       end
     end
   end
   return best
 end
 
-function F.onStrikeRod(e)
-  if not ctx.net.isHost() then return end
-  if ctx.config.get("rod_charges_battery") then
-    local batt = F.linkedBattery(e.actor)
-    if batt then
-      ctx.bus.emit("strike.battery", { actor = batt, id = ctx.identity.idOf(batt), location = e.location })
+function F.init(c)
+  ctx = c
+  ctx.services.rodIntercept = function(loc) return F.intercept(loc) end
+  ctx.bus.on("strike.rod", ctx.log.guard("rod.strike", function(e) F.onStrikeRod(e) end))
+  -- Dress stations when a storm starts (cheap moment to look for new ones).
+  ctx.bus.on("weather.changed", ctx.log.guard("rod.dress", function(e)
+    if e and e.storm then
+      for _, st in ipairs(stations()) do dressStation(st) end
     end
-  end
-  if ctx.config.get("rod_takes_damage") and e.id then
-    ctx.health.applyDamage(e.id, ctx.config.get("strike_structure_dmg"), { source = "lightning" })
-  end
-  ctx.net.multicast("Multicast_RodStrike", { id = e.id })
-  ctx.log.debug("lightning grounded by rod")
-end
-
--- Find the battery attached/linked to a rod. Placeholder proximity link (3 m) until the
--- game's energy-network link (energy.linkFn) is mapped.
-function F.linkedBattery(rod)
-  local map = ctx.map
-  if not (map.battery and map.battery.class) then return nil end
-  local rl = ctx.identity.locationOf(rod)
-  if not rl then return nil end
-  local LINK2 = 300 * 300
-  local best, bestD = nil, LINK2
-  for _, b in ipairs(ctx.uehelp.findAll(map.battery.class)) do
-    local bl = ctx.identity.locationOf(b)
-    if bl then
-      local d = ctx.uehelp.dist2(rl, bl)
-      if d <= bestD then best, bestD = b, d end
-    end
-  end
-  return best
-end
-
-function F.register()
-  -- TODO(RE): register the rod into the build menu (buildmenu.registerFn) and gate it behind the
-  -- unlock system (unlock.registerFn). See docs/REVERSE-ENGINEERING.md.
-  ctx.log.info("lightning_rod: register stub (build-menu + unlock hooks pending RE)")
+  end))
+  ctx.log.info("lightning_rod: Weather Stations ground all strikes within 25 m (weather-tech unlock)")
+  return true
 end
 
 return F

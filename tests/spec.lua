@@ -62,6 +62,19 @@ do
   ok(#mapping.missing(m) > 0, "mapping: reports unmapped symbols")
   local _, known2 = mapping.resolve("does-not-exist")
   ok(not known2, "mapping: unknown build falls back")
+  -- Milestone 2 sections
+  eq(m.items.classFmt, "BP_%s_Item_C", "mapping: item class format")
+  eq(string.format(m.items.classFmt, "Log"), "BP_Log_Item_C", "mapping: item class formats a row")
+  eq(m.player.pingFn, "MULTI_Ping", "mapping: ping hook is the validated broadcast")
+  eq(m.player.reduceHealthFn, "Reduce Health", "mapping: damage goes through Reduce Health")
+  eq(m.ritual.wandItemRow, "HoeDiamond", "mapping: wand stand-in")
+  eq(m.ritual.rodItemRow, "Weather_Station", "mapping: rod item")
+  eq(m.animal.sheepClass, "BP_Animal_Sheep_C", "mapping: sheep class")
+  eq(m.tree.classPrefix, "BP_Tree_", "mapping: tree prefix")
+  ok(type(m.battery.chargePropCandidates) == "table" and #m.battery.chargePropCandidates > 0,
+     "mapping: battery charge candidates present")
+  ok(type(m.rod.stationClassCandidates) == "table", "mapping: rod station candidates present")
+  eq(m.fx.clientDamageRpcFn, "CLIENT_ReduceHealth", "mapping: victim FX rides the client damage RPC")
 end
 
 ------------------------------------------------------------------ config

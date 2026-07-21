@@ -12,7 +12,39 @@ function F.init(c)
   end
   -- Exposed for the (future) use-action hook to call once the repair item's use is mapped.
   ctx.services.repairStructure = function(actor) return F.repair(actor) end
+
+  -- Until the repair item's use-action is hooked: `sps_repair` fixes the nearest broken
+  -- (smoking) structure within 6 m of the player. Host-only, like all repairs.
+  pcall(function()
+    RegisterConsoleCommandHandler("sps_repair", function()
+      if ExecuteInGameThread then pcall(ExecuteInGameThread, function() F.repairNearest() end)
+      else F.repairNearest() end
+      return true
+    end)
+  end)
   return true
+end
+
+function F.repairNearest()
+  if not ctx.net.isHost() then ctx.log.warn("repair: host only"); return end
+  local pawn = ctx.uehelp.localPawn()
+  local ploc = pawn and ctx.identity.locationOf(pawn)
+  if not ploc then return end
+  local best, bestD = nil, 600 * 600
+  for id, rec in pairs(ctx.health.byId) do
+    if rec.damaged and not rec.destroyed and ctx.uehelp.isValid(rec.actor) then
+      local al = ctx.identity.locationOf(rec.actor)
+      if al then
+        local d = ctx.uehelp.dist2(al, ploc)
+        if d <= bestD then best, bestD = id, d end
+      end
+    end
+  end
+  if best and F.repair(ctx.health.byId[best].actor) then
+    ctx.log.info("repaired -- the smoking stops")
+  else
+    ctx.log.info("nothing broken within reach")
+  end
 end
 
 function F.register()

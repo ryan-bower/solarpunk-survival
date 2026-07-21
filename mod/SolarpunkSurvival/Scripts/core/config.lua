@@ -43,6 +43,25 @@ M.defaults = {
   rod_charges_battery = true,    -- redirected strikes charge a linked battery
   rod_takes_damage    = false,   -- rods absorb strikes without wear by default
 
+  -- struck-player FX (client-local, triggered by the game's CLIENT_ReduceHealth RPC)
+  fx_min_damage       = 40,      -- a reduce >= this is treated as a lightning hit
+  stun_seconds        = 3.0,     -- movement locked + T-pose duration
+  whiteout_hold       = 2.0,     -- seconds of solid white
+  whiteout_fade       = 2.5,     -- seconds of the slow fade back
+  buzz_volume         = 0.9,     -- electricity buzz (pitched thunder) volume
+  buzz_pitch          = 2.2,     -- pitch multiplier that turns thunder into a crackle
+
+  -- world-object strikes
+  tree_wood_drop      = 4,       -- logs dropped when lightning fells a tree
+  furnace_briquette_seconds = 160.0, -- burn time credited to a struck furnace (1 wax briquette)
+
+  -- dark-arts ritual
+  ritual_radius       = 2000.0,  -- cm (20 m) pentagram/sheep/wand radius
+  ritual_fences       = 15,      -- fence pieces required
+  ritual_candles      = 5,       -- LIT candles required
+  ritual_check_interval = 8.0,   -- seconds between condition checks during a storm
+  rod_copper_topper   = true,    -- cosmetic copper item attached atop each lightning rod
+
   -- misc
   friendly_fire       = true,
   imgui_key           = "F7",
