@@ -1,35 +1,52 @@
 -- The wand: a REAL standalone tool, not a redressed inventory item.
 --
 -- Lua cannot mint a new inventory item ID (that needs a cooked content pak -- see
--- docs/MILESTONE-2.md), so the wand lives OUTSIDE the inventory entirely:
+-- docs/MILESTONE-2.md), so the wand lives OUTSIDE the inventory -- but it is HELD the way the
+-- game holds its own tools. Real tools work like this (RE capture, BP_MainPlayerCharacter_C):
+-- the selected hotbar item's mesh is placed into two right-hand slot components --
+-- Mesh_Slot_1Person_Hand_R (first person) and Mesh_Slot_3rdPerson_Hand_R (third person) -- via
+-- SetHandRMeshForBoth; StashHandItem / RestoreHandItem park and re-equip the held item; and
+-- HotbarSlotChanged fires when the player switches tools. The drawn wand rides exactly that
+-- machinery:
 --
---   model    = StaticMeshComponents created ON the pawn via AddComponentByClass -- the ONLY
---              crash-free rig recipe (proven live 2026-07-21, probe P6). The Stick mesh is the
---              handle, the dropped-Cobalt mesh (3x) the tip; meshes are found BY NAME from the
---              loaded StaticMesh assets. Attaching ANY actor to the pawn (K2_AttachToActor or
---              K2_AttachToComponent) is a fatal engine error, as is reading properties off CDO
---              component templates -- neither appears here. See the gotchas memory.
+--   model    = drawing puts the Stick mesh INTO the game's hand slots (the game's own tool
+--              path), and the cobalt tip is a StaticMeshComponent attached to each slot, seated
+--              at the stick's far end -- computed from the mesh bounds, not eye-tuned offsets --
+--              at wand_cobalt_scale (0.75: the dropped-cobalt model is ~4x too big for a tip).
+--              Kill-switch wand_in_hand=false reverts to the proven capsule-relative rig
+--              (AddComponentByClass on the pawn -- the only crash-free recipe, probe P6).
+--              Attaching ACTORS to the pawn is fatal, as is reading CDO component templates --
+--              neither appears here (see the gotchas memory). The one call new to this rig,
+--              tip:K2_AttachToComponent(slot), is step-logged to dump/wand_steps.txt so a fatal
+--              names itself.
 --   obtain   = the dark-arts ritual forges it (`sps_wand forge` grants a test Mundane Wand).
---   carry    = press the draw key (V) or `sps_wand draw` to draw/stow it.
+--   carry    = press the draw key (V) or `sps_wand draw` to draw/stow. Drawing stashes the held
+--              item (the game's own StashHandItem); stowing restores it; picking a hotbar tool
+--              while the wand is out stows the wand -- exactly like swapping tools.
 --   states   = Mundane Wand -> Lightning Wand (charged) -> Lightning Wand (uncharged).
 --              charged: the cobalt wears the Diamond ore mesh's material + (optional) crackle.
 --              uncharged: keeps the diamond color, loses only the crackle.
---   cast     = left click (PressedHandInteraction / IA_HandInteract -- fires with EMPTY hands)
---              while drawn + charged: a real bolt at the aimed point, ANY weather.
+--   cast     = left click (PressedHandInteraction / IA_HandInteract) while drawn + charged: a
+--              real bolt at the aimed point, ANY weather. The stash means the game still sees
+--              EMPTY hands while the wand is drawn, so the generic left click keeps firing --
+--              and no real tool's action can double-trigger under a cast.
 --   recharge = stand within wand_recharge_radius (5 m) of a strike that isn't your own cast
 --              while the wand is drawn.
 --
 -- MP: wand state lives on the host (fully functional for the host player; remote players'
 -- states are tracked host-side, but their draw key/visuals run on their own machine -- a
--- client->host carrier is future work, docs/MILESTONE-2.md). The rig is cosmetic only.
+-- client->host carrier is future work, docs/MILESTONE-2.md). The rig is cosmetic only; stash/
+-- restore of the held item runs ONLY on the local player's pawn (never on a remote replica).
 local F = {}
 local ctx
 
 local wands = {}    -- playerId -> "mundane" | "charged" | "uncharged"  (nil = owns no wand)
 local drawn = {}    -- playerId -> true while the wand is out
-local rigs  = {}    -- pawnId  -> { handle=comp, tip=comp, fx=NiagaraComponent }
+local rigs  = {}    -- playerId -> { pawn, mode="hand"|"capsule", handle?, tips={}, slots={}, fx?, stashed? }
 local castHooked = false
+local hotbarHooked = false
 local lastCast = -1e9
+local lastHandAction = -1e9  -- our own stash/restore fires HotbarSlotChanged; this window ignores it
 local meshCache     -- assetName -> UStaticMesh, filled once from the loaded-asset scan
 local diamondMat    -- the diamond mesh asset's material, read once
 
@@ -43,6 +60,16 @@ local function onGameThread(fn)
   pcall(fn)
 end
 
+-- Crash bisection: one line per risky rig step, appended to dump/wand_steps.txt. A native crash
+-- kills the process before the next line, so the file names the killer (the proven P1-P6 method).
+local function mark(s)
+  if not ctx.config.get("wand_step_log") then return end
+  pcall(function()
+    local f = io.open((ctx.modRoot or "") .. "dump/wand_steps.txt", "a")
+    if f then f:write(os.date("%H:%M:%S ") .. s .. "\n"); f:close() end
+  end)
+end
+
 local function pawnController(pawn)
   local pc
   pcall(function() pc = pawn.Controller end)
@@ -50,7 +77,25 @@ local function pawnController(pawn)
   return nil
 end
 
+-- Stable per-player key. The game's own UniquePlayerID is preferred: identity.idOf falls back to
+-- a location-derived key for pawns/controllers, which DRIFTS as the player walks -- and a tool
+-- must keep working while its owner moves (draw, walk, cast).
 local function playerIdOf(pawn)
+  local prop = ctx.map.pawn.playerIdProp
+  if prop then
+    local candidates = {}
+    local pc = pawnController(pawn)
+    if pc then candidates[#candidates + 1] = pc end
+    candidates[#candidates + 1] = pawn
+    for _, obj in ipairs(candidates) do
+      local ok, v = ctx.uehelp.get(obj, prop)
+      if ok and v ~= nil then
+        local s
+        if type(v) == "userdata" then pcall(function() s = v:ToString() end) else s = tostring(v) end
+        if s and s ~= "" then return "uid:" .. s end
+      end
+    end
+  end
   local pc = pawnController(pawn)
   return pc and ctx.identity.idOf(pc) or ctx.identity.idOf(pawn)
 end
@@ -61,6 +106,11 @@ local function localPlayerPawn()
   pcall(function() pawn = pc and pc:K2_GetPawn() end)
   if ctx.uehelp.isValid(pawn) then return pawn end
   return ctx.uehelp.findFirst(ctx.map.pawn.class)
+end
+
+local function isLocalPawn(pawn)
+  local lp = localPlayerPawn()
+  return lp ~= nil and playerIdOf(lp) == playerIdOf(pawn)
 end
 
 --------------------------------------------------------------------- mesh + material donors
@@ -95,17 +145,54 @@ local function diamondMaterial()
   return mat
 end
 
---------------------------------------------------------------------- the visual rig
-local function tearRig(pawnId)
-  local r = pawnId and rigs[pawnId]
-  if not r then return end
-  pcall(function() if r.fx then r.fx:Deactivate(); r.fx:DestroyComponent(r.fx) end end)
-  for _, k in ipairs({ "tip", "handle" }) do
-    pcall(function() if r[k] then r[k]:DestroyComponent(r[k]) end end)
+-- Local-space bounding box of a loaded StaticMesh ASSET (reflected UFunction calls on the asset,
+-- same proven-safe family as GetMaterial). Returns min, max tables or nil.
+local function meshBounds(mesh)
+  if not mesh then return nil end
+  local u = ctx.uehelp
+  local mn, mx
+  pcall(function()
+    local box = mesh:GetBoundingBox()
+    if box then mn, mx = u.vec(box.Min), u.vec(box.Max) end
+  end)
+  if not (mn and mx) then
+    pcall(function()
+      local b = mesh:GetBounds()
+      local o, e = u.vec(b.Origin), u.vec(b.BoxExtent)
+      if o and e then
+        mn = { X = o.X - e.X, Y = o.Y - e.Y, Z = o.Z - e.Z }
+        mx = { X = o.X + e.X, Y = o.Y + e.Y, Z = o.Z + e.Z }
+      end
+    end)
   end
-  rigs[pawnId] = nil
+  if mn and mx then return mn, mx end
+  return nil
 end
 
+-- Where the cobalt sits, in the stick's local space: the far end of the stick's LONGEST axis
+-- (that is the tip), centered on the other two axes, with the cobalt's own pivot corrected so
+-- the crystal's CENTER seats on the stick end. wand_tip_up stays as a fine trim; wand_tip_flip
+-- picks the stick's other end. Returns rel, scale (rel nil if bounds are unreadable).
+local function tipTransform()
+  local scale = ctx.config.get("wand_cobalt_scale")
+  local smin, smax = meshBounds(meshByName(ctx.map.wand.stickMesh))
+  if not smin then return nil, scale end
+  local axis = "X"
+  if (smax.Y - smin.Y) > (smax[axis] - smin[axis]) then axis = "Y" end
+  if (smax.Z - smin.Z) > (smax[axis] - smin[axis]) then axis = "Z" end
+  local rel = { X = (smin.X + smax.X) / 2, Y = (smin.Y + smax.Y) / 2, Z = (smin.Z + smax.Z) / 2 }
+  rel[axis] = ctx.config.get("wand_tip_flip") and smin[axis] or smax[axis]
+  local cmin, cmax = meshBounds(meshByName(ctx.map.wand.cobaltMesh))
+  if cmin then
+    rel.X = rel.X - (cmin.X + cmax.X) / 2 * scale
+    rel.Y = rel.Y - (cmin.Y + cmax.Y) / 2 * scale
+    rel.Z = rel.Z - (cmin.Z + cmax.Z) / 2 * scale
+  end
+  rel.Z = rel.Z + ctx.config.get("wand_tip_up")
+  return rel, scale
+end
+
+--------------------------------------------------------------------- the visual rig
 local function spawnElectricity(comp)
   local nfl = StaticFindObject and StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary")
   if not nfl then return nil end
@@ -143,47 +230,158 @@ local function addMeshComp(pawn, mesh, rel, scale)
   return comp
 end
 
+-- opts.handsBack=false skips the slot restore + item re-equip (used when the game itself just
+-- took the hand back, e.g. the player picked a hotbar tool while the wand was out).
+local function tearRig(id, opts)
+  local r = id and rigs[id]
+  if not r then return end
+  local handsBack = not (opts and opts.handsBack == false)
+  pcall(function() if r.fx then r.fx:Deactivate(); r.fx:DestroyComponent(r.fx) end end)
+  for _, tip in ipairs(r.tips or {}) do
+    pcall(function() tip:DestroyComponent(tip) end)
+  end
+  pcall(function() if r.handle then r.handle:DestroyComponent(r.handle) end end)
+  if r.mode == "hand" and handsBack then
+    for _, s in ipairs(r.slots or {}) do
+      pcall(function() s.comp:SetStaticMesh(s.prev ~= false and s.prev or nil) end)
+    end
+  end
+  -- an item stashed by the draw must come back even if the hand rig later fell back to capsule
+  if r.stashed and handsBack and ctx.map.wand.restoreFn and ctx.uehelp.isValid(r.pawn) then
+    lastHandAction = os.clock()
+    mark("hand: restore item")
+    ctx.uehelp.call(r.pawn, ctx.map.wand.restoreFn)
+  end
+  rigs[id] = nil
+end
+
+-- The in-hand rig: the stick into the game's own right-hand tool slots, a cobalt tip attached
+-- to each slot at the stick's computed far end. Sets r.mode="hand" on success.
+local function buildHandRig(pawn, r)
+  local m = ctx.map.wand
+  local stick = meshByName(m.stickMesh)
+  if not stick then return end
+  -- the game's hand-slot components (live instance property reads -- safe)
+  for _, sname in ipairs({ m.handSlot1P, m.handSlot3P }) do
+    local slot
+    pcall(function() slot = pawn[sname] end)
+    if ctx.uehelp.isValid(slot) then
+      r.slots[#r.slots + 1] = { comp = slot, name = sname, prev = false }
+    end
+  end
+  if #r.slots == 0 then mark("hand: no slot comps"); return end
+  -- park the held item the way the game itself does (local player only; harmless when empty)
+  if isLocalPawn(pawn) and m.stashFn then
+    lastHandAction = os.clock()
+    mark("hand: stash held item")
+    if ctx.uehelp.call(pawn, m.stashFn) then r.stashed = true end
+  end
+  -- snapshot AFTER the stash so "previous" is the emptied-hand state we must put back on stow
+  for _, s in ipairs(r.slots) do
+    local prev; pcall(function() prev = s.comp.StaticMesh end)
+    s.prev = prev or false
+  end
+  -- the stick into the hand: the game's own both-slots setter first, direct writes as fallback
+  mark("hand: set stick mesh")
+  local okSet = m.handMeshFn and ctx.uehelp.call(pawn, m.handMeshFn, stick)
+  if not okSet then
+    local n = 0
+    for _, s in ipairs(r.slots) do
+      if pcall(function() s.comp:SetStaticMesh(stick) end) then n = n + 1 end
+    end
+    if n == 0 then mark("hand: stick set FAILED"); return end
+  end
+  -- the cobalt tip, seated at the stick's far end. K2_AttachToComponent(component -> component)
+  -- is the ONE call in this rig without a live proof; it is bracketed by marks and if it fails
+  -- as a plain Lua error the wand degrades to a bare stick instead of dying.
+  local rel, scale = tipTransform()
+  if rel then
+    for _, s in ipairs(r.slots) do
+      local tip = addMeshComp(pawn, meshByName(m.cobaltMesh), rel, scale)
+      if tip then
+        mark("hand: attach tip -> " .. tostring(s.name))
+        local att = pcall(function()
+          tip:K2_AttachToComponent(s.comp, "None", 0, 0, 0, false) -- KeepRelative x3, no weld
+        end)
+        if att then
+          r.tips[#r.tips + 1] = tip
+        else
+          pcall(function() tip:DestroyComponent(tip) end)
+        end
+      end
+    end
+    if #r.tips == 0 then
+      ctx.log.warn("wand: tip attach failed -- a bare stick in hand (cobalt hidden)")
+    end
+  else
+    ctx.log.warn("wand: stick bounds unreadable -- no tip seat, bare stick in hand")
+  end
+  mark("hand: rig ok")
+  r.mode = "hand"
+end
+
+-- The fallback rig (kill-switch wand_in_hand=false, or the hand path came up empty): the proven
+-- capsule-relative recipe, with the tip seated by the same bounds math instead of an eye-tuned
+-- offset. Sets r.mode="capsule" on success.
+local function buildCapsuleRig(pawn, r)
+  local m = ctx.map.wand
+  -- offsets are relative to the pawn root (capsule center): X fwd, Y right, Z up
+  local fwd, side, up = ctx.config.get("wand_fwd"), ctx.config.get("wand_side"), ctx.config.get("wand_up")
+  local handle = addMeshComp(pawn, meshByName(m.stickMesh), { X = fwd, Y = side, Z = up }, 1.0)
+  local rel, scale = tipTransform()
+  local tipRel = rel and { X = fwd + rel.X, Y = side + rel.Y, Z = up + rel.Z }
+                      or { X = fwd, Y = side, Z = up + 55.0 }  -- bounds unreadable: old seat
+  local tip = addMeshComp(pawn, meshByName(m.cobaltMesh), tipRel, scale)
+  if not (handle or tip) then return end
+  r.handle = handle
+  if tip then r.tips[1] = tip end
+  r.mode = "capsule"
+end
+
+-- Repaint tips + fx for the owner's current state. Forged wands (charged AND uncharged) wear
+-- the diamond's color; a fresh rig is plain cobalt, and no state ever returns to mundane, so
+-- there is nothing to paint back. Only the CHARGED wand crackles (wand_fx: OFF until the
+-- Niagara call is live-proven).
+local function paintState(r, state)
+  if state == "charged" or state == "uncharged" then
+    local mat = diamondMaterial()
+    if mat then
+      for _, tip in ipairs(r.tips) do pcall(function() tip:SetMaterial(0, mat) end) end
+    end
+  end
+  if state == "charged" then
+    if not r.fx and ctx.config.get("wand_fx") and r.tips[1] then r.fx = spawnElectricity(r.tips[1]) end
+  else
+    pcall(function() if r.fx then r.fx:Deactivate(); r.fx:DestroyComponent(r.fx); r.fx = nil end end)
+  end
+end
+
 -- Build/refresh the in-hand wand model for a pawn according to its owner's state.
 local function refreshRig(pawn)
   if not ctx.config.get("wand_rig") then return end
   if not ctx.uehelp.isValid(pawn) then return end
-  local pawnId = ctx.identity.idOf(pawn)
   local id = playerIdOf(pawn)
-  if not (pawnId and id) then return end
-  if not (wands[id] and drawn[id]) then tearRig(pawnId); return end
+  if not id then return end
+  if not (wands[id] and drawn[id]) then tearRig(id); return end
 
-  local r = rigs[pawnId]
-  if not (r and r.handle and r.tip) then
-    tearRig(pawnId)
-    -- offsets are relative to the pawn root (capsule center): X fwd, Y right, Z up
-    local fwd, side, up = ctx.config.get("wand_fwd"), ctx.config.get("wand_side"), ctx.config.get("wand_up")
-    local handle = addMeshComp(pawn, meshByName(ctx.map.wand.stickMesh),
-      { X = fwd, Y = side, Z = up }, 1.0)
-    local tip = addMeshComp(pawn, meshByName(ctx.map.wand.cobaltMesh),
-      { X = fwd, Y = side, Z = up + ctx.config.get("wand_tip_up") }, ctx.config.get("wand_cobalt_scale"))
-    if not (handle or tip) then
+  local r = rigs[id]
+  if not (r and r.mode) then
+    tearRig(id)
+    r = { pawn = pawn, tips = {}, slots = {} }
+    if ctx.config.get("wand_in_hand") then buildHandRig(pawn, r) end
+    if not r.mode then buildCapsuleRig(pawn, r) end
+    if not r.mode then
+      -- total failure: give back anything the hand attempt stashed before giving up
+      if r.stashed and ctx.map.wand.restoreFn then
+        lastHandAction = os.clock()
+        ctx.uehelp.call(pawn, ctx.map.wand.restoreFn)
+      end
       ctx.log.warn("wand: no rig components -- the wand is in your hand, just unseen")
       return
     end
-    r = { handle = handle, tip = tip, pawn = pawn }
-    rigs[pawnId] = r
+    rigs[id] = r
   end
-
-  -- forged wands (charged AND uncharged) wear the diamond's color; a fresh rig is plain cobalt,
-  -- and no state ever returns to mundane, so there is nothing to paint back
-  local state = wands[id]
-  if r.tip then
-    if state == "charged" or state == "uncharged" then
-      local mat = diamondMaterial()
-      if mat then pcall(function() r.tip:SetMaterial(0, mat) end) end
-    end
-    -- only the CHARGED wand crackles (wand_fx: OFF until the Niagara call is live-proven)
-    if state == "charged" then
-      if not r.fx and ctx.config.get("wand_fx") then r.fx = spawnElectricity(r.tip) end
-    else
-      pcall(function() if r.fx then r.fx:Deactivate(); r.fx:DestroyComponent(r.fx); r.fx = nil end end)
-    end
-  end
+  paintState(r, wands[id])
 end
 
 --------------------------------------------------------------------- state transitions
@@ -319,6 +517,51 @@ local function hookCast()
   end
 end
 
+--------------------------------------------------------------------- tool-like hand behavior
+-- The player picked a hotbar tool while the wand was out: the game already took the hand back,
+-- so the wand simply stows (visuals only -- no slot restore, no stash re-equip).
+local function onHotbarChanged(pawn)
+  if os.clock() - lastHandAction < 1.0 then return end  -- our own stash/restore echoes here
+  if not ctx.uehelp.isValid(pawn) then return end
+  local id = playerIdOf(pawn)
+  if not (id and drawn[id] and rigs[id]) then return end
+  drawn[id] = false
+  tearRig(id, { handsBack = false })
+  ctx.log.info("you stow the wand to take up a tool")
+end
+
+-- Watch the game's own tool-switch signal so the wand steps aside like any other tool would.
+local function hookHotbar()
+  if hotbarHooked then return end
+  local fnName = ctx.map.wand.hotbarChangedFn
+  if not fnName then return end
+  local pawn = ctx.uehelp.findFirst(ctx.map.pawn.class)
+  if not pawn then return end
+  local path
+  pcall(function()
+    pawn:GetClass():ForEachFunction(function(fn)
+      local n = ""; pcall(function() n = fn:GetFName():ToString() end)
+      if n == fnName then
+        local full; pcall(function() full = fn:GetFullName() end)
+        if full then path = (full:gsub("^%S+%s+", "")) end
+      end
+    end)
+  end)
+  if not path then return end
+  -- this can fire re-entrantly inside our OWN stash/restore calls -- the hook body touches no
+  -- UObjects beyond the param read; all real work is deferred out of the call chain (gotcha)
+  local ok = pcall(RegisterHook, path, ctx.log.guard("wand.hotbar", function(Context)
+    local p; pcall(function() p = Context:get() end)
+    pcall(ExecuteWithDelay, 120, ctx.log.guard("wand.hotbar2", function()
+      onGameThread(function() onHotbarChanged(p) end)
+    end))
+  end))
+  if ok then
+    hotbarHooked = true
+    ctx.log.info("wand: hotbar watch armed (picking a tool stows the wand)")
+  end
+end
+
 --------------------------------------------------------------------- draw / stow
 local function toggleDraw()
   local pawn = localPlayerPawn()
@@ -331,7 +574,7 @@ local function toggleDraw()
   end
   drawn[id] = not drawn[id]
   if drawn[id] then
-    ctx.log.info("you draw the " .. STATE_NAMES[wands[id]] .. " (best with empty hands)")
+    ctx.log.info("you draw the " .. STATE_NAMES[wands[id]])
   else
     ctx.log.info("you stow the wand")
   end
@@ -377,26 +620,30 @@ function F.init(c)
     end
   end)
 
-  -- Arm the cast hooks as soon as a pawn exists (now, on pawn spawn, and on storms as a retry);
-  -- rebuild the rig after respawns (the old rig's components died with the old pawn).
+  -- Arm the cast + hotbar hooks as soon as a pawn exists (now, on pawn spawn, and on storms as
+  -- a retry); rebuild the rig after respawns (the old rig's components died with the old pawn).
   hookCast()
+  hookHotbar()
   ctx.uehelp.onNewInstance("/Script/Engine.Character", ctx.map.pawn.class,
     ctx.log.guard("wand.newpawn", function(p)
       hookCast()
+      hookHotbar()
       pcall(ExecuteWithDelay, 1500, ctx.log.guard("wand.respawnrig", function()
         onGameThread(function() refreshRig(p) end)
       end))
     end))
-  ctx.bus.on("weather.changed", ctx.log.guard("wand.rearm", function() hookCast() end))
+  ctx.bus.on("weather.changed", ctx.log.guard("wand.rearm", function() hookCast(); hookHotbar() end))
 
   -- Live rig tuning: any wand_* config change rebuilds drawn rigs immediately (no restart).
+  -- Snapshot first: tearRig/refreshRig mutate `rigs` and pairs() must not see that churn.
   ctx.bus.on("config.changed", ctx.log.guard("wand.retune", function(e)
     if not (e and type(e.key) == "string" and e.key:sub(1, 5) == "wand_") then return end
     onGameThread(function()
-      for pawnId, r in pairs(rigs) do
-        local p = r.pawn
-        tearRig(pawnId)
-        if ctx.uehelp.isValid(p) then refreshRig(p) end
+      local torebuild = {}
+      for id, r in pairs(rigs) do torebuild[#torebuild + 1] = { id = id, pawn = r.pawn } end
+      for _, t in ipairs(torebuild) do
+        tearRig(t.id)
+        if ctx.uehelp.isValid(t.pawn) then refreshRig(t.pawn) end
       end
     end)
   end))
@@ -426,8 +673,8 @@ function F.init(c)
     end)
   end)
 
-  ctx.log.info("wand: its own tool now -- forged by the rite, drawn with [" ..
-    tostring(kname) .. "], stick + cobalt, no hoe about it")
+  ctx.log.info("wand: a real tool now -- drawn with [" .. tostring(kname) ..
+    "] into the game's own hand slots; hotbar swaps stow it like any tool")
   return true
 end
 

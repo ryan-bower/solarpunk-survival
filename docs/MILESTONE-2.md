@@ -80,11 +80,24 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   (future work; the recipe/unlock functions `UnlockResearch` /
   `Playerdata_AddUnlockedRecipyForSelf` only toggle EXISTING entries). Instead the wand lives
   outside the inventory: state machine Mundane -> charged -> uncharged in `features/wand.lua`;
-  draw/stow with **V**; model = engine `StaticMeshActor`s wearing the Stick item's mesh (handle)
-  + dropped Cobalt mesh (3x, tip), meshes read from the item classes' DEFAULT objects (spawning
-  bare item-BP actors as props crashes the game — see gotchas); forged tip wears the Diamond
-  item's material, charged adds a Niagara crackle. Cast = generic left click
-  (`PressedHandInteraction` / `IA_HandInteract`), works with empty hands, any weather.
+  draw/stow with **V**; forged tip wears the Diamond item's material, charged adds a Niagara
+  crackle. Cast = generic left click (`PressedHandInteraction` / `IA_HandInteract`), works with
+  empty hands, any weather.
+- **The wand is HELD like the game's own tools** (2026-07-21, "act like a tool item" pass). RE
+  capture: a held tool = its mesh in two right-hand slot components on the pawn
+  (`Mesh_Slot_1Person_Hand_R` / `Mesh_Slot_3rdPerson_Hand_R`, set via `SetHandRMeshForBoth`),
+  with `StashHandItem`/`RestoreHandItem` parking the held item and `HotbarSlotChanged` firing on
+  tool switches. Drawing the wand stashes the held item and puts the Stick mesh into those slots
+  (game-native grip, 1P + 3P); the cobalt tip is a `StaticMeshComponent` attached to each slot,
+  seated at the stick's far end **computed from mesh bounds** (no eye-tuned offsets) at 0.75
+  scale (the dropped-cobalt model reads ~4x too large as a tip). Stowing restores the stashed
+  item; picking a hotbar tool auto-stows the wand. Kill-switch `wand_in_hand=false` reverts to
+  the proven capsule rig; risky steps append to `dump/wand_steps.txt` (`wand_step_log`). Player
+  identity now keys off the game's `UniquePlayerID` (pawn + controller) — the old
+  location-derived fallback id drifted as the player walked, silently orphaning wand state.
+  NOT yet live-proven: `SetHandRMeshForBoth`/stash/restore arities and the component->component
+  `K2_AttachToComponent` tip attach (actor attach is fatal; component attach is the one new
+  call — the step log will name it if it turns out equally hostile).
 - **Dark-arts book** = `Handbook` item as the physical prop + `docs/DARK-ARTS.md` ritual guide +
   in-game lore via log lines when the ritual stages fire.
 
@@ -120,8 +133,10 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
 - Candle lit-prop name; fence class names.
 - Sheep kill anim (currently destroy), tree fell anim (currently destroy + drops).
 - Book is a stand-in (Handbook). The wand is now its own mod-managed tool; a true inventory item
-  (name/icon/stacking) still needs the cooked pak. Wand rig offsets (`wand_tip_up`, scale,
-  stick orientation) need live eye-tuning; wand states are not yet persisted across restarts.
+  (name/icon/stacking) still needs the cooked pak. The in-hand rig (hand slots + tip attach +
+  stash/restore) is implemented but NOT live-proven — first launch should watch
+  `dump/wand_steps.txt`; `wand_in_hand=false` falls back to the proven capsule rig. Wand states
+  are not yet persisted across restarts.
 - Buzz sound is pitched thunder until a real electricity cue is found.
 - Ground-drop of salvage/loot uses nearest-player inventory until `SpawnLeftoverItem`'s struct is
   mapped.

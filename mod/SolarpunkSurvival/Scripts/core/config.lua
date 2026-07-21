@@ -32,17 +32,22 @@ M.defaults = {
   wand_cast_range      = 15000.0, -- cm; max aim distance for a cast bolt (150 m)
   wand_cast_debounce   = 0.5,     -- seconds between cast attempts (input events fire multiple phases)
   wand_recharge_radius = 500.0,   -- cm; stand this close to a strike (not your own) to recharge
-  wand_cobalt_scale    = 3.0,     -- the wand-tip cobalt is 3x the dropped model
-  wand_fwd             = 50.0,    -- cm forward of the pawn root where the wand sits (tune live --
+  wand_cobalt_scale    = 0.75,    -- cobalt tip scale (the dropped model reads ~4x too big as a tip)
+  wand_in_hand         = true,    -- ride the game's own right-hand tool slots (the way real tools
+                                  -- are held); false = the proven capsule-relative rig (probe P6)
+  wand_fwd             = 50.0,    -- capsule rig only: cm forward of the pawn root (tune live --
                                   -- any wand_* change rebuilds the rig immediately)
-  wand_side            = 30.0,    -- cm to the right of the pawn root
-  wand_up              = -30.0,   -- cm above the pawn root (negative = hand height, out of the face)
-  wand_tip_up          = 55.0,    -- cm above the handle base where the cobalt sits
+  wand_side            = 30.0,    -- capsule rig only: cm to the right of the pawn root
+  wand_up              = -30.0,   -- capsule rig only: cm above the pawn root (negative = hand height)
+  wand_tip_up          = 0.0,     -- fine trim (cm) on the tip seat; the seat itself is computed
+                                  -- from the stick mesh's bounds (its far end), not eye-tuned
+  wand_tip_flip        = false,   -- seat the cobalt on the stick mesh's OTHER end
+  wand_step_log        = true,    -- append each risky rig step to dump/wand_steps.txt so a native
+                                  -- crash names its killer (the proven bisection method)
   wand_draw_key        = "V",     -- key that draws/stows the wand (any UE4SS Key name)
   wand_fx              = false,   -- electricity crackle on the charged wand -- OFF until the
                                   -- Niagara attach call is live-proven (probe it like P1-P6)
-  wand_rig             = true,    -- the in-hand stick+cobalt visual (AddComponentByClass recipe,
-                                  -- live-proven crash-free 2026-07-21 probe P6)
+  wand_rig             = true,    -- the in-hand stick+cobalt visual, master switch
   storm_warning_lead  = 20.0,    -- seconds of "storm incoming" warning before lightning starts
 
   -- player

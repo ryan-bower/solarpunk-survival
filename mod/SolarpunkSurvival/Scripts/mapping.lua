@@ -13,7 +13,7 @@ local M = {}
 M.schema = {
   weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn" },
   player   = { "controllerClass", "curHealthProp", "maxHealthProp", "addHealthFn", "reduceHealthFn", "dieFn", "respawnFn", "pingFn" },
-  pawn     = { "class", "healthProp", "isShelteredFn", "worldLocationFn", "respawnFn", "dropInventoryFn" },
+  pawn     = { "class", "healthProp", "isShelteredFn", "worldLocationFn", "respawnFn", "dropInventoryFn", "playerIdProp" },
   build    = { "pieceClass", "stableIdProp", "demolishFn", "demolishRefund" },
   crop     = { "class", "killNoSeedFn" },
   battery  = { "class", "chargeProp", "maxChargeProp", "classHints", "chargePropCandidates", "maxChargePropCandidates" },
@@ -35,7 +35,8 @@ M.schema = {
   furnace  = { "classHints", "fuelPropCandidates", "fuelFnCandidates" },
   rod      = { "stationClassCandidates", "copperItemRow" },
   wand     = { "castFnExact", "castFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
-               "diamondMesh", "niagaraCandidates" },
+               "diamondMesh", "niagaraCandidates", "handMeshFn", "handSlot1P", "handSlot3P",
+               "stashFn", "restoreFn", "hotbarChangedFn" },
 }
 
 M.profiles = {
@@ -71,7 +72,10 @@ M.profiles = {
       setWindIntensityFn = "DEBUG_SetWindIntensity",
       windAudioFn        = "Set Wind Audio for Wind Intensity",
     },
-    pawn = { class = "BP_MainPlayerCharacter_C" },
+    -- UniquePlayerID lives on BOTH the pawn and the controller (capture): the stable per-player
+    -- key. identity.idOf's location-derived fallback drifts as a player walks -- never use it
+    -- for state that must survive movement (the wand's owner map learned this the hard way).
+    pawn = { class = "BP_MainPlayerCharacter_C", playerIdProp = "UniquePlayerID" },
     -- Player survival stats live on the controller (real HP -> genuinely deadly + native respawn).
     player = {
       controllerClass = "BP_MainPlayerController_C",
@@ -135,6 +139,15 @@ M.profiles = {
       cobaltMesh  = "SM_Cobalt",      -- the dropped-cobalt tip
       diamondMesh = "SM_Ore_Diamond", -- material donor for the forged tip
       niagaraCandidates = { "NS_Electricity", "NS_Sparks", "NS_Dizzle" },
+      -- How the game holds tools (from the capture): the selected hotbar item's mesh lives in
+      -- two right-hand slot components on the pawn; the fns below are the game's own equip
+      -- machinery, which the drawn wand rides (features/wand.lua).
+      handMeshFn      = "SetHandRMeshForBoth",        -- set a tool mesh into both slots at once
+      handSlot1P      = "Mesh_Slot_1Person_Hand_R",   -- first-person right-hand tool slot
+      handSlot3P      = "Mesh_Slot_3rdPerson_Hand_R", -- third-person right-hand tool slot
+      stashFn         = "StashHandItem",              -- park the held item (drawing does this first)
+      restoreFn       = "RestoreHandItem",            -- re-equip the parked item (stowing)
+      hotbarChangedFn = "HotbarSlotChanged",          -- fires on tool switch -> the wand stows
     },
     rod = {
       stationClassCandidates = {

@@ -73,6 +73,13 @@ do
   eq(m.wand.stickMesh, "SM_Stick", "mapping: wand handle mesh asset")
   eq(m.wand.cobaltMesh, "SM_Cobalt", "mapping: wand tip mesh asset")
   eq(m.wand.smcPath, "/Script/Engine.StaticMeshComponent", "mapping: rig comps live on the pawn")
+  eq(m.wand.handMeshFn, "SetHandRMeshForBoth", "mapping: wand rides the game's hand-mesh setter")
+  eq(m.wand.handSlot1P, "Mesh_Slot_1Person_Hand_R", "mapping: first-person hand slot")
+  eq(m.wand.handSlot3P, "Mesh_Slot_3rdPerson_Hand_R", "mapping: third-person hand slot")
+  eq(m.wand.stashFn, "StashHandItem", "mapping: drawing stashes the held item")
+  eq(m.wand.restoreFn, "RestoreHandItem", "mapping: stowing restores the held item")
+  eq(m.wand.hotbarChangedFn, "HotbarSlotChanged", "mapping: hotbar switch stows the wand")
+  eq(m.pawn.playerIdProp, "UniquePlayerID", "mapping: stable per-player id prop")
   eq(m.animal.sheepClass, "BP_Animal_Sheep_C", "mapping: sheep class")
   eq(m.tree.classPrefix, "BP_Tree_", "mapping: tree prefix")
   ok(type(m.battery.chargePropCandidates) == "table" and #m.battery.chargePropCandidates > 0,
@@ -86,6 +93,9 @@ local config = require("core.config").init("./__no_such_modroot__/")
 do
   eq(config.get("player_strike_pct"), 0.70, "config: default strike pct")
   eq(config.get("lightning_rod_range"), 2500.0, "config: default rod range")
+  eq(config.get("wand_cobalt_scale"), 0.75, "config: cobalt tip is dropped-model / 4")
+  eq(config.get("wand_in_hand"), true, "config: wand defaults to the game's hand slots")
+  eq(config.get("wand_tip_up"), 0.0, "config: tip seat is computed, trim defaults to zero")
   local changedKey
   bus.on("config.changed", function(p) changedKey = p.key end)
   config.set("player_strike_pct", 0.9)
