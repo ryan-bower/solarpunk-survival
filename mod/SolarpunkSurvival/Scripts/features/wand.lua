@@ -631,10 +631,25 @@ function F.init(c)
           else ctx.log.info("no wand to charge (sps_wand forge first)") end
         elseif sub == "draw" then
           toggleDraw()
+        elseif sub == "give" then
+          -- Grant the REAL cooked item (from the content pak) into the inventory. This is the
+          -- true item, not the mod-managed rig: it stacks, has an icon/name, and the game holds
+          -- it through its own tool system. Needs the wand pak installed (Solarpunk-Windows_1_P);
+          -- with no pak the row/class won't resolve and this no-ops with a warning.
+          local which = (params and params[2]) or "mundane"
+          local row = ctx.map.wand.itemRows and ctx.map.wand.itemRows[which]
+          if not row then ctx.log.info("sps_wand give mundane|electric"); return end
+          local pc = pawnController(pawn)
+          if pc and ctx.items and ctx.items.give(pc, row, 1) then
+            ctx.log.info("granted the real " .. row .. " item -- check your inventory/hotbar")
+          else
+            ctx.log.info("could not grant " .. row ..
+              " -- is the wand content pak installed? (Solarpunk-Windows_1_P.*)")
+          end
         else
           local owned = wands[id] and (STATE_NAMES[wands[id]] .. (drawn[id] and ", drawn" or ", stowed"))
                         or "none owned"
-          ctx.log.info("wand: " .. owned .. "  (sps_wand forge|charge|draw)")
+          ctx.log.info("wand: " .. owned .. "  (sps_wand forge|charge|draw|give)")
         end
       end)
       return true

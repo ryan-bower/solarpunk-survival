@@ -79,6 +79,10 @@ do
   eq(m.wand.stashFn, "StashHandItem", "mapping: drawing stashes the held item")
   eq(m.wand.restoreFn, "RestoreHandItem", "mapping: stowing restores the held item")
   eq(m.wand.hotbarChangedFn, "HotbarSlotChanged", "mapping: hotbar switch stows the wand")
+  eq(m.wand.itemRows.mundane, "MundaneWand", "mapping: real Mundane Wand item row (content pak)")
+  eq(m.wand.itemRows.electric, "ElectricWand", "mapping: real Electric Wand item row (content pak)")
+  eq(string.format(m.items.classFmt, m.wand.itemRows.mundane), "BP_MundaneWand_Item_C",
+     "mapping: wand item row resolves to its cooked BP class")
   eq(m.pawn.playerIdProp, "UniquePlayerID", "mapping: stable per-player id prop")
   eq(m.animal.sheepClass, "BP_Animal_Sheep_C", "mapping: sheep class")
   eq(m.tree.classPrefix, "BP_Tree_", "mapping: tree prefix")

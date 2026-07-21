@@ -36,7 +36,7 @@ M.schema = {
   rod      = { "stationClassCandidates", "copperItemRow" },
   wand     = { "castFnExact", "castFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
                "diamondMesh", "niagaraCandidates", "handMeshFn", "handSlot1P", "handSlot3P",
-               "stashFn", "restoreFn", "hotbarChangedFn" },
+               "stashFn", "restoreFn", "hotbarChangedFn", "itemRows" },
 }
 
 M.profiles = {
@@ -152,6 +152,10 @@ M.profiles = {
       stashFn         = "StashHandItem",              -- park the held item (drawing does this first)
       restoreFn       = "RestoreHandItem",            -- re-equip the parked item (stowing)
       hotbarChangedFn = "HotbarSlotChanged",          -- fires on tool switch -> the wand stows
+      -- REAL cooked items added by the content pak (tools/pakkit, Solarpunk-Windows_1_P). These
+      -- are DB_Items rows -> core/items resolves them to BP_<row>_Item_C. Only present when the
+      -- pak is installed; `sps_wand give` grants them, no-ops with a warning otherwise.
+      itemRows = { mundane = "MundaneWand", electric = "ElectricWand" },
     },
     rod = {
       stationClassCandidates = {
