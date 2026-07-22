@@ -115,14 +115,9 @@ end
 -- across two separate property reads).
 local function sameObject(a, b) return ctx.uehelp.sameObject(a, b) end
 
--- UE4SS out-params: the call REQUIRES a fresh Lua table in each OUT slot and stores the
--- out value into it, keyed by the param's name (live 2026-07-22: a scalar placeholder
--- throws "no table was on the stack"). pairs fallback in case the key convention shifts.
-local function outVal(t, name)
-  if t[name] ~= nil then return t[name] end
-  for _, v in pairs(t) do return v end
-  return nil
-end
+-- UE4SS out-params: every call with OUT params REQUIRES a fresh Lua table in each OUT slot
+-- (a scalar placeholder throws "no table was on the stack" -- live 2026-07-22); the out
+-- value lands in that table keyed by param name, when a caller needs to read it back.
 
 local function pawnController(pawn)
   local pc
@@ -681,6 +676,39 @@ local function sprayAt(pawn, targetActor)
   end
 end
 
+-- The can's own pour STREAM, from the wand's tip. The watering can's tick fires the
+-- controller RPC SERVER_WaterCanParticles(ParticleManager, State, TargetPlayer) (offline RE
+-- 2026-07-22 of BP_HandItem_Watercan + BP_MainPlayerController); the manager is the PAWN's
+-- own BC_WateringParticleManager component. Plain BP calls on live objects -- cosmetic,
+-- every miss is silent; a delayed State=false shuts the stream off after the spray window.
+local function pourStream(pawn)
+  local u, m = ctx.uehelp, ctx.map.wand
+  if not (m.waterFxRpcFn and m.wateringFxComponentClass) then return end
+  local pc = pawnController(pawn)
+  if not pc then return end
+  local mgr
+  for _, comp in ipairs(u.findAll(m.wateringFxComponentClass)) do
+    if u.isValid(comp) then
+      local owner
+      pcall(function() owner = comp:GetOwner() end)
+      if u.isValid(owner) and sameObject(owner, pawn) then mgr = comp; break end
+    end
+  end
+  if not mgr then mark("pour stream: pawn has no particle manager") return end
+  if u.call(pc, m.waterFxRpcFn, mgr, true, pawn) then
+    mark("pour stream on")
+    local ms = math.floor((ctx.config.get("wand_spray_seconds") or 0.8) * 1000)
+    pcall(ExecuteWithDelay, ms, ctx.log.guard("wand.pourstream", function()
+      onGameThread(function()
+        if u.isValid(pc) and u.isValid(mgr) and u.isValid(pawn) then
+          u.call(pc, m.waterFxRpcFn, mgr, false, pawn)
+          mark("pour stream off")
+        end
+      end)
+    end))
+  end
+end
+
 -- The Hydration Wand's pour. Aim-point search instead of FHitResult actor extraction (reading
 -- HitObjectHandle from Lua is engine-version fragile; distance-to-impact is not): a parched
 -- TEAMMATE near the aim point outranks a planter box; else the nearest BC_WaterStorage owner
@@ -726,6 +754,7 @@ local function hydroCast(pawn, id)
     if ok then
       charges[id] = math.max(0, ch - ctx.config.get("wand_hydrate_cost"))
       syncHydroBar(pawn, id)
+      pourStream(pawn)
       ctx.log.info(string.format(
         "*** the rod QUENCHES thy companion (+%.0f thirst) -- %.0f measures remain ***",
         amt, charges[id]))
@@ -756,6 +785,7 @@ local function hydroCast(pawn, id)
       charges[id] = ch - pour
       syncHydroBar(pawn, id)
       sprayAt(pawn, storeOwner)
+      pourStream(pawn)
       ctx.log.info(string.format(
         "*** the rod POURS (%.0f water) -- %.0f measures remain ***", pour, charges[id]))
     else
@@ -792,28 +822,21 @@ local function tryCast(pawn)
     -- 0 -- a stray negative count would turn every later cast into an instant transmute)
     local left = math.max((zaps[id] or ctx.config.get("wand_electric_charges")) - 1, 0)
     zaps[id] = left
-    -- the charged item's bar (DefaultAttribues DURABILITY=3) counts the bolts down with us.
-    -- DecreaseCurItemDurability has an OUT param (ItemDestroyed): UE4SS refuses the call
-    -- unless it gets a fresh Lua TABLE in that slot, and stores the out value into it
-    -- (live 2026-07-22: one arg = ok=false; a scalar placeholder = "no table was on the
-    -- stack" -- both froze the bar). On the LAST bolt the decrement hits 0 and the GAME
-    -- destroys the rod itself -- the cleanest removal; transmuteHeld only grants then.
-    local destroyed = false
-    if heldItemKind[id] == "charged" and ctx.map.wand.durabilityFn
-        and (left > 0 or ctx.config.get("wand_transmute_items")) then
-      -- (last-bolt decrement only when the transmute will replace the destroyed rod)
-      local out = {}
-      local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1, out)
-      local d = outVal(out, "ItemDestroyed")
-      destroyed = okD and d == true
-      mark("cast durability -1 ok=" .. tostring(okD) .. " destroyed=" .. tostring(d))
-      refreshHotbarUi(pawn)
-    end
     if left > 0 then
+      -- the charged item's bar (DefaultAttribues DURABILITY=3) counts the bolts down with
+      -- us. DecreaseCurItemDurability's OUT param (ItemDestroyed) needs a fresh Lua TABLE
+      -- in its slot (UE4SS convention; anything else = pcall fail, the frozen-bar bug).
+      -- The bar NEVER steps to 0 -- at 0 the game destroys the item; the last bolt swaps
+      -- the slot to the spent rod in place instead (transmuteHeld overwrite).
+      if heldItemKind[id] == "charged" and ctx.map.wand.durabilityFn then
+        local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1, {})
+        mark("cast durability -1 ok=" .. tostring(okD))
+        refreshHotbarUi(pawn)
+      end
       ctx.log.info(string.format("the rod still holds %d bolt(s)", left))
     else
       setState(pawn, "uncharged")
-      transmuteHeld(pawn, "electric", { alreadyRemoved = destroyed })
+      transmuteHeld(pawn, "electric")
     end
   end
 end
@@ -882,10 +905,10 @@ local function refillHydration(pawn, why)
   if (charges[id] or 0) >= max then return end
   charges[id] = max
   ctx.log.info(string.format("*** the blue rod drinks %s -- FULL (%.0f measures) ***", why, max))
-  -- reset the charge BAR: holding the rod -> regrant now (fresh item = full bar); holding the
-  -- carafe/anything else -> onHotbarChanged regrants when the rod is next taken up
+  -- refill the charge BAR in place (watering-can behavior): holding the rod -> sync now;
+  -- holding the carafe/anything else -> onHotbarChanged syncs when the rod is next taken up
   if heldItemKind[id] == "hydration" and ctx.uehelp.isValid(pawn) then
-    transmuteHeld(pawn, "hydration")
+    syncHydroBar(pawn, id)
   end
   if wands[id] == "hydration" and drawn[id] and ctx.uehelp.isValid(pawn) then
     pcall(ExecuteWithDelay, 150, ctx.log.guard("wand.refillrig", function()
@@ -1078,12 +1101,12 @@ local function onHotbarChanged(pawn)
         tiers[id] = tiers[id] or "hydration"
         charges[id] = charges[id] or ctx.config.get("wand_hydration_max")
         -- a refill that happened while the carafe was in hand couldn't reset the rod's bar;
-        -- settle the debt now that the rod is up (a full rod with a lowered bar -> regrant)
+        -- settle the debt now that the rod is up (in-place savedata rewrite, never a regrant)
         local per = ctx.config.get("wand_pour_amount")
         if switched and per and per > 0 and barLevel[id]
             and charges[id] >= ctx.config.get("wand_hydration_max")
             and barLevel[id] < math.ceil(charges[id] / per) then
-          transmuteHeld(pawn, "hydration")
+          syncHydroBar(pawn, id)
         end
       elseif kind == "charged" then
         -- a charged rod IN HAND is never spent: a fresh one arrives full, and a spent
@@ -1129,64 +1152,87 @@ local function onHotbarChanged(pawn)
   ctx.log.info("you stow the wand to take up a tool")
 end
 
--- Swap the REAL held inventory item between the spent and charged rods (kind = "electric" |
--- "charged"). REMOVAL (offline RE 2026-07-22, BC_InventorySystem dump): ConsumeItem() is the
--- consumable EAT path and silently no-ops on the rods (typed T5 but with no consume values) --
--- every transmute minted a spare while the hand kept the old rod, the recharges-a-second-later
--- duplication loop. The real removal is the inventory system's own
--- "Remove Item Qty at Index"(Index, Qty, out Success) at the held slot's index (pawn
--- GetInventoryIndexForCurHoldItem; wand rows are MaxStackSize=1 so qty 1 = the rod), then the
--- replacement lands in the freed slot via the debug spawner. opts.alreadyRemoved = the caller
--- watched the game destroy the item itself (durability hit 0) -- skip straight to the grant.
--- Only fires when the matching REAL item is in hand; the mundane-overlay rod has no item to
--- swap. The delayed onHotbarChanged re-reads the hand once the new item has settled into it.
-transmuteHeld = function(pawn, toKind, opts)
+-- The wand-slot savedata: byte-exact copy of what the game's own writer stores in the .sav
+-- (raw dump 2026-07-22: '{' CRLF TAB '"Durability": N' CRLF '}') -- composed verbatim in case
+-- the parser is a string-matcher rather than a real JSON reader.
+local function durabilitySavedata(n)
+  return "{\r\n\t\"Durability\": " .. math.floor(n) .. "\r\n}"
+end
+
+-- Rewrite the HELD slot in place: item class + qty 1 + savedata, via the inventory system's
+-- own OverwriteAndSaveItemAtIndex (offline RE 2026-07-22). This is the watering-can behavior
+-- the destroy+regrant flow could never give: the wand NEVER leaves its slot -- no freed-slot
+-- races, no spawner drops, no ground pickups. ForceUpdateHotbarSlot then re-reads the active
+-- slot into the hand so CurItemdataInHand matches immediately.
+local function overwriteHeldSlot(pawn, cls, savedata)
+  local m = ctx.map.wand
+  if not (m.overwriteSlotFn and m.slotItemField and m.slotQtyField and m.slotSavedataField
+          and m.holdIndexFn) then return false end
+  local okIdx, idx = ctx.uehelp.call(pawn, m.holdIndexFn)
+  local inv; pcall(function() inv = pawn[m.inventorySystemProp or "InventorySystem"] end)
+  if not (okIdx and type(idx) == "number" and idx >= 0 and ctx.uehelp.isValid(inv)) then
+    mark("overwrite: no held index (idx=" .. tostring(idx) .. ")")
+    return false
+  end
+  lastHandAction = os.clock()   -- the rewrite echoes through the hotbar/hand hooks
+  local slot = {
+    [m.slotItemField]     = cls,
+    [m.slotQtyField]      = 1,
+    [m.slotSavedataField] = savedata or "",
+  }
+  local ok = ctx.uehelp.call(inv, m.overwriteSlotFn, slot, idx)
+  mark("overwrite slot idx=" .. tostring(idx) .. " ok=" .. tostring(ok))
+  if not ok then
+    lastHandAction = -1e9
+    return false
+  end
+  if m.forceHandRefreshFn then ctx.uehelp.call(pawn, m.forceHandRefreshFn) end
+  refreshHotbarUi(pawn)
+  return true
+end
+
+-- Swap the REAL held inventory item between the wand forms (kind = "electric" | "charged" |
+-- "hydration") by REWRITING ITS SLOT IN PLACE (overwriteHeldSlot). History of why not the
+-- obvious paths (all live-failed 2026-07-22): ConsumeItem is the consumable EAT path and
+-- silently no-ops on the rods (duplication loop); remove+regrant frees the slot but the
+-- debug spawner lands the replacement in an arbitrary slot or on the GROUND ("it just
+-- deletes it"). Only fires when the matching REAL item is in hand; the mundane-overlay rod
+-- has no item to swap. The delayed onHotbarChanged re-read settles mod state afterwards.
+transmuteHeld = function(pawn, toKind)
   if not ctx.config.get("wand_transmute_items") then return end
   local id = playerIdOf(pawn)
   if not id then return end
   local held = heldItemKind[id]
-  -- electric<->charged transmute, the sheep rite's hydration->charged, or a same-kind HYDRATION
-  -- regrant: a freshly granted item arrives with its attribute bar seeded FULL, which is how a
-  -- refill resets the charge display
+  -- electric<->charged transmute, or the sheep rite's hydration->charged
   local legal = ((held == "electric" or held == "charged") and held ~= toKind)
              or (held == "hydration" and (toKind == "hydration" or toKind == "charged"))
   if not legal then return end
   local rows = ctx.map.wand.itemRows or {}
-  local pc = pawnController(pawn)
-  if not (rows[toKind] and pc and ctx.items) then return end
-  -- resolve the replacement's class BEFORE eating the held item: give() only fails on an
-  -- unresolvable class, and the eat-then-give order (the grant must land in the freed slot)
-  -- must never destroy the player's real rod on that path
-  if not ctx.items.classFor(rows[toKind]) then
+  if not (rows[toKind] and ctx.items) then return end
+  local cls = ctx.items.classFor(rows[toKind])
+  if not cls then
     ctx.log.warn("wand: no cooked item class for row " .. tostring(rows[toKind]) .. " -- rod kept as-is")
     return
   end
-  lastHandAction = os.clock()   -- our own swap echoes through the hotbar hook
-  if not (opts and opts.alreadyRemoved) then
-    local m = ctx.map.wand
-    local okIdx, idx = ctx.uehelp.call(pawn, m.holdIndexFn)
-    local inv; pcall(function() inv = pawn[m.inventorySystemProp or "InventorySystem"] end)
-    if not (okIdx and type(idx) == "number" and idx >= 0 and ctx.uehelp.isValid(inv)
-            and m.removeQtyAtIndexFn) then
-      lastHandAction = -1e9     -- nothing changed hands; drop the echo suppression
-      mark("transmute: no held index (idx=" .. tostring(idx) .. ")")
-      return                    -- keep the old item rather than risk granting a duplicate
-    end
-    local out = {}
-    local okRem = ctx.uehelp.call(inv, m.removeQtyAtIndexFn, idx, 1, out)
-    local removed = outVal(out, "Success")
-    mark("transmute remove idx=" .. tostring(idx) .. " ok=" .. tostring(okRem)
-      .. " success=" .. tostring(removed))
-    if not okRem or removed == false then
-      lastHandAction = -1e9
-      ctx.log.warn("wand: the inventory refused to release the rod -- kept as-is")
-      return
-    end
+  -- the new form's charge bar: charged rod = full bolts; blue rod = its current measures;
+  -- the spent rod carries no attribute (empty savedata = no bar)
+  local savedata = ""
+  if toKind == "charged" then
+    savedata = durabilitySavedata(ctx.config.get("wand_electric_charges"))
+  elseif toKind == "hydration" then
+    local per = ctx.config.get("wand_pour_amount")
+    local n = (per and per > 0) and math.max(1, math.ceil((charges[id] or 0) / per)) or 1
+    savedata = durabilitySavedata(n)
   end
-  if ctx.items.give(pc, rows[toKind], 1) then
+  if overwriteHeldSlot(pawn, cls, savedata) then
     if held == "hydration" and toKind == "charged" then hydroKnown[id] = nil end
     heldItemKind[id] = toKind
-    barLevel[id] = nil  -- a fresh item's bar is game-seeded full; forget the stale count
+    if toKind == "hydration" then
+      local per = ctx.config.get("wand_pour_amount")
+      barLevel[id] = (per and per > 0) and math.max(1, math.ceil((charges[id] or 0) / per)) or nil
+    else
+      barLevel[id] = nil
+    end
     pcall(ExecuteWithDelay, 1200, ctx.log.guard("wand.transmute", function()
       onGameThread(function()
         lastHandAction = -1e9
@@ -1194,7 +1240,6 @@ transmuteHeld = function(pawn, toKind, opts)
       end)
     end))
   else
-    lastHandAction = -1e9
     ctx.log.warn("wand: the rod's new form failed to arrive -- item row " .. tostring(rows[toKind])
       .. " (recover it with `sps_wand give`)")
   end
@@ -1220,13 +1265,13 @@ refreshHotbarUi = function(pawn)
   if u.isValid(inv) and m.invChangedFn then u.call(inv, m.invChangedFn) end
 end
 
--- Mirror the blue rod's measures onto the held item's DURABILITY BAR (the cooked row ships
--- DefaultAttribues DURABILITY=12 = 240 measures / 20 per pour; the game seeds a granted item
--- full and W_InventorySlot renders the bar for any attribute-bearing item -- offline RE of
--- BPL_AttributeFunctions 2026-07-22). The bar only ever steps DOWN, through the pawn's own
--- DecreaseCurItemDurability, and NEVER to 0 (zero DESTROYS the item -- the fn has no
--- DestroyOnZero guard) -- a refill resets it by regranting the item instead (transmuteHeld
--- same-kind), which arrives bar-full.
+-- Mirror the blue rod's measures onto the held item's DURABILITY BAR, BOTH directions --
+-- the watering-can behavior (the cooked row ships DefaultAttribues DURABILITY=12 = 240
+-- measures / 20 per pour; W_InventorySlot renders the bar for any attribute-bearing item --
+-- offline RE of BPL_AttributeFunctions 2026-07-22). DOWN rides the pawn's own
+-- DecreaseCurItemDurability and NEVER reaches 0 (zero DESTROYS the item; target floors at
+-- 1). UP (a refill) rewrites the held slot's savedata in place (overwriteHeldSlot) -- the
+-- rod never leaves its slot.
 syncHydroBar = function(pawn, id)
   if heldItemKind[id] ~= "hydration" then return end
   local per = ctx.config.get("wand_pour_amount")
@@ -1235,10 +1280,13 @@ syncHydroBar = function(pawn, id)
   local maxN = math.max(1, math.ceil(ctx.config.get("wand_hydration_max") / per))
   local cur = barLevel[id] or maxN
   if cur > target and ctx.map.wand.durabilityFn then
-    -- two args: DecreaseAmt + a fresh TABLE for the ItemDestroyed OUT param (see outVal)
+    -- two args: DecreaseAmt + a fresh TABLE for the ItemDestroyed OUT param (UE4SS rule)
     local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target, {})
     mark("hydro bar -" .. (cur - target) .. " ok=" .. tostring(okD))
     refreshHotbarUi(pawn)
+  elseif cur < target then
+    local cls = ctx.items and ctx.items.classFor((ctx.map.wand.itemRows or {}).hydration)
+    if cls then overwriteHeldSlot(pawn, cls, durabilitySavedata(target)) end
   end
   barLevel[id] = target
 end

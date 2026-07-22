@@ -42,6 +42,8 @@ M.schema = {
                "restoreFn", "hotbarChangedFn", "handRebuildFn", "durabilityFn", "localControllerProp",
                "hotbarWidgetProp", "hotbarRefreshFn", "inventorySystemProp", "invChangedFn",
                "itemRows", "holdItemFn", "handItemDataProp", "holdIndexFn", "removeQtyAtIndexFn",
+               "overwriteSlotFn", "slotItemField", "slotQtyField", "slotSavedataField",
+               "forceHandRefreshFn", "waterFxRpcFn",
                "waterStorageClass", "storageAddWaterFn", "consumeEffectsFn", "waterTouchFns",
                "drinkClasses", "wateringFxComponentClass", "sprayRegisterFn", "sprayPlayFn" },
   codex    = { "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath",
@@ -263,6 +265,23 @@ M.profiles = {
       removeQtyAtIndexFn = "Remove Item Qty at Index",        -- InventorySystem fn (spaces in the
                                                               -- FName are real): Index, Qty,
                                                               -- out Success
+      -- In-place slot rewrite (offline RE 2026-07-22): the watering-can behavior. Replaces a
+      -- slot's item/qty/savedata wholesale WITHOUT freeing it -- transmutes and bar refills
+      -- keep the wand in its slot instead of destroy+regrant (which landed the replacement
+      -- wherever the spawner liked, or on the ground). Slot struct = S_InventorySlotSlim,
+      -- passed as a Lua table keyed by full GUID field names (the proven struct-param path).
+      -- Savedata JSON is byte-exact from a live .sav: '{\r\n\t"Durability": N\r\n}'.
+      overwriteSlotFn    = "OverwriteAndSaveItemAtIndex",     -- InventorySystem fn: (NewItem, Index)
+      slotItemField      = "Item_4_B9922CA845A5618A776EAFAB1A690E93",
+      slotQtyField       = "Quantity_5_A1813C42482CE5E7961C589A983BD034",
+      slotSavedataField  = "AdditionalSavedata_12_7C875E564155FCA4AA2B4597ACB03361",
+      forceHandRefreshFn = "ForceUpdateHotbarSlot",           -- pawn fn, no args: re-read the
+                                                              -- active slot into the hand
+      waterFxRpcFn       = "SERVER_WaterCanParticles",        -- controller RPC (offline RE of
+                                                              -- BP_HandItem_Watercan's watering
+                                                              -- tick): (ParticleManager, State,
+                                                              -- TargetPlayer) -- the can's pour
+                                                              -- stream, on/off
       -- Redrawing the charge bar (same RE): the decrement chain writes the inventory slot but
       -- never refreshes the HOST's hotbar UI (no OnRep on authority, no broadcast), so the bar
       -- only moved on a slot switch. The mod runs the game's own widget refresh after each step.
