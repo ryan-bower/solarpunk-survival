@@ -31,11 +31,14 @@ M.defaults = {
   -- lightning wand (a mod-managed tool, not an inventory item -- features/wand.lua)
   wand_cast_range      = 15000.0, -- cm; max aim distance for a cast bolt (150 m)
   wand_cast_debounce   = 0.5,     -- seconds between cast attempts (input events fire multiple phases)
-  wand_recharge_radius = 500.0,   -- cm; stand this close to a strike (not your own) to recharge
+  wand_recharge_radius = 500.0,   -- cm; hold the spent rod this close to a strike (not your own) to recharge
+  wand_electric_charges = 3,      -- bolts per charged rod (cast this many, then recharge by storm)
+  wand_transmute_items = true,    -- cast/recharge swaps the REAL charged/spent inventory items
   wand_cobalt_scale    = 0.75,    -- cobalt tip scale (the dropped model reads ~4x too big as a tip)
-  wand_in_hand         = true,    -- seat the rig at the game's right-hand tool slot (read-only)
-                                  -- and stash/restore the held item like a real tool swap;
-                                  -- false = fixed capsule offsets below, no stash
+  wand_in_hand         = true,    -- draw = a real hand takeover: stash the held tool (the game's
+                                  -- own StashHandItem; restored on stow) and spawn the game's
+                                  -- hand-item actor for the stick. false = no takeover -- legacy
+                                  -- slot-mesh fallback only (usually invisible; casts still work)
   wand_fwd             = 50.0,    -- capsule fallback only: cm forward of the pawn root (tune
                                   -- live -- any wand_* change rebuilds the rig immediately)
   wand_side            = 30.0,    -- capsule fallback only: cm to the right of the pawn root
@@ -48,7 +51,40 @@ M.defaults = {
   wand_draw_key        = "V",     -- key that draws/stows the wand (any UE4SS Key name)
   wand_fx              = false,   -- electricity crackle on the charged wand -- OFF until the
                                   -- Niagara attach call is live-proven (probe it like P1-P6)
-  wand_rig             = true,    -- the in-hand stick+cobalt visual, master switch
+  wand_rig             = true,    -- in-hand visual. Every VISIBLE held item is a spawned
+                                  -- BP_HandItem_* actor (game pipeline); our wand rows aren't in the
+                                  -- game's baked item->hand-item map, so the mod spawns one itself
+                                  -- via the game's own SetHandRBlueprintForBoth (donor: Carrot),
+                                  -- re-meshes it to SM_Stick (force-loaded if needed) and tints it
+                                  -- per state (wood/cobalt/diamond). Lifecycle stays game-owned --
+                                  -- the game destroys the actor on every hotbar switch just like a
+                                  -- berry's. false = no visual (pose only; casting still works).
+  wand_hand_scale      = 1.0,     -- scale on the in-hand stick mesh comp (the donor hand item was
+                                  -- sized for a carrot -- tune live, any wand_* change rebuilds)
+  -- Per-state tint materials, by ASSET name in /Game/Art/Materials (see mapping wand.materialDir).
+  -- Direct material assets, NOT mesh donors: the SM_Cobalt MESH ships with WorldGridMaterial (the
+  -- engine's grey-white checker -- its real M_Cobalt was never assigned), and M_Stick's T_Bark
+  -- reads pale in hand. Live-tunable: any wand_* change rebuilds the drawn rig.
+  wand_mat_mundane     = "M_Deco_Logs",         -- chopped-log brown wood
+  wand_mat_hydration   = "M_Cobalt",            -- river-blue (the quenched rod)
+  wand_mat_electric    = "M_Statue_Gold",       -- solid yellow (uncharged Electrick)
+  -- charged = uncharged's yellow family + a LIVE glow. Plant *_Shining materials are out (grass-
+  -- wind WPO wobble + alien UVs on the stick -- seen live); textured materials are out (foreign
+  -- UVs). M_Energy_On is a textureless powered-state material; swap candidates live via
+  -- `sps set`: M_AirshipLight, M_Honey_Glass, M_Stick_Highlighted (bark + pickup shimmer).
+  wand_mat_charged     = "M_Energy_On",
+  -- The Hydration Wand's tank. Capacity = 2x the watering can's MaxWaterlevel of 120 (offline RE
+  -- of BP_HandItem_Watercan); a growbox's BC_WaterStorage holds 20, so one full wand waters 12.
+  wand_hydration_max   = 240.0,   -- water units the blue rod carries when full
+  wand_pour_amount     = 20.0,    -- units per pour into a water storage (= one growbox, full)
+  wand_spray_seconds   = 0.8,     -- how long the watercan splash FX plays on a wand pour
+  wand_hydrate_cost    = 20.0,    -- units per teammate quench
+  wand_hydrate_thirst  = 50.0,    -- thirst restored on a quenched teammate (AddThirst value)
+  wand_pour_radius     = 300.0,   -- cm; how close to the aim point a storage/teammate must be
+  wand_water_refill_debounce = 5.0, -- seconds between wade-refill triggers (footstep events spam)
+  wand_from_item       = true,    -- still DETECT the equipped cooked wand on HotbarSlotChanged (for
+                                  -- cast/charge state + logging); with wand_rig off this no longer
+                                  -- touches the hand -- the game draws it. false = only V-key/ritual.
   storm_warning_lead  = 20.0,    -- seconds of "storm incoming" warning before lightning starts
 
   -- player
@@ -91,10 +127,16 @@ M.defaults = {
 
   -- dark-arts ritual
   ritual_radius       = 2000.0,  -- cm (20 m) pentagram/sheep/wand radius
+  ritual_corner_radius = 250.0,  -- cm; each of the five corner offerings must rest this close to
+                                 -- one of the pentagram's candles
   ritual_fences       = 15,      -- fence pieces required
   ritual_candles      = 5,       -- LIT candles required
   ritual_check_interval = 8.0,   -- seconds between condition checks during a storm
   rod_copper_topper   = true,    -- cosmetic copper item attached atop each lightning rod
+
+  -- building
+  foundation_snap_ignore_ground = true, -- snapped-to-a-buildable foundations skip the game's
+                                        -- corners-must-touch-the-ground placement rule
 
   -- misc
   friendly_fire       = true,

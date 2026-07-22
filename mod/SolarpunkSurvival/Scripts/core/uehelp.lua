@@ -68,6 +68,41 @@ function M.set(obj, propName, value)
   return ok
 end
 
+-- Same live UObject instance? Wrapper equality is not trustworthy across two separate property
+-- reads, so compare full object paths (unique per instance).
+function M.sameObject(a, b)
+  if not (a and b) then return false end
+  local na, nb
+  pcall(function() na = a:GetFullName() end)
+  pcall(function() nb = b:GetFullName() end)
+  return na ~= nil and na == nb
+end
+
+-- TArray/TSet userdata -> plain Lua list. Handles both UE4SS array styles (ForEach and numeric
+-- indexing) -- same dual pattern proven in dev/remote.lua.
+function M.arrayItems(arr)
+  local out = {}
+  if arr == nil then return out end
+  local ok = pcall(function()
+    if arr.ForEach then
+      arr:ForEach(function(_, e)
+        local v = e
+        pcall(function() v = e:get() end)
+        out[#out + 1] = v
+      end)
+      return
+    end
+    error("no-foreach")
+  end)
+  if not ok then
+    pcall(function()
+      local n = #arr
+      for i = 1, n do out[#out + 1] = arr[i] end
+    end)
+  end
+  return out
+end
+
 function M.className(obj)
   local ok, name = pcall(function() return obj:GetClass():GetFName():ToString() end)
   if ok and name then return name end
@@ -91,7 +126,9 @@ end
 function M.classByName(name, path)
   if not name then return nil end
   local function find()
-    for _, kind in ipairs({ "BlueprintGeneratedClass", "Class" }) do
+    -- WidgetBlueprintGeneratedClass first-class: FindObject's kind filter is exact, so widget
+    -- classes (W_TempestCodex_C) are invisible to a "BlueprintGeneratedClass" query.
+    for _, kind in ipairs({ "BlueprintGeneratedClass", "WidgetBlueprintGeneratedClass", "Class" }) do
       local ok, c = pcall(FindObject, kind, name)
       if ok and c and M.isValid(c) then return c end
     end

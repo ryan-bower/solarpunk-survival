@@ -12,7 +12,7 @@ local M = {}
 -- startup "what's still missing" report; keep it in sync with the profiles below.
 M.schema = {
   weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn" },
-  player   = { "controllerClass", "curHealthProp", "maxHealthProp", "addHealthFn", "reduceHealthFn", "dieFn", "respawnFn", "pingFn" },
+  player   = { "controllerClass", "curHealthProp", "maxHealthProp", "addHealthFn", "reduceHealthFn", "dieFn", "respawnFn", "pingFn", "curThirstProp", "maxThirstProp", "addThirstFn", "clientAddThirstFn" },
   pawn     = { "class", "healthProp", "isShelteredFn", "worldLocationFn", "respawnFn", "dropInventoryFn", "playerIdProp" },
   build    = { "pieceClass", "stableIdProp", "demolishFn", "demolishRefund" },
   crop     = { "class", "killNoSeedFn" },
@@ -28,15 +28,28 @@ M.schema = {
   net      = { "hasAuthorityFn", "playerStateClass" },
   save     = { "saveFn", "loadFn" },
   items    = { "classFmt", "assetDir" },
-  tree     = { "classPrefix" },
-  animal   = { "sheepClass" },
-  ritual   = { "bookItemRow" },
+  tree     = { "classPrefix", "fellFn", "growMeshesProp", "fakeMeshProp" },
+  animal   = { "sheepClass", "chickenClass" },
+  ritual   = { "bookItemRow", "hydrationOfferings", "electrickOfferings",
+               "candleBurningProp", "candleBurnRepFn" },
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
   furnace  = { "classHints", "fuelPropCandidates", "fuelFnCandidates" },
   rod      = { "stationClassCandidates", "copperItemRow" },
   wand     = { "castFnExact", "castFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
-               "diamondMesh", "niagaraCandidates", "handMeshFn", "handSlot1P", "handSlot3P",
-               "stashFn", "restoreFn", "hotbarChangedFn", "itemRows" },
+               "diamondMesh", "meshPaths", "niagaraCandidates", "handMeshFn", "handSlot1P",
+               "handSlot3P", "handBlueprintFn", "handItemProp", "handItemMeshProps",
+               "handItemDonor", "handItemDonorPath", "clearHandFn", "materialDir", "stashFn",
+               "restoreFn", "hotbarChangedFn", "handRebuildFn", "durabilityFn", "localControllerProp",
+               "hotbarWidgetProp", "hotbarRefreshFn", "inventorySystemProp", "invChangedFn",
+               "itemRows", "holdItemFn", "handItemDataProp",
+               "waterStorageClass", "storageAddWaterFn", "consumeEffectsFn", "waterTouchFns",
+               "drinkClasses", "wateringFxComponentClass", "sprayRegisterFn", "sprayPlayFn" },
+  codex    = { "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath",
+               "interactFnHint", "openFn", "wblPath", "closeFns", "inputUiFn", "inputGameFn",
+               "researchId", "researchTierId", "researchHasFn", "researchSaveFn",
+               "researchFieldId", "researchFieldDone" },
+  foundation = { "previewPaths", "buildSystemClass", "buildSystemPath", "gateFn", "ruleFn",
+                 "snapProp", "previewProp" },
 }
 
 M.profiles = {
@@ -94,17 +107,63 @@ M.profiles = {
       -- BlockPing/ResetPing cooldown gate, so it can fire for pings the game rejects (bolt with no
       -- visible marker). Verified live 2026-07-20: SERVER_Ping -> MULTI_Ping, identical Location.
       pingFn          = "MULTI_Ping",
+      -- Thirst mirrors the health API exactly (offline RE of BP_MainPlayerController,
+      -- 2026-07-21): AddThirst(Value, PlaySound) -> Success restores the drink meter;
+      -- CLIENT_AddThirst(Value, PlaySound) is the game's own owning-client RPC (the thirst
+      -- state lives on each player's machine, like CLIENT_ReduceHealth for damage) -- the
+      -- Hydration Wand quenches REMOTE teammates through it.
+      curThirstProp     = "CurPlayerThirst",
+      maxThirstProp     = "MaxPlayerThirst",
+      addThirstFn       = "AddThirst",
+      clientAddThirstFn = "CLIENT_AddThirst",
     },
     -- Every inventory item's actor class is BP_<Name>_Item_C, but row->name is NOT 1:1
     -- (HoeDiamond -> Hoe_Diamond, Weather_Station -> WeatherStation): core/items.lua tries the
     -- variants. All 300 item classes live flat in assetDir (verified live via full-object scan).
     items  = { classFmt = "BP_%s_Item_C", assetDir = "/Game/Code/Inventory_Items/ItemActors/" },
-    tree   = { classPrefix = "BP_Tree_" },     -- BP_Tree_Birch_C confirmed live; suffix names the type
-    animal = { sheepClass = "BP_Animal_Sheep_C" },
+    -- BP_Tree_Birch_C confirmed live; suffix names the type. Native felling symbols from the
+    -- offline bytecode RE of _BP_Tree_MASTER (2026-07-21): TreeFall is the no-arg fell event
+    -- (falling animation + FallingSound + ground-hit + grow-stage loot; replicates natively).
+    -- Growth check = the tree's own `HasGrown?` logic replicated by reads (its out-param
+    -- signature is awkward from Lua): FakeTreeMesh.StaticMesh equals the LAST GrowMeshes entry
+    -- only when fully grown. GrowMeshes lives on the parent _BP_Plant_MASTER_C -- still a plain
+    -- instance read off any tree.
+    tree   = { classPrefix = "BP_Tree_", fellFn = "TreeFall",
+               growMeshesProp = "GrowMeshes", fakeMeshProp = "FakeTreeMesh" },
+    animal = { sheepClass = "BP_Animal_Sheep_C", chickenClass = "BP_Animal_Chicken_C" },
     -- The wand is NOT an inventory item: it is a mod-managed tool (see features/wand.lua).
     -- A truly new inventory item ID requires a cooked content pak (docs/MILESTONE-2.md).
     ritual = {
       bookItemRow = "Handbook",     -- the dark-arts book prop
+      -- The five corner offerings, dropped on the ground by the pentagram's candles. These are
+      -- the WORLD item-actor classes (dropped items spawn the row's ItemActor -- pawn RE:
+      -- TryAddItemWithLeftoverSpawn -> SpawnLeftoverItem), verified against the legacy
+      -- ItemActors dir. "Water clear of impurities" = the BOILED carafe's world actor;
+      -- dirty water (BP_CarafeDirtWater_Item) does not count.
+      -- Per-rite corner offerings (kind -> dropped item-actor class; one of each by the candles).
+      -- No honeycomb item exists in DB_Items, so "comb of the honeybee" is the Honey item; the
+      -- boiled carafe IS the game's purified tier ("Water Bottle"); no bandage exists, so the
+      -- wound-dressing is Cloth. Verified against db_items_src.json 2026-07-22.
+      hydrationOfferings = {
+        water = "BP_CarafeDrinkableWater_Item_C",  -- water clear of impurities
+        honey = "BP_Honey_Item_C",                 -- comb of the honeybee
+        leaf  = "BP_Leaf_Item_C",                  -- leaf of the trees
+        clay  = "BP_Clay_Item_C",                  -- clay of the earth
+        berry = "BP_Raspberry_Item_C",             -- a berry nourished by the sun
+      },
+      electrickOfferings = {
+        copper    = "BP_Copper_Item_C",                -- rounded refined copper (the smelted bar)
+        ironore   = "BP_IronOre_Item_C",               -- raw iron ore
+        purewater = "BP_CarafeDrinkableWater_Item_C",  -- purified water
+        flower    = "BP_Sunflower_Item_C",             -- flower of the sun
+        cloth     = "BP_Cloth_Item_C",                 -- cloth that dressed an old wound
+      },
+      -- Candle lighting (offline RE of BP_Candle_Plate/BP_Deco_Candle_Outdor Buildables):
+      -- `Burning` is the replicated state bool; OnRep_Burning applies flame + PointLight
+      -- visibility and starts the burn timer. Host sets the bool then calls the OnRep to apply
+      -- it locally -- clients get it via native replication.
+      candleBurningProp = "Burning",
+      candleBurnRepFn   = "OnRep_Burning",
     },
     fx = {
       clientDamageRpcFn = "CLIENT_ReduceHealth", -- game's own client RPC: fires ON the victim's machine
@@ -136,8 +195,21 @@ M.profiles = {
       castFnPrefix = "InpActEvt_IA_HandInteract",
       -- Mesh ASSETS by name (loaded-StaticMesh scan; CDO template reads are fatal):
       stickMesh   = "SM_Stick",       -- the wand handle
-      cobaltMesh  = "SM_Cobalt",      -- the dropped-cobalt tip
-      diamondMesh = "SM_Ore_Diamond", -- material donor for the forged tip
+      cobaltMesh  = "SM_Cobalt",      -- blue material donor (Electric/uncharged tint)
+      diamondMesh = "SM_Ore_Diamond", -- white material donor (Charged tint)
+      -- Full object paths for LoadAsset when a mesh above is NOT already in memory. SM_Stick is
+      -- only resident if a stick actor happens to exist in the world (the base Stick never renders
+      -- in-hand), so the wand's visual MUST be able to force-load it. Paths verified against the
+      -- retoc legacy extract (tools/pakkit/legacy/Solarpunk/Content/Art/StaticMeshes/).
+      meshPaths = {
+        SM_Stick       = "/Game/Art/StaticMeshes/SM_Stick.SM_Stick",
+        SM_Cobalt      = "/Game/Art/StaticMeshes/SM_Cobalt.SM_Cobalt",
+        SM_Ore_Diamond = "/Game/Art/StaticMeshes/SM_Ore_Diamond.SM_Ore_Diamond",
+      },
+      -- The game's flat materials dir: tint materials load from here BY NAME (config wand_mat_*).
+      -- Verified against the legacy extract (Art/Materials/ -- M_Cobalt, M_Deco_Logs,
+      -- M_Stick_Highlighted all live here).
+      materialDir = "/Game/Art/Materials/",
       niagaraCandidates = { "NS_Electricity", "NS_Sparks", "NS_Dizzle" },
       -- How the game holds tools (from the capture): the selected hotbar item's mesh lives in
       -- two right-hand slot components on the pawn; the fns below are the game's own equip
@@ -146,16 +218,137 @@ M.profiles = {
       -- comps (K2_AttachToComponent) native-crashes -- the slots are position-READ only. The
       -- mesh-set path (handMeshFn) survived its live call but is currently unused.
       handMeshFn      = "SetHandRMeshForBoth",        -- set a tool mesh into both slots at once
+                                                      -- (slots are never visible for consumables --
+                                                      -- kept only as a do-no-harm fallback)
       handSlot1P      = "Mesh_Slot_1Person_Hand_R",   -- first-person right-hand tool slot
-      handSlot3P      = "Mesh_Slot_3rdPerson_Hand_R", -- third-person right-hand tool slot (the
-                                                      -- wand rig's hand-seat position source)
+      handSlot3P      = "Mesh_Slot_3rdPerson_Hand_R", -- third-person right-hand tool slot
+      -- THE real held-item render path (offline bytecode RE of BP_MainPlayerCharacter,
+      -- 2026-07-21, tools/pakkit HOWTO "how held items render"): every VISIBLE held item is a
+      -- spawned BP_HandItem_* actor. For consumables, UpdateHandConsumable does
+      -- Map_Find(ClassesToActor, CurItemdataInHand.ItemActor) -> SetHandRBlueprintForBoth(found),
+      -- where ClassesToActor is a 21-entry class->class map BAKED into the bytecode. Sticks (and
+      -- our wand rows) are not in the map -> the game passes null -> empty palm. NOTE: the pawn
+      -- has NO FoodMesh property -- that component lives on the consumable HAND-ITEM actors
+      -- (the earlier "pawn.FoodMesh" mapping was a mis-probe; step log proved it missing).
+      handBlueprintFn = "SetHandRBlueprintForBoth",   -- spawn+attach+track a hand-item actor; also
+                                                      -- DESTROYS the previous one (game-owned lifecycle)
+      handItemProp    = "CurHandItemFirstPerson",     -- pawn prop -> the spawned hand-item actor
+      handItemMeshProps = { "FoodMesh", "MainMesh" }, -- mesh comps on that actor (first hit wins)
+      handItemDonor   = "BP_HandItem_Carrot_C",       -- donor class: elongated food = stick stand-in
+      handItemDonorPath = "/Game/Code/Character/HandItems/BP_HandItem_Carrot.BP_HandItem_Carrot_C",
+      clearHandFn     = "ClearHandBlueprints",        -- pawn event: destroy held hand-item actors
       stashFn         = "StashHandItem",              -- park the held item (drawing does this first)
       restoreFn       = "RestoreHandItem",            -- re-equip the parked item (stowing)
       hotbarChangedFn = "HotbarSlotChanged",          -- fires on tool switch -> the wand stows
+      handRebuildFn   = "UpdateHandMeshesAndModes",   -- the ONE equip chokepoint (offline RE
+                                                      -- 2026-07-22): hotbar switches AND every
+                                                      -- UI close (SetInputModeGame ->
+                                                      -- ForceUpdateHotbarSlot) funnel through
+                                                      -- it before SetHandRBlueprintForBoth
+                                                      -- destroys+respawns the hand actor
+      durabilityFn    = "DecreaseCurItemDurability",  -- pawn fn: step the held item's bar down.
+                                                      -- ONE param (Amount) -- offline RE
+                                                      -- 2026-07-22: there is NO DestroyOnZero
+                                                      -- arg, and at 0 the item IS destroyed --
+                                                      -- never step the bar all the way down
+      -- Redrawing the charge bar (same RE): the decrement chain writes the inventory slot but
+      -- never refreshes the HOST's hotbar UI (no OnRep on authority, no broadcast), so the bar
+      -- only moved on a slot switch. The mod runs the game's own widget refresh after each step.
+      localControllerProp = "LocalController",        -- pawn prop -> BP_MainPlayerController
+      hotbarWidgetProp    = "UI_Hotbar",              -- controller prop -> W_PlayerHotbar
+      hotbarRefreshFn     = "UpdateHotbar",           -- re-DisplayItems every hotbar slot
+      inventorySystemProp = "InventorySystem",        -- pawn prop -> BC_InventorySystem_C
+      invChangedFn        = "CallInventoryChanged",   -- refresh the open inventory grid too
       -- REAL cooked items added by the content pak (tools/pakkit, Solarpunk-Windows_1_P). These
       -- are DB_Items rows -> core/items resolves them to BP_<row>_Item_C. Only present when the
       -- pak is installed; `sps_wand give` grants them, no-ops with a warning otherwise.
-      itemRows = { mundane = "MundaneWand", electric = "ElectricWand" },
+      itemRows = { mundane = "MundaneWand", hydration = "HydrationWand",
+                   electric = "ElectricWand", charged = "ChargedElectricWand" },
+      -- The Hydration Wand's plumbing (offline RE 2026-07-21, BP_HandItem_Watercan +
+      -- BC_WaterStorage + pawn dumps):
+      --   * every waterable thing (growbox etc.) carries a replicated BC_WaterStorage_C
+      --     component (MaxWaterLevel 20 on the growbox); AddWater(AddAmt) fills it and
+      --     OnRep_CurWaterLevel carries it to clients -- host-side call is enough.
+      --   * AddConsumeableEffects(ConsumeableClass) runs on the pawn for every eaten/drunk
+      --     item -- the drink-refill hook reads the class param and matches the two carafes
+      --     (pure or dirty; the wand does not judge).
+      --   * PlayWaterFootstep/PlayWaterLand fire on the pawn when wading/landing in
+      --     pond or river water -- the event-driven "standing in water" refill (a poll-free
+      --     signal; free-running UObject timers are the proven native crash).
+      waterStorageClass = "BC_WaterStorage_C",
+      storageAddWaterFn = "AddWater",
+      consumeEffectsFn  = "AddConsumeableEffects",
+      waterTouchFns     = { "PlayWaterFootstep", "PlayWaterLand" },
+      drinkClasses      = { "BP_CarafeDrinkableWater_Item_C", "BP_CarafeDirtWater_Item_C" },
+      -- The watercan's splash, borrowed for the wand's pour (offline RE of BP_HandItem_Watercan +
+      -- BC_WateringParticleManager): the WATERED TARGET (growbox and kin) carries the particle-
+      -- manager component; register the pouring pawn, then play. Plain BP calls -- the component's
+      -- own bytecode does the Niagara spawning (reflected Niagara statics from Lua are a PROVEN
+      -- NATIVE CRASH -- the 2026-07-21 live experiment took the game down; never call them).
+      wateringFxComponentClass = "BC_WateringParticleManager_C",
+      sprayRegisterFn   = "RegisterWateringPlayer",   -- (WateringPlayerRef: BP_MainPlayerCharacter_C)
+      sprayPlayFn       = "PlayParticleEffect",       -- (WatertickTime: float seconds)
+      -- How the mod recognises that the REAL wand item is the one now in hand, so it can draw the
+      -- stick+cobalt rig (a brand-new item can't be a first-class hand tool from pak data alone --
+      -- the hoe-type path crashes world load -- so the mod supplies the in-hand look). RE probe
+      -- 2026-07-21 (game running): `handItemDataProp` is the live S_Item struct; read its
+      -- `ItemActor` member (a UClass, e.g. BP_MundaneWand_Item_C) to identify the wand -- the
+      -- struct's DisplayName reads EMPTY at runtime. `holdItemFn` is a Blueprint fn with out-params
+      -- (CurItem, EmptyHand), NOT a clean 0-arg getter, so it is documented but unused.
+      holdItemFn       = "GetCurrentHoldItem",
+      handItemDataProp = "CurItemdataInHand",
+    },
+    -- The Tempest Codex: a REAL readable book from the content pak (tools/pakkit build_wand_pak,
+    -- "The Tempest Codex" in HOWTO.md). Craft by hand (starting recipe) -> place -> interact to
+    -- read. The cooked chain clones the survival guide's UI: our widget + placeable + tips table.
+    codex = {
+      itemRow        = "TempestCodex",             -- DB_Items row (pak); DB_Buildables matches by this name
+      widgetClass    = "W_TempestCodex_C",         -- the reader UI (clone of W_SurvivalGuide)
+      widgetPath     = "/Game/UI/Widgets/W_TempestCodex.W_TempestCodex_C",
+      placeableClass = "BP_TempestCodex_Placeable_C",
+      placeablePath  = "/Game/Code/Building_Placing/Placeables/BP_TempestCodex_Placeable.BP_TempestCodex_Placeable_C",
+      -- the placed book's interact entry: the clone keeps the guide's component-bound event name
+      -- (BndEvt__..._OnInteractedWith...); features/codex.lua hooks any class fn containing this
+      interactFnHint = "OnInteractedWith",
+      openFn         = "Open",                     -- W_SurvivalGuide's own show fn (focus + sound)
+      closeFns       = { "Close", "Hide" },        -- widget events that shut the cover
+      -- the controller's own input-mode pair (offline RE of BP_MainPlayerController's ubergraph:
+      -- every UI_Open* calls SetInputModeUI(widget, false, IsGamepad, false, true) and closes
+      -- through SetInputModeGame(false, false, false)) -- codex.lua mirrors those exact calls
+      inputUiFn      = "SetInputModeUI",
+      inputGameFn    = "SetInputModeGame",
+      wblPath        = "/Script/UMG.Default__WidgetBlueprintLibrary", -- CreateWidget from Lua
+      -- "The Dark Arts" research-card migration (RE'd from BP_MainPlayerController):
+      -- a card is visible iff the player's saved Researches array holds {id, Researched=false}.
+      -- Old saves that already researched LvL_2 (id 9) never re-fire its unlock list, so
+      -- features/codex.lua plants our card's entry once via Playerdata_SaveResearchForSelf,
+      -- which takes S_SavedResearch as a Lua table keyed by the BP-struct's suffixed fields.
+      researchId        = 3003,                     -- The Dark Arts (DB_Researchables)
+      researchTierId    = 9,                        -- LvL_2 = station tier 2
+      researchHasFn     = "HasPlayerResearch?",     -- (id, out CanResearch, out IsResearched)
+      researchSaveFn    = "Playerdata_SaveResearchForSelf", -- (S_SavedResearch)
+      researchFieldId   = "ResearchableID_2_DA642A8A46295C1414CDABA93A97CC99",
+      researchFieldDone = "Researched_10_AA0B145346A35A6CF07D1E8C2C8D0CBD",
+    },
+    foundation = {
+      -- Placement rule bypass (offline RE of BC_BuildSystem + the foundation previews):
+      -- ComplyFunctionalBuildRules? asks the preview's TestAdvancedBuildingRule, whose
+      -- foundation overrides line-trace all four GroundCheck corner components to the ground
+      -- and veto the build if any corner floats. BC_BuildSystem.IsSnapping is true exactly
+      -- while the preview sits on another buildable's snap point, so features/foundation.lua
+      -- post-hooks each override and forces CanBuild back to true when snapping.
+      previewPaths = {
+        "/Game/Code/Building_Placing/AdvancedPreviews/BP_Foundation_AdvancedPlaceablePreview.BP_Foundation_AdvancedPlaceablePreview_C",
+        "/Game/Code/Building_Placing/AdvancedPreviews/BP_BrickFoundation_AdvancedPlaceablePreview.BP_BrickFoundation_AdvancedPlaceablePreview_C",
+        "/Game/Code/Building_Placing/AdvancedPreviews/BP_GlassFoundation_AdvancedPlaceablePreview.BP_GlassFoundation_AdvancedPlaceablePreview_C",
+        "/Game/Code/Building_Placing/AdvancedPreviews/BP_ThinGlassFoundation_AdvancedPlaceablePreview.BP_ThinGlassFoundation_AdvancedPlaceablePreview_C",
+      },
+      buildSystemClass = "BC_BuildSystem_C",
+      buildSystemPath  = "/Game/Code/Building_Placing/Framework_and_Data/BC_BuildSystem.BC_BuildSystem_C",
+      gateFn           = "ComplyFunctionalBuildRules?",  -- build-mode-only; arms the preview hooks
+      ruleFn           = "TestAdvancedBuildingRule",
+      snapProp         = "IsSnapping",
+      previewProp      = "BuildingPreview",
     },
     rod = {
       stationClassCandidates = {

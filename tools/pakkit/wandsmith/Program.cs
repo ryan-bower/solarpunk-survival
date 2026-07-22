@@ -29,6 +29,16 @@ try
             int added = 0;
             foreach (var exp in preAsset.Exports)
             {
+                if (exp is EnumExport eexp)
+                {
+                    // register cooked UserDefinedEnums (e.g. our cloned ETempestCodexCategory) so
+                    // ByteProperty/EnumProperty schema conversion can resolve them by name
+                    var vals = new System.Collections.Concurrent.ConcurrentDictionary<long, string>();
+                    foreach (var t in eexp.Enum.Names) vals[t.Item2] = t.Item1.ToString();
+                    usmap.EnumMap[eexp.ObjectName.ToString()] = new UsmapEnum(eexp.ObjectName.ToString(), vals);
+                    added++;
+                    continue;
+                }
                 if (exp is StructExport sexp)
                 {
                     var schema = Usmap.GetSchemaFromStructExport(sexp, usmap.AreFNamesCaseInsensitive);

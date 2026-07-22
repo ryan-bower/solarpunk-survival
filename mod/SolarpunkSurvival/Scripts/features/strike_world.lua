@@ -4,7 +4,8 @@
 --   furnace              -> powered as if it just consumed a wax briquette
 --   any other tech       -> smoking + "broken"; struck again before repair -> destroyed,
 --                           half its crafting components salvaged
---   tree                 -> felled: 4 logs + that tree type's sapling
+--   tree                 -> the game's OWN felling (falling animation + sound + stage loot) via
+--                           TreeFall; trees that are not fully grown are immune
 --
 -- Machine internals live in parent classes the RE capture didn't include, so actors are classified
 -- by CLASS NAME and members are probed from candidate lists in mapping.lua (each probe is guarded;
@@ -126,9 +127,41 @@ function F.breakTech(actor, cls, loc)
   end
 end
 
--- Trees: fell (destroy replicates natively) + drop 4 logs and the matching sapling.
+-- Only a FULLY GROWN tree falls to lightning; saplings and mid-growth stages are immune. This
+-- replicates the tree's own `HasGrown?` check by plain reads (its out-param signature is awkward
+-- from Lua): the displayed trunk mesh (FakeTreeMesh.StaticMesh) equals the LAST GrowMeshes entry
+-- only at full growth. Unreadable growth data counts as GROWN -- a mapping drift degrades to the
+-- old always-fell behavior, never to a lightning-proof forest.
+local function isFullyGrown(actor)
+  local t = ctx.map.tree
+  local u = ctx.uehelp
+  if not (t and t.growMeshesProp and t.fakeMeshProp) then return true end
+  local okA, arr = u.get(actor, t.growMeshesProp)
+  if not (okA and arr ~= nil) then return true end
+  local meshes = u.arrayItems(arr)
+  if #meshes == 0 then return true end
+  local okC, comp = u.get(actor, t.fakeMeshProp)
+  if not (okC and u.isValid(comp)) then return true end
+  local okM, cur = u.get(comp, "StaticMesh")
+  if not (okM and cur ~= nil) then return true end
+  return u.sameObject(cur, meshes[#meshes])
+end
+
+-- Trees: the game's OWN fell -- the TreeFall event runs the falling animation + FallingSound +
+-- ground-hit + grow-stage loot, and replicates natively (RE of _BP_Tree_MASTER; see mapping).
+-- The old K2_DestroyActor just vanished the tree; it remains only as a fallback (with the manual
+-- log/sapling grants, since nothing native dropped loot) so a game update degrades, not disables.
 function F.fellTree(actor, cls, loc)
+  if not isFullyGrown(actor) then
+    ctx.log.info("lightning splashes off a young tree -- not yet grown, immune")
+    return
+  end
   local kind = cls:match("^BP_Tree_(%w+)")   -- Birch / Alder / Maple / Pine / Oak ...
+  local fellFn = ctx.map.tree and ctx.map.tree.fellFn
+  if fellFn and select(1, ctx.uehelp.call(actor, fellFn)) then
+    ctx.log.info("lightning fells a " .. (kind or "?") .. " tree -- down it comes")
+    return
+  end
   pcall(function() actor:K2_DestroyActor() end)
   giveItems(loc, "log", ctx.config.get("tree_wood_drop"))
   if kind then

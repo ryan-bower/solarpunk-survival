@@ -46,6 +46,8 @@ local ok, err = pcall(function()
     "features.storms",
     "features.wand",         -- after storms: consumes services.castBolt; provides chargeWands
     "features.ritual",       -- after storms/wand: consumes services.strikeAt + chargeWands
+    "features.codex",        -- the Tempest Codex: placed-book interact -> reader UI (content pak)
+    "features.foundation",   -- snapped foundations skip the corners-touch-ground rule
     "ui.imgui_panel",
     "dev.recapture",
     "dev.remote",

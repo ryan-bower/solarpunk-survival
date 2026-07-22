@@ -83,6 +83,32 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
   DataTable override wins). Live-proven: clean boot, 311 rows, both wands present, item class
   resolves from the pak. Grant with `sps_wand give [mundane|electric]`. See
   `tools/pakkit/HOWTO.md` for the build + the retoc row-key name-index gotcha.
+- **A brand-new item CANNOT be a first-class hand tool from pak data alone.** Giving the wand
+  the Hoe-type taxonomy (`ItemType [1,0]` + durability) — which would earn it the game's real
+  in-hand grip and material — pulls it into the compiled tool-integration path, which expects
+  uncooked tool/shader data that only exists for the game's built-in tools, and **crashes world
+  load** ("Tried to access an uncooked shader map ID in a cooked application"). The row itself
+  loads fine (DataTable = 311); the crash is a background worker after load. So the cooked item
+  is a **Repairkit/resource-type** row (loads clean, equips) and the **mod supplies the in-hand
+  look** (next bullet). Do not re-attempt the Hoe-type row — proven fatal (commit `109fcd9`).
+- **THREE cooked wand items, one per state, each a distinct-colored stick in the inventory**
+  (user spec 2026-07-21): `MundaneWand` = **dark brown**, `ElectricWand` (spent) = **blue**,
+  `ChargedElectricWand` = **white**. Each icon is the vanilla 256×256 `Icon_Stick` (uncompressed
+  PF_B8G8R8A8) recolored by a luminance→tint ramp and staged as a NEW texture (`Icon_StickBrown`
+  / `_Blue` / `_White`) — never an override of `Icon_Stick`, which would tint every real stick.
+  See `build_wand_pak.py::make_icons`. Grant any with `sps_wand give mundane|electric|charged`.
+  Row keys are placed by their **sorted position inside `DB_Items`'s alphabetical key block** (NOT
+  at the DB_Items boundary — retoc prunes the boundary name; see HOWTO / the toolchain memory).
+- **The mod draws the stick+cobalt rig off the REAL equipped item** (`wand_from_item`, default
+  on): on `HotbarSlotChanged`, `equippedWandKind` reads `CurItemdataInHand`'s **`ItemActor`**
+  member (the item's UClass, e.g. `BP_MundaneWand_Item_C`) and matches it to a wand row — the
+  robust identity (RE probe: `GetCurrentHoldItem` has out-params and the struct's `DisplayName`
+  reads EMPTY at runtime, so neither is usable; the S_Item struct members carry GUID suffixes, so
+  the real names are discovered once by walking the struct type). When it is our wand it seats the
+  approved rig in that item's look (brown=cobalt, blue=diamond, white=diamond+crackle); switching
+  away stows it. Kill-switch `wand_from_item=false` reverts to the V-key/ritual-only draw.
+  **Not yet live-confirmed:** the rig appearing on equip (the first detection attempt drew nothing
+  because the old code read the unusable fields; the ItemActor fix is unverified in-world).
 - **The mod-managed rig still exists in parallel** (state machine Mundane -> charged ->
   uncharged in `features/wand.lua`; draw/stow with **V**; forged tip wears the Diamond material,
   charged adds a Niagara crackle; cast = generic left click `PressedHandInteraction` /
@@ -139,12 +165,15 @@ host-authoritatively in co-op MP. **No code review until the user asks.**
 - Candle lit-prop name; fence class names.
 - Sheep kill anim (currently destroy), tree fell anim (currently destroy + drops).
 - Book is a stand-in (Handbook). ~~The wand needs a cooked pak for a true inventory item~~ DONE
-  (`tools/pakkit`): the wand is a real item now. Remaining wand polish: the cooked item BP wears
-  only `SM_Stick` (no cobalt tip on the item mesh yet — add an `SM_Cobalt` SCS node to
-  `BP_MundaneWand_Item`/`BP_ElectricWand_Item`); the ritual/forge still grants the mod rig, not
-  the real item; the real item doesn't yet drive the cast/charge state. The rig is hand-SEATED
-  but root-attached (no safe recipe for a mesh that FOLLOWS the hand: slot attach crashes,
-  per-tick follow = the timer gotcha). Wand states are not persisted across restarts.
+  (`tools/pakkit`): the wand is a real item now, with a blue inventory icon, and the mod draws the
+  rig when it is equipped (see the wand bullets in §4). Remaining wand polish: the ritual/forge
+  still grants the mod rig state, not the real item into inventory; the real item doesn't yet
+  drive the cast/charge state (casting is still the V-drawn path). The rig is hand-SEATED but
+  root-attached (no safe recipe for a mesh that FOLLOWS the hand: slot attach crashes, per-tick
+  follow = the timer gotcha), so it sits at the hand's rest pose rather than tracking finger
+  animation. Wand states are not persisted across restarts. **Not yet live-confirmed:** the
+  held-item detection (`GetCurrentHoldItem`/`CurItemdataInHand`) — verify the rig appears on equip
+  and the stale hand mesh clears; if the stale mesh persists, add an explicit empty-hands call.
 - Buzz sound is pitched thunder until a real electricity cue is found.
 - Ground-drop of salvage/loot uses nearest-player inventory until `SpawnLeftoverItem`'s struct is
   mapped.
