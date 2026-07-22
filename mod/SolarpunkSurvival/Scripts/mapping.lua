@@ -46,7 +46,7 @@ M.schema = {
                "drinkClasses", "wateringFxComponentClass", "sprayRegisterFn", "sprayPlayFn" },
   codex    = { "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath",
                "interactFnHint", "openFn", "wblPath", "closeFns", "inputUiFn", "inputGameFn",
-               "researchId", "researchTierId", "researchHasFn", "researchSaveFn",
+               "guideProp", "researchId", "researchTierId", "researchHasFn", "researchSaveFn",
                "researchFieldId", "researchFieldDone" },
   foundation = { "previewPaths", "buildSystemClass", "buildSystemPath", "gateFn", "ruleFn",
                  "snapProp", "previewProp" },
@@ -317,6 +317,11 @@ M.profiles = {
       -- through SetInputModeGame(false, false, false)) -- codex.lua mirrors those exact calls
       inputUiFn      = "SetInputModeUI",
       inputGameFn    = "SetInputModeGame",
+      -- the controller's named slot for the survival guide in its HARDCODED interactable-UI
+      -- registry (Is An Interactable UIOpen / CloseOpenInteractableUIs / HideAllUI). While the
+      -- codex is open, codex.lua repoints this property at our widget so the pawn's input gates
+      -- and the ESC close path treat the codex exactly like the guide (all by-name virtuals).
+      guideProp      = "UI_SurvivalGuide",
       wblPath        = "/Script/UMG.Default__WidgetBlueprintLibrary", -- CreateWidget from Lua
       -- "The Dark Arts" research-card migration (RE'd from BP_MainPlayerController):
       -- a card is visible iff the player's saved Researches array holds {id, Researched=false}.

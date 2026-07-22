@@ -158,6 +158,8 @@ do
      "mapping: placed codex LoadAsset path")
   eq(m.codex.interactFnHint, "OnInteractedWith", "mapping: codex interact bound-event hint")
   eq(m.codex.openFn, "Open", "mapping: codex reader show fn")
+  eq(m.codex.guideProp, "UI_SurvivalGuide",
+     "mapping: controller slot the codex repoints to ride the interactable-UI registry")
   eq(m.codex.wblPath, "/Script/UMG.Default__WidgetBlueprintLibrary",
      "mapping: WidgetBlueprintLibrary CDO path (CreateWidget from Lua)")
   eq(string.format(m.items.classFmt, m.codex.itemRow), "BP_TempestCodex_Item_C",

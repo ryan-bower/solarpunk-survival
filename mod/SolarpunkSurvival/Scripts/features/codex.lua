@@ -109,39 +109,133 @@ end
 -- SetInputModeUI(UI_SurvivalGuide, DontQuitBuildingMode=false, LockMovement=IsGamepad,
 -- ShowCursorOnGamepad=false, DisableTabNavigation=true), and every UI closes through
 -- SetInputModeGame(false, false, false).
+--
+-- Two hard-won details (live 2026-07-22, "can still move around and swap items while reading"):
+--   * SetInputModeUI's ENGINE half (bShowMouseCursor + WidgetBlueprintLibrary
+--     SetInputMode_GameAndUIEx, the part that actually stops WASD/hotbar keys reaching the game)
+--     lives in gated ubergraph cursor state (UpdateGamepadCursor) that is not reliable from an
+--     out-of-band call site -- so after the game's own call we make the engine-level pair
+--     ourselves. Idempotent when the gated block did run.
+--   * See openCodex for WHEN this may be called: never in the interact frame itself.
 local uiFocused = false
 local closeHooked = false
+
+-- Ride the game's own interactable-UI registry (offline RE 2026-07-22, the "can still walk
+-- around while reading" bug): the pawn gates movement, hotbar scroll and tool input on the
+-- controller's `Is An Interactable UIOpen` -- a HARDCODED OR over ~28 named widget properties
+-- (UI_SurvivalGuide among them, checked via IsVisible()); ESC closes through
+-- CloseOpenInteractableUIs (Close() on each) and cinematics hide via HideAllUI (Hide() on
+-- each). There is no dynamic registry to enroll in, but every controller reference to
+-- UI_SurvivalGuide is a BY-NAME virtual our clone implements identically (IsVisible / Close /
+-- Hide -- verified against the full reference map: StartupUI, the guide-open event,
+-- Is An Interactable UIOpen, CloseOpenInteractableUIs, HideAllUI). So while the codex is open
+-- we REPOINT pc.UI_SurvivalGuide at our widget and restore it on close: one property write
+-- buys the complete guidebook behavior -- char lock, hotbar lock, ESC close.
+local guideOriginal = nil   -- the real survival-guide widget while we are repointed
+local repointed = false
+local gameModeHooked = false
+
+local function restoreGuide()
+  if not repointed then return end
+  repointed = false
+  local u, m = ctx.uehelp, codexMap()
+  local pc = u.playerController()
+  if pc and u.isValid(guideOriginal) then
+    u.set(pc, m.guideProp or "UI_SurvivalGuide", guideOriginal)
+  end
+  guideOriginal = nil
+end
+
+local function repointGuide(pc)
+  local u, m = ctx.uehelp, codexMap()
+  if repointed then return end
+  local okG, orig = u.get(pc, m.guideProp or "UI_SurvivalGuide")
+  if not okG or not u.isValid(orig) then return end   -- no live guide widget: nothing to ride
+  local vis = false
+  pcall(function() vis = orig:IsVisible() end)
+  if vis then return end                              -- the real guide is open: don't hijack it
+  guideOriginal = orig
+  u.set(pc, m.guideProp or "UI_SurvivalGuide", widget)
+  repointed = true
+end
 
 local function setUiFocus(on)
   local u, m = ctx.uehelp, codexMap()
   local pc = u.playerController()
   if not pc then return end
+  local wbl = StaticFindObject and StaticFindObject(m.wblPath)
   if on then
     local ok = u.call(pc, m.inputUiFn or "SetInputModeUI", widget, false, false, false, true)
     if ok then uiFocused = true
     else ctx.log.info("codex: input-mode call failed -- the book opens without focus") end
+    -- engine half: cursor on + route input through the UI (the controller's own KB/M block does
+    -- exactly SetInputMode_GameAndUIEx(self, widget, 0, false, false) + bShowMouseCursor = true)
+    if wbl then
+      pcall(function() wbl:SetInputMode_GameAndUIEx(pc, widget, 0, false, false) end)
+    end
+    u.set(pc, "bShowMouseCursor", true)
   elseif uiFocused then
     uiFocused = false
     u.call(pc, m.inputGameFn or "SetInputModeGame", false, false, false)
+    if wbl then
+      pcall(function() wbl:SetInputMode_GameOnly(pc, false) end)
+    end
+    u.set(pc, "bShowMouseCursor", false)
   end
 end
 
--- The widget's own X button runs its Close/Hide BP events: hook them to hand game input back.
--- (Real work deferred out of the BP call chain, as everywhere.)
+-- The widget's Close/Hide BP events fire for the X button AND for the game's own close paths
+-- (ESC -> CloseOpenInteractableUIs, cinematics -> HideAllUI, both reach us via the repoint):
+-- hook them to hand game input back and un-repoint. (Real work deferred out of the BP call
+-- chain, as everywhere.)
 local function armCloseHooks()
   if closeHooked then return end
   local m = codexMap()
   for _, fn in ipairs(m.closeFns or { "Close", "Hide" }) do
     local ok = pcall(RegisterHook, (m.widgetPath or "") .. ":" .. fn,
       ctx.log.guard("codex.close", function()
-        onGameThread(function() setUiFocus(false) end)
+        onGameThread(function()
+          setUiFocus(false)
+          restoreGuide()
+        end)
       end))
     closeHooked = closeHooked or ok
   end
   if closeHooked then ctx.log.info("codex: close hooks armed (input restores on shut cover)") end
 end
 
+-- Belt & braces for the repoint: SetInputModeGame is the chokepoint EVERY UI close funnels
+-- through (same one the wand's hand-rebuild rides). If it fires while we are repointed and the
+-- cover is already shut (a close path that dodged both widget hooks), restore the real guide.
+local function armGameModeHook(pc)
+  if gameModeHooked then return end
+  local m = codexMap()
+  local cls
+  pcall(function() cls = pc:GetClass():GetFullName() end)
+  if not cls then return end
+  local path = (cls:gsub("^%S+%s+", "")) .. ":" .. (m.inputGameFn or "SetInputModeGame")
+  gameModeHooked = pcall(RegisterHook, path, ctx.log.guard("codex.gamemode", function()
+    onGameThread(function()
+      if not repointed then return end
+      local vis = false
+      pcall(function() vis = widget:IsVisible() end)
+      -- setUiFocus(false) re-calls SetInputModeGame once; re-entry no-ops on cleared flags
+      if not vis then
+        setUiFocus(false)
+        restoreGuide()
+      end
+    end)
+  end))
+end
+
 -- Create (once) + Open the codex widget for the local player, taking UI input focus.
+--
+-- The focus grab is DEFERRED out of the interact frame (live 2026-07-22): our interact hook is a
+-- PRE-hook, so the cooked placeable's own event body -- whose tail is the retargeted
+-- ForceCloseInteractableUIs, i.e. the controller's generic interactable-UI reset ending in
+-- SetInputModeGame -- runs AFTER an in-frame SetInputModeUI and silently reverts it. That is why
+-- the book showed but WASD/hotbar keys kept working. One beat later wins that race; a second
+-- beat re-asserts in case a same-frame close chokepoint lands late.
 local function openCodex()
   local u, m = ctx.uehelp, codexMap()
   if not ensureWidget() then
@@ -152,8 +246,25 @@ local function openCodex()
     return
   end
   armCloseHooks()
+  local pc = u.playerController()
+  if pc then
+    armGameModeHook(pc)
+    repointGuide(pc)   -- BEFORE Open: the pawn's input gates read IsVisible through the repoint
+  end
   u.call(widget, m.openFn or "Open")
-  setUiFocus(true)
+  local function grab()
+    onGameThread(function()
+      -- only while the cover is actually open: a fast X-click between beats must not leave the
+      -- player cursor-locked with no UI on screen
+      local vis = false
+      pcall(function() vis = widget:IsVisible() end)
+      if ctx.uehelp.isValid(widget) and vis then setUiFocus(true) end
+    end)
+  end
+  if not pcall(ExecuteWithDelay, 200, grab) then grab() end
+  pcall(ExecuteWithDelay, 700, function()
+    if uiFocused then grab() end   -- skip if the cover was already shut (close hook cleared it)
+  end)
 end
 
 -- "The Dark Arts" research card, old-save migration. The card is tier-2 gated data-side
@@ -274,6 +385,8 @@ function F.init(c)
   -- armed at init covers the class, and openCodex re-resolves the widget chain per interact.
   ctx.uehelp.onNewInstance("/Script/Engine.Character", nil, function()
     -- construction callback: defer everything out of the spawn stack (pinSoon already delays)
+    -- world change: the old controller (and any repoint into it) died with the old world
+    repointed, guideOriginal, uiFocused = false, nil, false
     if not pcall(ExecuteWithDelay, 200, function() onGameThread(hookInteract) end) then
       onGameThread(function() hookInteract() end)
     end
