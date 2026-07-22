@@ -41,7 +41,7 @@ M.schema = {
                "handItemDonor", "handItemDonorPath", "clearHandFn", "materialDir", "stashFn",
                "restoreFn", "hotbarChangedFn", "handRebuildFn", "durabilityFn", "localControllerProp",
                "hotbarWidgetProp", "hotbarRefreshFn", "inventorySystemProp", "invChangedFn",
-               "itemRows", "holdItemFn", "handItemDataProp",
+               "itemRows", "holdItemFn", "handItemDataProp", "holdIndexFn", "removeQtyAtIndexFn",
                "waterStorageClass", "storageAddWaterFn", "consumeEffectsFn", "waterTouchFns",
                "drinkClasses", "wateringFxComponentClass", "sprayRegisterFn", "sprayPlayFn" },
   codex    = { "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath",
@@ -247,10 +247,20 @@ M.profiles = {
                                                       -- it before SetHandRBlueprintForBoth
                                                       -- destroys+respawns the hand actor
       durabilityFn    = "DecreaseCurItemDurability",  -- pawn fn: step the held item's bar down.
-                                                      -- ONE param (Amount) -- offline RE
-                                                      -- 2026-07-22: there is NO DestroyOnZero
-                                                      -- arg, and at 0 the item IS destroyed --
-                                                      -- never step the bar all the way down
+                                                      -- TWO params (offline bytecode dump
+                                                      -- 2026-07-22): DecreaseAmt + an OUT bool
+                                                      -- ItemDestroyed. UE4SS REFUSES the call
+                                                      -- unless both are passed (one arg =
+                                                      -- ok=false, the frozen-bar bug). At 0
+                                                      -- the item IS destroyed (the last-bolt
+                                                      -- transmute rides exactly that).
+      -- Real inventory removal (offline RE 2026-07-22, BC_InventorySystem dump). ConsumeItem
+      -- is the consumable EAT path and silently no-ops on the rods -- it must never be used
+      -- for item swaps (the transmute-duplication loop).
+      holdIndexFn        = "GetInventoryIndexForCurHoldItem", -- pawn fn -> held slot's index (ret int)
+      removeQtyAtIndexFn = "Remove Item Qty at Index",        -- InventorySystem fn (spaces in the
+                                                              -- FName are real): Index, Qty,
+                                                              -- out Success
       -- Redrawing the charge bar (same RE): the decrement chain writes the inventory slot but
       -- never refreshes the HOST's hotbar UI (no OnRep on authority, no broadcast), so the bar
       -- only moved on a slot switch. The mod runs the game's own widget refresh after each step.

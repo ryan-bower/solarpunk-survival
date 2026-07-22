@@ -19,7 +19,8 @@ local severity    = 1.0
 local strikeToken = 0       -- bumped on every start/stop; stale scheduled callbacks self-cancel
 local pingHooked  = false   -- the G-ping->lightning hook is armed once (needs a live controller)
 local preStormWind          -- wind intensity captured at storm start, restored on stop
-local modBolts    = {}      -- ids of bolt actors WE spawned (so the native-bolt tap skips them)
+local modBolts    = {}      -- FINAL FNames of bolt actors WE spawned (the native-bolt tap skips them)
+local modBoltLocs = {}      -- { {loc,t} } of recent mod spawns -- the tap's proximity fallback
 local selfDamage   = false  -- true while OUR damageController call is on the stack
 local lastBoltSeen = -1e9   -- os.clock() when a bolt actor last appeared (ours or the game's)
 local naturalStorm = false  -- a GAME-weather storm detected via its own bolts (no H press)
@@ -79,8 +80,12 @@ local function spawnBoltAt(loc)
   lastBoltSeen = os.clock()  -- open the damage-guard window BEFORE BeginPlay can deal native damage
   local a   = cls and pc and ctx.uehelp.spawnActorAt(pc, cls, loc)
   if a then
-    local id = ctx.identity.idOf(a)
-    if id then modBolts[id] = true end  -- consumed by the native-bolt tap's delayed check
+    -- register by FINAL FName (spawnActorAt finished the spawn, so the name is settled) --
+    -- the old location-grid id drifted between spawn and the tap's +delay re-read (the bolt
+    -- repositions), so our own bolts read as NATURAL strikes (live 2026-07-22)
+    local nm; pcall(function() nm = a:GetFName():ToString() end)
+    if nm then modBolts[nm] = true end  -- consumed by the native-bolt tap's delayed check
+    modBoltLocs[#modBoltLocs + 1] = { loc = loc, t = os.clock() }
   end
   return a
 end
@@ -173,7 +178,7 @@ function F.stopStorm()
   if stormActive then
     stormActive = false
     strikeToken = strikeToken + 1  -- invalidate every pending strike
-    modBolts = {}                  -- leak backstop (entries are normally consumed by the tap)
+    modBolts, modBoltLocs = {}, {} -- leak backstop (entries are normally consumed/expired)
     ctx.bus.emit("weather.changed", { storm = false, severity = 0 })
     ctx.log.info("storm stopped — skies clear")
   end
@@ -466,12 +471,25 @@ function F.onBoltSpawned(bolt)
   local ms = math.floor(ctx.config.get("bolt_impact_delay") * 1000)
   pcall(ExecuteWithDelay, ms, ctx.log.guard("bolt.native", function()
     onGameThread(function()
-      -- id must be read HERE: deferred-spawned actors only get their final name after
-      -- FinishSpawningActor, so an id captured at notify time never matches modBolts
-      local id = ctx.identity.idOf(bolt)
-      if id and modBolts[id] then modBolts[id] = nil; return end  -- ours: F.impact handles it
+      -- name must be read HERE: deferred-spawned actors only get their final name after
+      -- FinishSpawningActor, so a name captured at notify time never matches modBolts
+      local nm
+      pcall(function() if ctx.uehelp.isValid(bolt) then nm = bolt:GetFName():ToString() end end)
+      if nm and modBolts[nm] then modBolts[nm] = nil; return end  -- ours: F.impact handles it
       local loc = locOf(bolt)
       if not loc then return end
+      -- proximity fallback (live 2026-07-22): a bolt near a recent mod spawn is OURS even if
+      -- the name registry missed it (a second actor at the same strike). Misreading our own
+      -- cast as a natural bolt armed a phantom "natural storm", dealt double damage, and
+      -- opened the crash window on the doubled impact chain.
+      for i = #modBoltLocs, 1, -1 do
+        local e = modBoltLocs[i]
+        if os.clock() - e.t > 6 then
+          table.remove(modBoltLocs, i)
+        elseif (loc.X - e.loc.X) ^ 2 + (loc.Y - e.loc.Y) ^ 2 <= 1000 * 1000 then
+          return  -- ours (entry kept: one spawn can echo more than one actor; time expires it)
+        end
+      end
       -- a bolt we did not spawn, outside our storm = the GAME's weather is storming. Arm the
       -- machinery (ritual chain, ping-strikes) exactly as if H had been pressed.
       if not stormy() then

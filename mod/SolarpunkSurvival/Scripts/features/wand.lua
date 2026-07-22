@@ -783,17 +783,25 @@ local function tryCast(pawn)
     -- 0 -- a stray negative count would turn every later cast into an instant transmute)
     local left = math.max((zaps[id] or ctx.config.get("wand_electric_charges")) - 1, 0)
     zaps[id] = left
+    -- the charged item's bar (DefaultAttribues DURABILITY=3) counts the bolts down with us.
+    -- DecreaseCurItemDurability has an OUT param (ItemDestroyed) and UE4SS refuses the call
+    -- unless BOTH args are passed (live 2026-07-22: ok=false with one arg, the frozen bar).
+    -- On the LAST bolt the decrement hits 0 and the GAME destroys the rod itself -- the
+    -- cleanest removal there is; transmuteHeld only needs to grant the spent rod then.
+    local destroyed = false
+    if heldItemKind[id] == "charged" and ctx.map.wand.durabilityFn
+        and (left > 0 or ctx.config.get("wand_transmute_items")) then
+      -- (last-bolt decrement only when the transmute will replace the destroyed rod)
+      local okD, d = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1, false)
+      destroyed = okD and d == true
+      mark("cast durability -1 ok=" .. tostring(okD) .. " destroyed=" .. tostring(d))
+      refreshHotbarUi(pawn)
+    end
     if left > 0 then
-      -- the charged item's bar (DefaultAttribues DURABILITY=3) counts the bolts down with us
-      if heldItemKind[id] == "charged" and ctx.map.wand.durabilityFn then
-        local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1)
-        mark("cast durability -1 ok=" .. tostring(okD))
-        refreshHotbarUi(pawn)
-      end
       ctx.log.info(string.format("the rod still holds %d bolt(s)", left))
     else
       setState(pawn, "uncharged")
-      transmuteHeld(pawn, "electric")
+      transmuteHeld(pawn, "electric", { alreadyRemoved = destroyed })
     end
   end
 end
@@ -1017,21 +1025,6 @@ local function equippedWandKind(pawn)
   return nil
 end
 
--- Stack count of the item currently in hand (nil when the S_Item struct carries no
--- recognizable amount member -- callers must treat nil as "unknown", never as zero).
-local function heldAmount(pawn)
-  local m = ctx.map.wand
-  if not m.handItemDataProp then return nil end
-  local members = itemStructMembers(pawn)
-  local key = members and (members.Amount or members.CurrentAmount or members.Count
-              or members.StackSize or members.Stack)
-  if not key then return nil end
-  local ok, data = ctx.uehelp.get(pawn, m.handItemDataProp)
-  if not (ok and data ~= nil) then return nil end
-  local n; pcall(function() n = data[key] end)
-  return tonumber(n)
-end
-
 -- The rite-ladder overlay on a HELD item: the cooked item can't change when a rite imbues it, so
 -- the blank (mundane) rod renders/behaves at the player's EARNED rung -- blue once quenched,
 -- gold once the fire has been through it. The dedicated hydration/electric items keep their own
@@ -1125,12 +1118,17 @@ local function onHotbarChanged(pawn)
 end
 
 -- Swap the REAL held inventory item between the spent and charged rods (kind = "electric" |
--- "charged"). ConsumeItem() is the game's own eat-path removal -- it takes no args and eats ONE
--- of the currently-held item (offline RE of BP_MainPlayerCharacter) -- and the replacement lands
--- in the freed slot via the debug spawner. Only fires when the matching REAL item is in hand;
--- the mundane-overlay rod has no item to swap (its state ladder is mod-side already). The
--- delayed onHotbarChanged re-reads the hand once the game has settled the new item into it.
-transmuteHeld = function(pawn, toKind)
+-- "charged"). REMOVAL (offline RE 2026-07-22, BC_InventorySystem dump): ConsumeItem() is the
+-- consumable EAT path and silently no-ops on the rods (typed T5 but with no consume values) --
+-- every transmute minted a spare while the hand kept the old rod, the recharges-a-second-later
+-- duplication loop. The real removal is the inventory system's own
+-- "Remove Item Qty at Index"(Index, Qty, out Success) at the held slot's index (pawn
+-- GetInventoryIndexForCurHoldItem; wand rows are MaxStackSize=1 so qty 1 = the rod), then the
+-- replacement lands in the freed slot via the debug spawner. opts.alreadyRemoved = the caller
+-- watched the game destroy the item itself (durability hit 0) -- skip straight to the grant.
+-- Only fires when the matching REAL item is in hand; the mundane-overlay rod has no item to
+-- swap. The delayed onHotbarChanged re-reads the hand once the new item has settled into it.
+transmuteHeld = function(pawn, toKind, opts)
   if not ctx.config.get("wand_transmute_items") then return end
   local id = playerIdOf(pawn)
   if not id then return end
@@ -1152,46 +1150,40 @@ transmuteHeld = function(pawn, toKind)
     return
   end
   lastHandAction = os.clock()   -- our own swap echoes through the hotbar hook
-  local before = heldAmount(pawn)
-  local okEat = ctx.uehelp.call(pawn, "ConsumeItem")
-  if not okEat then
-    lastHandAction = -1e9       -- nothing changed hands; drop the echo suppression
-    return                      -- keep the old item rather than risk granting a duplicate
+  if not (opts and opts.alreadyRemoved) then
+    local m = ctx.map.wand
+    local okIdx, idx = ctx.uehelp.call(pawn, m.holdIndexFn)
+    local inv; pcall(function() inv = pawn[m.inventorySystemProp or "InventorySystem"] end)
+    if not (okIdx and type(idx) == "number" and idx >= 0 and ctx.uehelp.isValid(inv)
+            and m.removeQtyAtIndexFn) then
+      lastHandAction = -1e9     -- nothing changed hands; drop the echo suppression
+      mark("transmute: no held index (idx=" .. tostring(idx) .. ")")
+      return                    -- keep the old item rather than risk granting a duplicate
+    end
+    local okRem, removed = ctx.uehelp.call(inv, m.removeQtyAtIndexFn, idx, 1, false)
+    mark("transmute remove idx=" .. tostring(idx) .. " ok=" .. tostring(okRem)
+      .. " success=" .. tostring(removed))
+    if not okRem or removed == false then
+      lastHandAction = -1e9
+      ctx.log.warn("wand: the inventory refused to release the rod -- kept as-is")
+      return
+    end
   end
-  -- VERIFY the eat before granting (live 2026-07-22: the hand kept a charged rod after the
-  -- swap, and the +1200ms re-read flipped the state right back -- the recharges-a-second-
-  -- later loop). ConsumeItem is the game's consumable path and our rods are Stick clones,
-  -- so at +400ms the hand shows the truth: slot freed OR same-kind stack shrunk = eaten,
-  -- grant the new form; same kind with an unshrunk stack = the game refused, granting now
-  -- would mint a free rod. An unverifiable hand (no amount member, player already switched
-  -- slots) grants like before: losing the player's rod is the one unacceptable outcome.
-  pcall(ExecuteWithDelay, 400, ctx.log.guard("wand.transmute0", function()
-    onGameThread(function()
-      if not ctx.uehelp.isValid(pawn) then return end
-      local after = heldAmount(pawn)
-      if equippedWandKind(pawn) == held and before and after and after >= before then
+  if ctx.items.give(pc, rows[toKind], 1) then
+    if held == "hydration" and toKind == "charged" then hydroKnown[id] = nil end
+    heldItemKind[id] = toKind
+    barLevel[id] = nil  -- a fresh item's bar is game-seeded full; forget the stale count
+    pcall(ExecuteWithDelay, 1200, ctx.log.guard("wand.transmute", function()
+      onGameThread(function()
         lastHandAction = -1e9
-        ctx.log.warn("wand: the rod resisted transmutation (ConsumeItem no-op) -- kept as-is")
-        return
-      end
-      local pc2 = pawnController(pawn)
-      if pc2 and ctx.items.give(pc2, rows[toKind], 1) then
-        if held == "hydration" and toKind == "charged" then hydroKnown[id] = nil end
-        heldItemKind[id] = toKind
-        barLevel[id] = nil  -- a fresh item's bar is game-seeded full; forget the stale count
-        pcall(ExecuteWithDelay, 800, ctx.log.guard("wand.transmute", function()
-          onGameThread(function()
-            lastHandAction = -1e9
-            if ctx.uehelp.isValid(pawn) then onHotbarChanged(pawn) end
-          end)
-        end))
-      else
-        lastHandAction = -1e9
-        ctx.log.warn("wand: the rod's new form failed to arrive -- item row " .. tostring(rows[toKind])
-          .. " (recover it with `sps_wand give`)")
-      end
-    end)
-  end))
+        if ctx.uehelp.isValid(pawn) then onHotbarChanged(pawn) end
+      end)
+    end))
+  else
+    lastHandAction = -1e9
+    ctx.log.warn("wand: the rod's new form failed to arrive -- item row " .. tostring(rows[toKind])
+      .. " (recover it with `sps_wand give`)")
+  end
 end
 
 -- Redraw the hotbar's item bars after a durability step. The game's decrement chain writes the
@@ -1229,7 +1221,8 @@ syncHydroBar = function(pawn, id)
   local maxN = math.max(1, math.ceil(ctx.config.get("wand_hydration_max") / per))
   local cur = barLevel[id] or maxN
   if cur > target and ctx.map.wand.durabilityFn then
-    local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target)
+    -- two args: DecreaseAmt + the ItemDestroyed OUT param (UE4SS refuses the call without it)
+    local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target, false)
     mark("hydro bar -" .. (cur - target) .. " ok=" .. tostring(okD))
     refreshHotbarUi(pawn)
   end
