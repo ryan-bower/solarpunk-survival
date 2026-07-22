@@ -439,9 +439,22 @@ local function refreshRig(pawn)
   -- ForceUpdateHotbarSlot -> UpdateHandMeshesAndModes -- offline RE 2026-07-22) destroys our
   -- spawned hand actor and poses an empty palm. A rig whose actor died must REBUILD on the
   -- same record -- repainting dead comps leaves the hand empty, and keeping r preserves
-  -- r.stashed (never re-stash/restore mid-draw).
-  if r and r.mode and r.handItem and not ctx.uehelp.isValid(r.handItem) then
-    r.mode, r.handItem, r.food = nil, nil, nil
+  -- r.stashed (never re-stash/restore mid-draw). IsValid alone CANNOT detect this death:
+  -- a game-destroyed actor stays "valid" until GC actually collects it (the
+  -- invisible-wand-after-inventory bug, live 2026-07-22), so also require the pawn's
+  -- tracked hand-item prop to still point at OUR actor -- after the game's re-equip it is
+  -- null (unmapped rows) or a new actor, which is the reliable death signal.
+  if r and r.mode and r.handItem then
+    local alive = ctx.uehelp.isValid(r.handItem)
+    if alive and ctx.map.wand.handItemProp then
+      local cur
+      pcall(function() cur = pawn[ctx.map.wand.handItemProp] end)
+      alive = ctx.uehelp.isValid(cur) and sameObject(cur, r.handItem)
+    end
+    if not alive then
+      mark("hand actor gone -- rebuild")
+      r.mode, r.handItem, r.food, r.refill = nil, nil, nil, nil
+    end
   end
   if not (r and r.mode) then
     if not r then
@@ -766,13 +779,15 @@ local function tryCast(pawn)
   if not loc then return end
   if ctx.services.castBolt and ctx.services.castBolt(loc, id) then
     ctx.log.info(string.format("*** the wand SPEAKS -- bolt cast at (%.0f,%.0f) ***", loc.X, loc.Y))
-    -- a full rod holds wand_electric_charges bolts; only the LAST one dims it
-    local left = (zaps[id] or ctx.config.get("wand_electric_charges")) - 1
+    -- a full rod holds wand_electric_charges bolts; only the LAST one dims it (clamped at
+    -- 0 -- a stray negative count would turn every later cast into an instant transmute)
+    local left = math.max((zaps[id] or ctx.config.get("wand_electric_charges")) - 1, 0)
     zaps[id] = left
     if left > 0 then
       -- the charged item's bar (DefaultAttribues DURABILITY=3) counts the bolts down with us
       if heldItemKind[id] == "charged" and ctx.map.wand.durabilityFn then
-        ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1)
+        local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1)
+        mark("cast durability -1 ok=" .. tostring(okD))
         refreshHotbarUi(pawn)
       end
       ctx.log.info(string.format("the rod still holds %d bolt(s)", left))
@@ -1002,6 +1017,21 @@ local function equippedWandKind(pawn)
   return nil
 end
 
+-- Stack count of the item currently in hand (nil when the S_Item struct carries no
+-- recognizable amount member -- callers must treat nil as "unknown", never as zero).
+local function heldAmount(pawn)
+  local m = ctx.map.wand
+  if not m.handItemDataProp then return nil end
+  local members = itemStructMembers(pawn)
+  local key = members and (members.Amount or members.CurrentAmount or members.Count
+              or members.StackSize or members.Stack)
+  if not key then return nil end
+  local ok, data = ctx.uehelp.get(pawn, m.handItemDataProp)
+  if not (ok and data ~= nil) then return nil end
+  local n; pcall(function() n = data[key] end)
+  return tonumber(n)
+end
+
 -- The rite-ladder overlay on a HELD item: the cooked item can't change when a rite imbues it, so
 -- the blank (mundane) rod renders/behaves at the player's EARNED rung -- blue once quenched,
 -- gold once the fire has been through it. The dedicated hydration/electric items keep their own
@@ -1051,9 +1081,12 @@ local function onHotbarChanged(pawn)
           transmuteHeld(pawn, "hydration")
         end
       elseif kind == "charged" then
-        -- a charged rod arrives full of bolts (granted/looted/transmuted alike)
+        -- a charged rod IN HAND is never spent: a fresh one arrives full, and a spent
+        -- count meeting a charged item means the next rod of a stack came up after a
+        -- transmute. 0 is truthy in Lua, so the old `zaps or full` never reset a spent
+        -- count -- the one-bolt-then-flicker loop (live 2026-07-22)
         tiers[id] = "electrick"
-        zaps[id] = zaps[id] or ctx.config.get("wand_electric_charges")
+        if (zaps[id] or 0) <= 0 then zaps[id] = ctx.config.get("wand_electric_charges") end
       elseif kind == "electric" then
         tiers[id] = "electrick"
       end
@@ -1119,26 +1152,46 @@ transmuteHeld = function(pawn, toKind)
     return
   end
   lastHandAction = os.clock()   -- our own swap echoes through the hotbar hook
+  local before = heldAmount(pawn)
   local okEat = ctx.uehelp.call(pawn, "ConsumeItem")
   if not okEat then
     lastHandAction = -1e9       -- nothing changed hands; drop the echo suppression
     return                      -- keep the old item rather than risk granting a duplicate
   end
-  if ctx.items.give(pc, rows[toKind], 1) then
-    if held == "hydration" and toKind == "charged" then hydroKnown[id] = nil end
-    heldItemKind[id] = toKind
-    barLevel[id] = nil  -- a fresh item's bar is game-seeded full; forget the stale count
-    pcall(ExecuteWithDelay, 1200, ctx.log.guard("wand.transmute", function()
-      onGameThread(function()
+  -- VERIFY the eat before granting (live 2026-07-22: the hand kept a charged rod after the
+  -- swap, and the +1200ms re-read flipped the state right back -- the recharges-a-second-
+  -- later loop). ConsumeItem is the game's consumable path and our rods are Stick clones,
+  -- so at +400ms the hand shows the truth: slot freed OR same-kind stack shrunk = eaten,
+  -- grant the new form; same kind with an unshrunk stack = the game refused, granting now
+  -- would mint a free rod. An unverifiable hand (no amount member, player already switched
+  -- slots) grants like before: losing the player's rod is the one unacceptable outcome.
+  pcall(ExecuteWithDelay, 400, ctx.log.guard("wand.transmute0", function()
+    onGameThread(function()
+      if not ctx.uehelp.isValid(pawn) then return end
+      local after = heldAmount(pawn)
+      if equippedWandKind(pawn) == held and before and after and after >= before then
         lastHandAction = -1e9
-        if ctx.uehelp.isValid(pawn) then onHotbarChanged(pawn) end
-      end)
-    end))
-  else
-    lastHandAction = -1e9
-    ctx.log.warn("wand: the rod's new form failed to arrive -- item row " .. tostring(rows[toKind])
-      .. " (recover it with `sps_wand give`)")
-  end
+        ctx.log.warn("wand: the rod resisted transmutation (ConsumeItem no-op) -- kept as-is")
+        return
+      end
+      local pc2 = pawnController(pawn)
+      if pc2 and ctx.items.give(pc2, rows[toKind], 1) then
+        if held == "hydration" and toKind == "charged" then hydroKnown[id] = nil end
+        heldItemKind[id] = toKind
+        barLevel[id] = nil  -- a fresh item's bar is game-seeded full; forget the stale count
+        pcall(ExecuteWithDelay, 800, ctx.log.guard("wand.transmute", function()
+          onGameThread(function()
+            lastHandAction = -1e9
+            if ctx.uehelp.isValid(pawn) then onHotbarChanged(pawn) end
+          end)
+        end))
+      else
+        lastHandAction = -1e9
+        ctx.log.warn("wand: the rod's new form failed to arrive -- item row " .. tostring(rows[toKind])
+          .. " (recover it with `sps_wand give`)")
+      end
+    end)
+  end))
 end
 
 -- Redraw the hotbar's item bars after a durability step. The game's decrement chain writes the
@@ -1176,7 +1229,8 @@ syncHydroBar = function(pawn, id)
   local maxN = math.max(1, math.ceil(ctx.config.get("wand_hydration_max") / per))
   local cur = barLevel[id] or maxN
   if cur > target and ctx.map.wand.durabilityFn then
-    ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target)
+    local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target)
+    mark("hydro bar -" .. (cur - target) .. " ok=" .. tostring(okD))
     refreshHotbarUi(pawn)
   end
   barLevel[id] = target
@@ -1229,6 +1283,13 @@ local function hookHandRebuild()
         if not ctx.uehelp.isValid(p) then return end
         local id = playerIdOf(p)
         if not (id and drawn[id] and wands[id]) then return end
+        -- an inventory shuffle can change the ACTIVE slot's item with no HotbarSlotChanged:
+        -- a kind drift is a real switch (take-up/put-away), not a heal
+        if ctx.config.get("wand_from_item") and heldItemKind[id]
+            and equippedWandKind(p) ~= heldItemKind[id] then
+          onHotbarChanged(p)
+          return
+        end
         refreshRig(p)  -- a dead hand actor forces a rebuild on the same rig record
       end)
     end))
