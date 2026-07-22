@@ -250,10 +250,12 @@ M.profiles = {
                                                       -- TWO params (offline bytecode dump
                                                       -- 2026-07-22): DecreaseAmt + an OUT bool
                                                       -- ItemDestroyed. UE4SS REFUSES the call
-                                                      -- unless both are passed (one arg =
-                                                      -- ok=false, the frozen-bar bug). At 0
-                                                      -- the item IS destroyed (the last-bolt
-                                                      -- transmute rides exactly that).
+                                                      -- unless the OUT slot gets a fresh Lua
+                                                      -- TABLE (one arg or a scalar there =
+                                                      -- pcall error, the frozen-bar bug); the
+                                                      -- out value lands in the table (outVal).
+                                                      -- At 0 the item IS destroyed (the
+                                                      -- last-bolt transmute rides that).
       -- Real inventory removal (offline RE 2026-07-22, BC_InventorySystem dump). ConsumeItem
       -- is the consumable EAT path and silently no-ops on the rods -- it must never be used
       -- for item swaps (the transmute-duplication loop).

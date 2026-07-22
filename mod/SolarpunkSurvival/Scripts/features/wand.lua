@@ -115,6 +115,15 @@ end
 -- across two separate property reads).
 local function sameObject(a, b) return ctx.uehelp.sameObject(a, b) end
 
+-- UE4SS out-params: the call REQUIRES a fresh Lua table in each OUT slot and stores the
+-- out value into it, keyed by the param's name (live 2026-07-22: a scalar placeholder
+-- throws "no table was on the stack"). pairs fallback in case the key convention shifts.
+local function outVal(t, name)
+  if t[name] ~= nil then return t[name] end
+  for _, v in pairs(t) do return v end
+  return nil
+end
+
 local function pawnController(pawn)
   local pc
   pcall(function() pc = pawn.Controller end)
@@ -784,15 +793,18 @@ local function tryCast(pawn)
     local left = math.max((zaps[id] or ctx.config.get("wand_electric_charges")) - 1, 0)
     zaps[id] = left
     -- the charged item's bar (DefaultAttribues DURABILITY=3) counts the bolts down with us.
-    -- DecreaseCurItemDurability has an OUT param (ItemDestroyed) and UE4SS refuses the call
-    -- unless BOTH args are passed (live 2026-07-22: ok=false with one arg, the frozen bar).
-    -- On the LAST bolt the decrement hits 0 and the GAME destroys the rod itself -- the
-    -- cleanest removal there is; transmuteHeld only needs to grant the spent rod then.
+    -- DecreaseCurItemDurability has an OUT param (ItemDestroyed): UE4SS refuses the call
+    -- unless it gets a fresh Lua TABLE in that slot, and stores the out value into it
+    -- (live 2026-07-22: one arg = ok=false; a scalar placeholder = "no table was on the
+    -- stack" -- both froze the bar). On the LAST bolt the decrement hits 0 and the GAME
+    -- destroys the rod itself -- the cleanest removal; transmuteHeld only grants then.
     local destroyed = false
     if heldItemKind[id] == "charged" and ctx.map.wand.durabilityFn
         and (left > 0 or ctx.config.get("wand_transmute_items")) then
       -- (last-bolt decrement only when the transmute will replace the destroyed rod)
-      local okD, d = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1, false)
+      local out = {}
+      local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1, out)
+      local d = outVal(out, "ItemDestroyed")
       destroyed = okD and d == true
       mark("cast durability -1 ok=" .. tostring(okD) .. " destroyed=" .. tostring(d))
       refreshHotbarUi(pawn)
@@ -1160,7 +1172,9 @@ transmuteHeld = function(pawn, toKind, opts)
       mark("transmute: no held index (idx=" .. tostring(idx) .. ")")
       return                    -- keep the old item rather than risk granting a duplicate
     end
-    local okRem, removed = ctx.uehelp.call(inv, m.removeQtyAtIndexFn, idx, 1, false)
+    local out = {}
+    local okRem = ctx.uehelp.call(inv, m.removeQtyAtIndexFn, idx, 1, out)
+    local removed = outVal(out, "Success")
     mark("transmute remove idx=" .. tostring(idx) .. " ok=" .. tostring(okRem)
       .. " success=" .. tostring(removed))
     if not okRem or removed == false then
@@ -1221,8 +1235,8 @@ syncHydroBar = function(pawn, id)
   local maxN = math.max(1, math.ceil(ctx.config.get("wand_hydration_max") / per))
   local cur = barLevel[id] or maxN
   if cur > target and ctx.map.wand.durabilityFn then
-    -- two args: DecreaseAmt + the ItemDestroyed OUT param (UE4SS refuses the call without it)
-    local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target, false)
+    -- two args: DecreaseAmt + a fresh TABLE for the ItemDestroyed OUT param (see outVal)
+    local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target, {})
     mark("hydro bar -" .. (cur - target) .. " ok=" .. tostring(okD))
     refreshHotbarUi(pawn)
   end
