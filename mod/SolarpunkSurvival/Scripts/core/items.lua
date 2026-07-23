@@ -41,4 +41,20 @@ function M.give(pc, row, amount)
   return pcall(function() pc:DEBUG_SpawnItems(cls, amount or 1) end) == true
 end
 
+-- Grant `amount` of an item named by its ITEM-ACTOR class short name (e.g. "BP_Beeswax_Item_C").
+-- The ritual offerings (mapping.ritual.*Offerings) are mapped as world item-actor classes, not
+-- DB_Items rows, so M.give's row->class formatting doesn't fit them -- resolve the class directly,
+-- LoadAsset-ing it from the flat item-actor dir if it isn't resident yet.
+function M.giveByClass(pc, shortClass, amount)
+  if not (pc and shortClass) then return false end
+  local it = M._map and M._map.items
+  local asset
+  if it and it.assetDir then
+    asset = it.assetDir .. shortClass:gsub("_C$", "") .. "." .. shortClass
+  end
+  local cls = uehelp.classByName(shortClass, asset)
+  if not cls then return false end
+  return pcall(function() pc:DEBUG_SpawnItems(cls, amount or 1) end) == true
+end
+
 return M

@@ -57,6 +57,7 @@ local ok, err = pcall(function()
     "dev.recapture",
     "dev.remote",
     "dev.ritual_test",
+    "dev.ritual_kit",        -- `sps_needful hydration|electrick`: stage a rite's animal + rod + offerings
   }
   for _, name in ipairs(features) do
     local okf, mod = pcall(require, name)
