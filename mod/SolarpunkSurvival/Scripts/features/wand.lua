@@ -497,16 +497,16 @@ local function refreshRig(pawn)
   end
 end
 
--- One delayed HARD refresh (tear + rebuild), outside the current call chain: the game's own
--- handling behind a click or an in-place slot rewrite can clear the hand mesh AFTER we return
--- (cast-consume, the pour's bar sync), and a repaint alone does not bring it back. Same idiom
--- setState uses for every state change; this one is for actions that change no state.
+-- One delayed SOFT heal, outside the current call chain: the game's handling behind a click
+-- can clear the hand AFTER we return (cast-consume, a rare bar overwrite). refreshRig already
+-- detects a dead/replaced hand actor (the tracked-prop check) and rebuilds ONLY then -- a
+-- healthy rig is just repainted, so pours that no longer rewrite the slot don't flicker. Do
+-- NOT tear here: an unconditional tear+respawn per pour IS a visible flicker.
 local function healRigSoon(pawn)
   local id = playerIdOf(pawn)
   if not id then return end
   pcall(ExecuteWithDelay, 250, ctx.log.guard("wand.healrig", function()
     onGameThread(function()
-      tearRig(id, { handsBack = false })
       if ctx.uehelp.isValid(pawn) then refreshRig(pawn) end
     end)
   end))
@@ -1325,6 +1325,24 @@ syncHydroBar = function(pawn, id)
   if not per or per <= 0 then return end
   local target = math.max(1, math.ceil((charges[id] or 0) / per))
   if barLevel[id] == target then return end
+  -- THE POUR FAST PATH: exactly one notch down, mirror trusted, not the final notch -> the
+  -- game's own durability decrement (the very call the watering can makes every pour). It
+  -- writes the slot WITHOUT the re-equip that OverwriteAndSaveItemAtIndex triggers -- the
+  -- overwrite killed our spawned hand model on EVERY pour (the invisible-wand report, live
+  -- 2026-07-23 00:12). The decrement is a constant 1 and only fires when the mirror agrees
+  -- (target == barLevel-1), so the 19:54 mirror-drift rod-destruction class cannot recur;
+  -- the FINAL notch (target 1) still absolute-overwrites, so real durability can never step
+  -- to 0 (at 0 the game deletes the item).
+  if barLevel[id] and target == barLevel[id] - 1 and target >= 2 and ctx.map.wand.durabilityFn then
+    local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, 1, {})
+    mark("hydro bar -1 ok=" .. tostring(okD))
+    if okD then
+      barLevel[id] = target
+      refreshHotbarUi(pawn)
+      return
+    end
+    barLevel[id] = nil  -- decrement refused -> distrust the mirror; absolute rewrite below
+  end
   local cls = ctx.items and ctx.items.classFor((ctx.map.wand.itemRows or {}).hydration)
   if not cls then mark("hydro bar: no item class -- sync skipped") return end
   if overwriteHeldSlot(pawn, cls, durabilitySavedata(target)) then
