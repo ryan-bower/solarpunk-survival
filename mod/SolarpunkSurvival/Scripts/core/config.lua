@@ -65,9 +65,11 @@ M.defaults = {
   -- Direct material assets, NOT mesh donors: the SM_Cobalt MESH ships with WorldGridMaterial (the
   -- engine's grey-white checker -- its real M_Cobalt was never assigned), and M_Stick's T_Bark
   -- reads pale in hand. Live-tunable: any wand_* change rebuilds the drawn rig.
-  wand_mat_mundane     = "M_Deco_Logs",         -- chopped-log brown wood
+  wand_mat_mundane     = "M_Trunk",             -- tree-bark DARK brown (M_Deco_Logs read as
+                                                -- plain wood in hand -- user asked for darker)
   wand_mat_hydration   = "M_Cobalt",            -- river-blue (the quenched rod)
-  wand_mat_electric    = "M_Statue_Gold",       -- solid yellow (uncharged Electrick)
+  wand_mat_electric    = "M_Beeswax",           -- waxy YELLOW (M_Statue_Gold read as bronze,
+                                                -- not yellow -- and the rod IS sealed in beeswax)
   -- charged = uncharged's yellow family + a LIVE glow. Plant *_Shining materials are out (grass-
   -- wind WPO wobble + alien UVs on the stick -- seen live); textured materials are out (foreign
   -- UVs). M_Energy_On is a textureless powered-state material; swap candidates live via

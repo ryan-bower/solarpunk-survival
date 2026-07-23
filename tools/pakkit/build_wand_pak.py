@@ -338,7 +338,8 @@ def add_texture_import(d, base_tex, new_tex):
     add_name(d, new_tex)
     return tex_idx
 
-def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx, durability=None):
+def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx, durability=None,
+             tools_tab=False):
     stick = next(r for r in rows if r["Name"] == "Stick")
     rasp = next(r for r in rows if r["Name"] == "Raspberry")
     cobalt = next(r for r in rows if r["Name"] == "Cobalt")
@@ -362,6 +363,17 @@ def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx, durability=N
     # SetHandRBlueprintForBoth call with a donor hand-item class and re-dressing the spawned actor
     # (features/wand.lua buildRig). Patching the map would mean re-cooking the whole pawn BP -- no.
     field(row, "ItemType")["Value"] = copy.deepcopy(field(rasp, "ItemType")["Value"])
+    # CRAFTING-MENU TAB (bytecode RE of SkyGameInstance.InitialGetCraftingRecepysByType
+    # 2026-07-22): the workbench tabs bucket recipes by the END PRODUCT item row's ItemType
+    # via Array_CONTAINS -- membership, order-free, multi-tab capable. The pawn never READS
+    # ItemType (its only refs are empty-hand struct consts), so extra entries can't reroute
+    # the hand-render path; T5 stays at index 0 purely for it's-a-consumable clarity.
+    # T1 == the Tools tab (Hoe/Axe/Watercan all carry it).
+    if tools_tab:
+        tool_entry = copy.deepcopy(field(rasp, "ItemType")["Value"][0])
+        tool_entry["Name"] = str(len(field(row, "ItemType")["Value"]))
+        tool_entry["Value"] = "EItemType::NewEnumerator1"
+        field(row, "ItemType")["Value"].append(tool_entry)
     # ALSO copy Raspberry's INTERACTION (I2). The game only renders an item in-hand when it has an
     # active "use" interaction -- a passive I0 (Stick) shows nothing (proven: T5+I0 => invisible).
     # I2 makes the game draw the palm-out hold + SM_Stick. The wand has empty DefaultAttribues, so
@@ -448,7 +460,7 @@ def patch_db_items():
     codex_cls = add_bp_imports(d, "BP_TempestCodex_Item")
     make_row(d, rows, "MundaneWand", "Mundane Wand",
              "A stick sealed with beeswax. It hums faintly when storms pass. The dark arts know its true name.",
-             icon_brown, mund_cls)
+             icon_brown, mund_cls, tools_tab=True)
     # The middle rung of the ladder: the chicken-and-water rite quenches the mundane rod blue.
     # durability 12 = the charge bar: one notch per 20-measure pour (240 max / 20).
     make_row(d, rows, "HydrationWand", "Hydration Wand",

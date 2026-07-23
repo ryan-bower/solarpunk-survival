@@ -16,7 +16,8 @@ M.schema = {
   pawn     = { "class", "healthProp", "isShelteredFn", "worldLocationFn", "respawnFn", "dropInventoryFn", "playerIdProp" },
   build    = { "pieceClass", "stableIdProp", "demolishFn", "demolishRefund" },
   crop     = { "class", "killNoSeedFn" },
-  battery  = { "class", "chargeProp", "maxChargeProp", "classHints", "chargePropCandidates", "maxChargePropCandidates" },
+  battery  = { "class", "chargeProp", "maxChargeProp", "classHints", "chargePropCandidates", "maxChargePropCandidates",
+               "componentProp", "curStoredProp", "maxStoredProp", "updateFn" },
   machine  = { "classes", "generatorHints", "techSuffixes", "excludeHints", "salvageDefault" },
   airship  = { "class", "healthProp", "isFlyingFn", "crashFn" },
   island   = { "class" },
@@ -175,6 +176,18 @@ M.profiles = {
     -- NAME and probe candidate members (all pcall-guarded). Re-dump at a base to pin exact names.
     battery = {
       classHints = { "Battery" },
+      -- The REAL charge state (offline RE of BP_Battery_Placeable + BPC_Battery_EnergySystem-
+      -- Component 2026-07-22): the actor only mirrors `CurPowerStoredForReplication`; the
+      -- authoritative int lives on the COMPONENT. Write CurPowerStored = MaxPowerStored, then
+      -- call UpdateBattery(false) -- the game's own charge tick: it re-clamps, marks the
+      -- property dirty, and fires OnBatteryCapacityChanged (-> display + replication mirror +
+      -- periodic SaveData) and OnBatteryFull. Never write the replication mirror directly:
+      -- the component overwrites it on its next tick.
+      componentProp = "BPC_Battery_EnergySystemComponent",
+      curStoredProp = "CurPowerStored",
+      maxStoredProp = "MaxPowerStored",
+      updateFn      = "UpdateBattery",   -- (Discharging: bool) -- false = one charge step
+      -- Legacy actor-prop probes (pre-RE guesses; kept as the degrade path for a game update):
       chargePropCandidates    = { "CurCharge", "CurrentCharge", "Charge", "CurEnergy", "StoredEnergy", "CurPower", "Energy" },
       maxChargePropCandidates = { "MaxCharge", "MaxEnergy", "MaxPower", "Capacity" },
     },

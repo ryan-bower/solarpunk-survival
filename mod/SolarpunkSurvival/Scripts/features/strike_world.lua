@@ -75,7 +75,24 @@ end
 
 --------------------------------------------------------------------- handlers
 function F.chargeToFull(actor, cls)
-  local b = ctx.map.battery
+  local b, u = ctx.map.battery, ctx.uehelp
+  -- The mapped path (see the battery block in mapping.lua): charge lives on the energy
+  -- COMPONENT, and UpdateBattery(false) is the game's own follow-through (clamp + dirty +
+  -- capacity/full delegates -> display, replication mirror, periodic save).
+  if b and b.componentProp and b.curStoredProp then
+    local comp
+    pcall(function() comp = actor[b.componentProp] end)
+    if u.isValid(comp) then
+      local okM, maxv = u.get(comp, b.maxStoredProp)
+      if okM and type(maxv) == "number" and maxv > 0 then
+        u.set(comp, b.curStoredProp, maxv)
+        if b.updateFn then u.call(comp, b.updateFn, false) end
+        ctx.log.info("*** lightning charged the " .. cls .. " to FULL (" .. tostring(maxv) .. ") ***")
+        return
+      end
+    end
+  end
+  -- degrade path: probe number props on the actor itself (pre-RE candidates)
   local prop = b and select(1, probeNumberProp(actor, b.chargePropCandidates))
   if not prop then
     ctx.log.info("strike_world: no charge prop found on " .. cls .. " (re-dump to map it)")

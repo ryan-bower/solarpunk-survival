@@ -192,9 +192,9 @@ do
   eq(config.get("wand_in_hand"), true, "config: wand defaults to the game's hand slots")
   eq(config.get("wand_from_item"), true, "config: the real cooked item drives the in-hand rig")
   eq(config.get("wand_tip_up"), 0.0, "config: tip seat is computed, trim defaults to zero")
-  eq(config.get("wand_mat_mundane"), "M_Deco_Logs", "config: mundane tint = log brown")
+  eq(config.get("wand_mat_mundane"), "M_Trunk", "config: mundane tint = tree-bark dark brown")
   eq(config.get("wand_mat_hydration"), "M_Cobalt", "config: hydration tint = river blue")
-  eq(config.get("wand_mat_electric"), "M_Statue_Gold", "config: uncharged-electrick tint = yellow")
+  eq(config.get("wand_mat_electric"), "M_Beeswax", "config: uncharged-electrick tint = beeswax yellow")
   eq(config.get("wand_mat_charged"), "M_Energy_On",
      "config: charged tint = textureless powered-state glow")
   eq(config.get("wand_spray_seconds"), 0.8, "config: pour splash duration")

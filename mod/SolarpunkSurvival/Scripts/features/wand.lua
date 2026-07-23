@@ -34,9 +34,9 @@
 --              item (the game's own StashHandItem); stowing restores it; picking a hotbar tool
 --              while the wand is out stows the wand -- exactly like swapping tools.
 --   states   = Mundane Wand -> Lightning Wand (charged) -> Lightning Wand (uncharged).
---              charged: the stick wears its own pickup-GLOW material (the game's "grab me"
---              shimmer = the wand is live) + optional crackle. uncharged: true cobalt blue.
---              mundane: chopped-log brown. All from config wand_mat_* material assets.
+--              charged: the powered-state glow (the wand is live) + optional crackle.
+--              uncharged: beeswax yellow. hydration: cobalt blue. mundane: tree-bark dark
+--              brown. All from config wand_mat_* material assets.
 --   cast     = left click (PressedHandInteraction / IA_HandInteract) while drawn + charged: a
 --              real bolt at the aimed point, ANY weather. The stash means the game still sees
 --              EMPTY hands while the wand is drawn, so the generic left click keeps firing --
@@ -394,9 +394,8 @@ end
 
 -- Repaint the in-hand stick (and any legacy tips) + fx for the owner's current state. The TINT is
 -- a material override on the dressed hand-item mesh comp, from the config wand_mat_* material
--- assets: Mundane = chopped-log brown, Electric/uncharged = true cobalt blue, Charged = the
--- stick's own pickup-GLOW material (M_Stick_Highlighted) -- the game's "you can pick me up"
--- shimmer repurposed as "the wand is live". Mundane is painted explicitly (not skipped) so
+-- assets: Mundane = tree-bark dark brown, Electric/uncharged = beeswax yellow, Hydration =
+-- cobalt blue, Charged = the powered-state glow. Mundane is painted explicitly (not skipped) so
 -- switching hotbar slots from an Electric wand back to a Mundane one un-blues the stick. The
 -- override needs no cleanup -- it lives on the spawned hand-item actor and dies with it. Only the
 -- CHARGED wand crackles (wand_fx: OFF until the Niagara call is live-proven).
