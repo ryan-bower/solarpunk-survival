@@ -20,7 +20,7 @@ You need three things first:
 
 | | |
 |---|---|
-| Windows + **Solarpunk** on Steam | tested against build `24038177` |
+| **Windows** or **Linux / Steam Deck** + **Solarpunk** on Steam | tested against build `24038177`. Linux / Steam Deck run through Proton — use [`install.sh`](#linux--steam-deck-proton) instead of the PowerShell script |
 | **[The Solarpunk-patched UE4SS](https://www.nexusmods.com/solarpunk/mods/4)** (`UE4SS-SP-Developer.zip`) | stock UE4SS can't scan this game's engine build. Nexus needs a login, so this is the one file the installer can't fetch for you — just leave it in your **Downloads** folder |
 | This mod — the **release zip**, or a clone of this repo | a clone has no content pak (game-derived data isn't committed); [build it](#building-the-content-pak) or use the release zip |
 
@@ -51,6 +51,31 @@ and it leaves your config and mod save alone.
 
 **Multiplayer:** Solarpunk co-op is a host-authoritative listen server. All the logic runs on the
 host, so **every player in the session needs this same install**. Unmodded clients are unsupported.
+
+### Linux & Steam Deck (Proton)
+
+There is **no native Linux build** of Solarpunk — it runs through **Proton**, and so can this mod.
+Use the Linux installer instead of `install.ps1`, with the game closed:
+
+```bash
+bash install.sh
+```
+
+It does the same filesystem work as the Windows script — finds the game through Steam's
+`libraryfolders.vdf` (native, Flatpak, and Deck SD-card libraries), installs the patched UE4SS, pins
+the engine version, and copies in the Lua mod and content pak — then prints the **two Steam-side
+steps it can't do for you**:
+
+1. **Launch option** (Steam ▸ Solarpunk ▸ Properties ▸ Launch Options), so Wine loads UE4SS's proxy
+   DLL: `WINEDLLOVERRIDES="dwmapi=n,b" %command%`
+2. **The MSVC runtime** in the game's Proton prefix: `protontricks 1805110 vcrun2022` — or run
+   `bash install.sh --vcrun` to do it for you (needs the prefix to exist, so launch the game once
+   first).
+
+Same prerequisite as Windows (drop the patched UE4SS zip in `~/Downloads`), and `install.sh` takes
+the same flags: `--game-dir`, `--ue4ss-zip`, `--skip-pak`, `--force`, `--uninstall`. The Proton path
+is newer and less battle-tested than the Windows one — reports of what works on Proton / the Deck are
+welcome.
 
 Manual steps, troubleshooting and what goes where: [`docs/INSTALL.md`](docs/INSTALL.md).
 

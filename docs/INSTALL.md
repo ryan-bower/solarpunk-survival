@@ -53,6 +53,59 @@ nothing.
 The mod ships an `enabled.txt`, which is what actually enables it — that file **overrides**
 `Mods\mods.txt`, so a `SolarpunkSurvival : 1` line there is belt-and-braces only.
 
+## Linux & Steam Deck (Proton)
+
+Solarpunk has no native Linux build, so Linux and Steam Deck run it under **Proton** — and the mod
+runs there too, injected into the game's Windows process inside the Wine prefix. The mod itself is
+just Lua and a pak, platform-agnostic once UE4SS loads.
+
+`install.ps1` can't run here (it's Windows PowerShell, reads the Windows registry for the Steam path,
+and installs the VC++ runtime as a Windows `.exe`), so use **`install.sh`** instead, with the game
+closed:
+
+```bash
+bash install.sh
+```
+
+It mirrors the Windows installer for everything on the filesystem: it locates the game through
+Steam's `libraryfolders.vdf` (native `~/.steam` / `~/.local/share/Steam`, the Flatpak Steam under
+`~/.var/app/com.valvesoftware.Steam/…`, and Deck SD-card libraries under `/run/media/…`), unpacks the
+patched UE4SS beside the exe, applies the same `UE4SS-settings.ini` edits (console on,
+`MajorVersion = 5`, `MinorVersion = 7`, `SecondsToScanBeforeGivingUp = 120`), copies the Lua mod into
+`ue4ss/Mods/SolarpunkSurvival/`, and installs the pak into `Content/Paks/`. It takes the same flags
+as `install.ps1` (`--game-dir`, `--ue4ss-zip`, `--skip-pak`, `--force`, `--uninstall`), plus
+`--vcrun` (below), and finds the patched UE4SS zip the same way — in `~/Downloads`, on the Desktop,
+or beside the script.
+
+Two things live in Steam/Proton, not the filesystem, so the script prints them rather than setting
+them:
+
+1. **Make Wine load the UE4SS proxy DLL.** UE4SS injects through `dwmapi.dll`; Wine ignores a
+   dropped-in system DLL unless told to prefer it. Set a Steam **launch option** on Solarpunk:
+
+   ```
+   WINEDLLOVERRIDES="dwmapi=n,b" %command%
+   ```
+
+   (`n,b` = native first, builtin fallback.)
+
+2. **Install the MSVC runtime into the prefix.** UE4SS links against the VC++ 2015-2022 runtime; put
+   it in Solarpunk's own Proton prefix (app id **1805110**):
+
+   ```
+   protontricks 1805110 vcrun2022
+   ```
+
+   `install.sh --vcrun` runs this for you when `protontricks` (native or the
+   `com.github.Matoking.protontricks` Flatpak) is present and the prefix already exists — launch the
+   game once first so Proton creates it under `compatdata/1805110`.
+
+A recent Proton (or Proton-GE) is the most likely to work. On success the UE4SS console still opens
+and logs `SolarpunkSurvival v0.1.0 starting`; if it doesn't, the Proton log (`PROTON_LOG=1
+%command%`) is the place to look, and the Windows troubleshooting below still applies. Building the
+content pak on Linux isn't supported (`tools/pakkit/setup.ps1` is Windows-only) — take the pak from
+the release zip. Reports of what works on Proton / the Deck are welcome.
+
 ## First launch
 
 The UE4SS console window opens with the game and logs:
