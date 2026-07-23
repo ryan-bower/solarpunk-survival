@@ -251,7 +251,8 @@ local function performSacrifice(rite, animal, loc, offerings, candles)
   -- chargeWands wakes quenched rods into Electrick (second rung)
   local payout = ctx.services[rite.payout]
   if payout then
-    payout(loc, ctx.config.get("ritual_radius"))
+    -- the benefit reaches wider than the circle: within ritual_payout_radius of the sacrifice
+    payout(loc, ctx.config.get("ritual_payout_radius"))
   else
     ctx.log.warn("ritual: wand feature disabled -- the bolt finds no vessel")
   end

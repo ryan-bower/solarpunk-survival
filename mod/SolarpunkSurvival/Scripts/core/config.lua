@@ -129,9 +129,13 @@ M.defaults = {
 
   -- dark-arts ritual
   ritual_radius       = 2000.0,  -- cm (20 m) pentagram/sheep/wand radius
-  ritual_corner_radius = 500.0,  -- cm; each of the five corner offerings must rest this close to
+  ritual_corner_radius = 1000.0, -- cm; each of the five corner offerings must rest this close to
                                  -- one of the pentagram's candles (2.5m read as "by the candle
-                                 -- and still missed" live 2026-07-22 -- 5m is forgiving of throws)
+                                 -- and still missed" live 2026-07-22; user widened to 10m --
+                                 -- anywhere in the circle's heart counts)
+  ritual_payout_radius = 3000.0, -- cm (30 m); how far from the SACRIFICE a player may stand and
+                                 -- still receive the rite's benefit (wider than the 20m circle:
+                                 -- you can watch the bolt take the bird from safety)
   ritual_fences       = 15,      -- fence pieces required
   ritual_candles      = 5,       -- LIT candles required
   ritual_check_interval = 8.0,   -- seconds between condition checks during a storm

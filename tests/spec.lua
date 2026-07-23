@@ -209,7 +209,9 @@ do
   eq(config.get("foundation_snap_ignore_ground"), true,
      "config: snapped foundations skip the corner-ground rule by default")
   eq(config.get("wand_transmute_items"), true, "config: cast/recharge swaps the real rod items")
-  eq(config.get("ritual_corner_radius"), 500.0, "config: corner offerings sit within 5 m of a candle")
+  eq(config.get("ritual_corner_radius"), 1000.0, "config: corner offerings sit within 10 m of a candle")
+  eq(config.get("ritual_payout_radius"), 3000.0,
+     "config: the rite's benefit reaches players within 30 m of the sacrifice")
   local changedKey
   bus.on("config.changed", function(p) changedKey = p.key end)
   config.set("player_strike_pct", 0.9)
