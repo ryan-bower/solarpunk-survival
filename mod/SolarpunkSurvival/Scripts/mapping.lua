@@ -298,7 +298,11 @@ M.profiles = {
                                                               -- BP_HandItem_Watercan's watering
                                                               -- tick): (ParticleManager, State,
                                                               -- TargetPlayer) -- the can's pour
-                                                              -- stream, on/off
+                                                              -- stream, on/off. BANNED for the
+                                                              -- wand (live 2026-07-23): flips the
+                                                              -- pawn's watering pose, kills our
+                                                              -- hand actor, and the stream NS
+                                                              -- rides the CAN hand item we lack
       -- Redrawing the charge bar (same RE): the decrement chain writes the inventory slot but
       -- never refreshes the HOST's hotbar UI (no OnRep on authority, no broadcast), so the bar
       -- only moved on a slot switch. The mod runs the game's own widget refresh after each step.

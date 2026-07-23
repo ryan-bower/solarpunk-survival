@@ -497,6 +497,21 @@ local function refreshRig(pawn)
   end
 end
 
+-- One delayed HARD refresh (tear + rebuild), outside the current call chain: the game's own
+-- handling behind a click or an in-place slot rewrite can clear the hand mesh AFTER we return
+-- (cast-consume, the pour's bar sync), and a repaint alone does not bring it back. Same idiom
+-- setState uses for every state change; this one is for actions that change no state.
+local function healRigSoon(pawn)
+  local id = playerIdOf(pawn)
+  if not id then return end
+  pcall(ExecuteWithDelay, 250, ctx.log.guard("wand.healrig", function()
+    onGameThread(function()
+      tearRig(id, { handsBack = false })
+      if ctx.uehelp.isValid(pawn) then refreshRig(pawn) end
+    end)
+  end))
+end
+
 --------------------------------------------------------------------- state transitions
 local function setState(pawn, state, quiet)
   local id = playerIdOf(pawn)
@@ -724,34 +739,14 @@ local function sprayAt(pawn, mgr)
   u.call(mgr, m.wand.sprayPlayFn, ctx.config.get("wand_spray_seconds") or 0.8)
 end
 
--- The can's own pour STREAM, from the wand's tip. The watering can's tick fires the
--- controller RPC SERVER_WaterCanParticles(ParticleManager, State, TargetPlayer) (offline RE
--- 2026-07-22 of BP_HandItem_Watercan + BP_MainPlayerController); mgr is the WATERED
--- TARGET's BC_WateringParticleManager -- the pawn carries none while idle (live 19:54:
--- "pawn has no particle manager"), the can's tick fetches it off the traced hit actor.
--- Plain BP calls on live objects -- cosmetic, every miss is silent; a delayed State=false
--- shuts the stream off after the spray window. mgr MUST be the BC_WateringParticleManager
--- (wateringMgrOf) -- the RPC dispatches BP calls on it, and any other class is a fatal
--- ScriptCore assert (the 2026-07-22 23:52 farmland-pour crash: the WATER STORAGE comp was
--- passed here).
-local function pourStream(pawn, mgr)
-  local u, m = ctx.uehelp, ctx.map.wand
-  if not (m.waterFxRpcFn and u.isValid(mgr)) then return end
-  local pc = pawnController(pawn)
-  if not pc then return end
-  if u.call(pc, m.waterFxRpcFn, mgr, true, pawn) then
-    mark("pour stream on")
-    local ms = math.floor((ctx.config.get("wand_spray_seconds") or 0.8) * 1000)
-    pcall(ExecuteWithDelay, ms, ctx.log.guard("wand.pourstream", function()
-      onGameThread(function()
-        if u.isValid(pc) and u.isValid(mgr) and u.isValid(pawn) then
-          u.call(pc, m.waterFxRpcFn, mgr, false, pawn)
-          mark("pour stream off")
-        end
-      end)
-    end))
-  end
-end
+-- NOTE (removed 2026-07-23): the watercan pour-STREAM RPC (mapping wand.waterFxRpcFn =
+-- SERVER_WaterCanParticles) is a dead end for the wand and must NOT be called. Live result:
+-- it flips the pawn into the game's watering state -- the pour GESTURE plays and the hand-mesh
+-- mode swap destroys our spawned stick (invisible wand) -- while the falling-water arc never
+-- appears, because that Niagara lives inside BP_HandItem_Watercan and emits from the CAN hand
+-- actor, which a wand-holder does not have. The only stream path would be cooking a custom
+-- hand-item BP with the NS (content pak, future work). The wand's pour FX is the target-side
+-- splash below.
 
 -- The Hydration Wand's pour. Aim-point search instead of FHitResult actor extraction (reading
 -- HitObjectHandle from Lua is engine-version fragile; distance-to-impact is not): a parched
@@ -798,6 +793,7 @@ local function hydroCast(pawn, id)
     if ok then
       charges[id] = math.max(0, ch - ctx.config.get("wand_hydrate_cost"))
       syncHydroBar(pawn, id)
+      healRigSoon(pawn)
       ctx.log.info(string.format(
         "*** the rod QUENCHES thy companion (+%.0f thirst) -- %.0f measures remain ***",
         amt, charges[id]))
@@ -827,10 +823,10 @@ local function hydroCast(pawn, id)
     if u.call(store, m.wand.storageAddWaterFn, pour) then
       charges[id] = ch - pour
       syncHydroBar(pawn, id)
-      -- FX ride the target's particle manager ONLY (farmland has none -> water lands, no FX)
-      local fxMgr = wateringMgrOf(storeOwner)
-      sprayAt(pawn, fxMgr)
-      pourStream(pawn, fxMgr)
+      -- FX = the target-side splash ONLY (farmland has no manager -> water lands, no FX);
+      -- the can's stream RPC is banned -- see the pourStream removal note above
+      sprayAt(pawn, wateringMgrOf(storeOwner))
+      healRigSoon(pawn)
       ctx.log.info(string.format(
         "*** the rod POURS (%.0f water) -- %.0f measures remain ***", pour, charges[id]))
     else
