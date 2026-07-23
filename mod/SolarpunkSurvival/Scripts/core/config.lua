@@ -167,6 +167,40 @@ M.defaults = {
   foundation_snap_ignore_ground = true, -- snapped-to-a-buildable foundations skip the game's
                                         -- corners-must-touch-the-ground placement rule
 
+  -- the Unlit (features/evil_animals.lua): storm-spawned hostile animals, unlocked per species
+  -- by that species' first ritual sacrifice
+  evil_animals        = true,    -- master switch
+  evil_spawn_radius   = 20000.0, -- cm (200 m) farthest an Unlit spawns from a player
+  evil_spawn_min      = 3000.0,  -- cm (30 m) nearest (never materialize in someone's face)
+  evil_cap_per_player = 10,      -- live Unlit allowed per connected player
+  evil_spawn_interval = 8.0,     -- seconds between spawn attempts while the storm holds
+  evil_brain_interval = 0.7,     -- seconds between host AI ticks (movement/lock-on/bite checks)
+  evil_lockon_radius  = 10000.0, -- cm (100 m); inside this an Unlit locks on and charges
+  evil_wander_mult    = 2.0,     -- x the animal's own MaxWalkSpeed while prowling
+  evil_chase_mult     = 4.0,     -- x while locked on
+  evil_wander_hop     = 1500.0,  -- cm; length of one prowling leg between random move orders
+  evil_bite_radius    = 200.0,   -- cm (2 m); players inside take the bite
+  evil_bite_interval  = 2.0,     -- seconds between bites per animal
+  evil_bite_chicken   = 10.0,    -- HP per Unlit-bird peck        (user: chicken 10, sheep 20)
+  evil_bite_sheep     = 20.0,    -- HP per Unlit-lamb bite
+  evil_hp_chicken     = 30.0,    -- Unlit bird hit points
+  evil_hp_sheep       = 50.0,    -- Unlit lamb hit points
+  evil_dmg_base       = 20.0,    -- tool damage: base pickaxe/axe/hoe (stone tier)
+  evil_dmg_metal      = 30.0,    -- ...Metal rows (iron)
+  evil_dmg_diamond    = 40.0,    -- ...Diamond rows
+  evil_melee_range    = 350.0,   -- cm; how far a tool swing reaches an Unlit
+  evil_death_linger   = 2.5,     -- seconds the fallen body lies (Sleep montage) before vanishing
+  evil_fx_interval    = 1.2,     -- seconds between client-side FX watcher passes
+  evil_sound_pitch    = 0.55,    -- pitch multiplier: the animal's own voice, several steps down
+  evil_chatter_wander = 7.0,     -- seconds between pitched-down cries while prowling
+  evil_chatter_chase  = 2.0,     -- ...while locked on (many noises AT you, per the design)
+  evil_mat_body       = "M_Deco_Fireplace_Burned", -- whole-body corrupted look (one-slot meshes --
+                                                   -- see docs/RE-ANIMALS.md; swap live via sps set)
+  evil_mat_blink      = "M_Preview_Red",           -- the hit flash (the build system's own red)
+  evil_blink_seconds  = 0.18,    -- how long the red flash holds
+  evil_prefix_alive   = "Unlit ",  -- replicated-Name marker for a living Unlit (the MP beacon)
+  evil_prefix_dead    = "Fallen ", -- ...and for one playing its death
+
   -- misc
   friendly_fire       = true,
   imgui_key           = "F7",

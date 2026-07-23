@@ -30,7 +30,11 @@ M.schema = {
   save     = { "saveFn", "loadFn" },
   items    = { "classFmt", "assetDir" },
   tree     = { "classPrefix", "fellFn", "growMeshesProp", "fakeMeshProp" },
-  animal   = { "sheepClass", "chickenClass" },
+  animal   = { "sheepClass", "chickenClass", "pigClass", "masterClass", "classPaths",
+               "nameProp", "montageSetFn", "montageSleepValue", "moveCompProp",
+               "maxWalkSpeedProp", "brainProp", "stopLogicFn", "moveToActorFn",
+               "moveToLocationFn", "stopMovementFn", "audioCompProp", "soundDir",
+               "soundsChicken", "soundsSheep", "screamChicken" },
   ritual   = { "bookItemRow", "hydrationOfferings", "electrickOfferings",
                "candleBurningProp", "candleBurnRepFn" },
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
@@ -62,6 +66,16 @@ M.profiles = {
     pawn = { worldLocationFn = "K2_GetActorLocation" }, -- standard AActor UFUNCTION
     net  = { hasAuthorityFn  = "HasAuthority" },         -- standard AActor UFUNCTION
     wand = { smcPath = "/Script/Engine.StaticMeshComponent" }, -- rig comps live ON the pawn
+    -- Stable engine symbols the Unlit ride (AAIController / ACharacter / UBrainComponent):
+    animal = {
+      moveCompProp     = "CharacterMovement", -- ACharacter's movement component property
+      maxWalkSpeedProp = "MaxWalkSpeed",
+      brainProp        = "BrainComponent",    -- AAIController -> UBrainComponent
+      stopLogicFn      = "StopLogic",         -- UBrainComponent: halt the behavior tree for good
+      moveToActorFn    = "MoveToActor",       -- AAIController: native pathfinding move orders
+      moveToLocationFn = "MoveToLocation",
+      stopMovementFn   = "StopMovement",      -- AController
+    },
   },
 
   -- ---- Current tested build. Mapped live from re_capture_latest.txt (build 24038177). ----
@@ -134,7 +148,35 @@ M.profiles = {
     -- instance read off any tree.
     tree   = { classPrefix = "BP_Tree_", fellFn = "TreeFall",
                growMeshesProp = "GrowMeshes", fakeMeshProp = "FakeTreeMesh" },
-    animal = { sheepClass = "BP_Animal_Sheep_C", chickenClass = "BP_Animal_Chicken_C" },
+    -- The animal system, RE'd OFFLINE from the cooked Blueprints (docs/RE-ANIMALS.md,
+    -- wandsmith dump 2026-07-23). All three species BPs live in the Chicken/ folder (dev
+    -- misfile). BP_Animal_MASTER_C is a Character; its AIC_*_C controller extends
+    -- DetourCrowdAIController running BT_Master. `Name` is a REPLICATED StrProperty (CPF_Net)
+    -- -- the mod's cross-client beacon: the host writes it, every client reads it.
+    animal = {
+      sheepClass   = "BP_Animal_Sheep_C",
+      chickenClass = "BP_Animal_Chicken_C",
+      pigClass     = "BP_Animal_Pig_C",       -- third species; not spawned yet (lured by carrot)
+      masterClass  = "BP_Animal_MASTER_C",
+      classPaths = {                          -- LoadAsset paths when no instance is resident
+        BP_Animal_Sheep_C   = "/Game/Code/Animals/Chicken/BP_Animal_Sheep.BP_Animal_Sheep_C",
+        BP_Animal_Chicken_C = "/Game/Code/Animals/Chicken/BP_Animal_Chicken.BP_Animal_Chicken_C",
+        BP_Animal_Pig_C     = "/Game/Code/Animals/Chicken/BP_Animal_Pig.BP_Animal_Pig_C",
+      },
+      nameProp          = "Name",             -- replicated display name (the AnimalTag renames it)
+      montageSetFn      = "BB_SetMontage",    -- animal-side blackboard write; the AnimBP renders it
+      montageSleepValue = 3,                  -- EAnimalMontage: 0 Consume, 1 Walk, 2 Stand,
+                                              -- 3 SLEEP (the lie-down), 4 Pick -- cooked byte
+                                              -- order; verify live once (docs/RE-ANIMALS.md)
+      audioCompProp     = "S_Chicken_NoLicense", -- the per-animal AudioComponent (master template
+                                                 -- name; SetPitchMultiplier = client-local pitch)
+      soundDir      = "/Game/Audio/SFX/Animals/",
+      soundsChicken = { "S_Chicken_01", "S_Chicken_02", "S_Chicken_03", "S_Chicken_04",
+                        "S_Chicken_05", "S_Chicken_06", "S_Chicken_07" },
+      soundsSheep   = { "S_Sheep_1", "S_Sheep_2", "S_Sheep_3", "S_Sheep_4", "S_Sheep_5",
+                        "S_Sheep_6" },
+      screamChicken = "S_Chicken_Scream",     -- the aggro cry
+    },
     -- The wand is NOT an inventory item: it is a mod-managed tool (see features/wand.lua).
     -- A truly new inventory item ID requires a cooked content pak (docs/MILESTONE-2.md).
     ritual = {

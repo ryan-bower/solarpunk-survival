@@ -199,7 +199,9 @@ local function findReadyRite()
     local cls = ctx.map.animal and ctx.map.animal[rite.animalKey]
     if cls then
       for _, animal in ipairs(ctx.uehelp.findAll(cls)) do
-        if ctx.uehelp.isValid(animal) then
+        -- an Unlit that prowls into the pentagram is no offering -- the storm already owns it
+        if ctx.uehelp.isValid(animal)
+            and not (ctx.services.isEvilAnimal and ctx.services.isEvilAnimal(animal)) then
           local sl = ctx.identity.locationOf(animal)
           if sl then
             local nf, circle = circleAround(sl, fences, candles)

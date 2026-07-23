@@ -409,6 +409,21 @@ function F.damageController(pc)
   end
 end
 
+-- Amount-explicit damage through the game's own "Reduce Health" path, for OTHER features (the
+-- Unlit's bites). Wrapped in selfDamage so the lightning damage guard -- which zeroes all
+-- unrecognized damage for lightning_guard_window after any bolt, exactly when the Unlit are
+-- active -- lets deliberate mod damage through. Host-side; native death/loot/respawn included.
+function F.damagePlayerBy(pc, amount, label)
+  local pl = ctx.map.player
+  if not (pl and pc and pl.reduceHealthFn) then return false end
+  local dmg = math.max(1, math.floor(amount or 0))
+  selfDamage = true
+  local ok = ctx.uehelp.call(pc, pl.reduceHealthFn, dmg)
+  selfDamage = false
+  if ok and label then ctx.log.info(string.format("%s -- -%d HP", label, dmg)) end
+  return ok
+end
+
 -- Natural storms have no "stopped" signal, so a chained one-shot watchdog (timestamps only --
 -- it touches NO UObjects) declares the storm over when no bolt has fallen for
 -- natural_storm_timeout seconds.
@@ -630,10 +645,11 @@ function F.init(c)
   end
 
   -- Expose for the remote dev channel / other features.
-  ctx.services.startStorm = F.startStorm
-  ctx.services.stopStorm  = F.stopStorm
-  ctx.services.strikeAt   = F.strikeAt
-  ctx.services.castBolt   = F.castBolt
+  ctx.services.startStorm     = F.startStorm
+  ctx.services.stopStorm      = F.stopStorm
+  ctx.services.strikeAt       = F.strikeAt
+  ctx.services.castBolt       = F.castBolt
+  ctx.services.damagePlayerBy = F.damagePlayerBy
 
   ctx.log.info("storms: ready -- " .. tostring(kname) .. " toggles storm on/off.")
   return true

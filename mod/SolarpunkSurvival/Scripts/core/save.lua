@@ -12,6 +12,7 @@ M.schemaVersion = 1
 M._map = nil
 M._path = nil
 M._pending = nil
+M._flags = {}   -- durable key -> value facts (e.g. the Unlit's per-species unlocks)
 
 function M.init(map, modRoot)
   M._map = map
@@ -24,11 +25,13 @@ function M.init(map, modRoot)
   bus.on("health.attached", function(e)
     if e and e.id and e.rec then M.restore(e.id, e.rec) end
   end)
+  -- Load once up front: flags must be readable at feature init, before any actor exists.
+  M.read()
   return M
 end
 
 function M.serialize()
-  local data = { schema = M.schemaVersion, structures = {} }
+  local data = { schema = M.schemaVersion, structures = {}, flags = M._flags }
   for id, rec in pairs(health.byId) do
     data.structures[id] = {
       current = rec.current, max = rec.max,
@@ -36,6 +39,15 @@ function M.serialize()
     }
   end
   return data
+end
+
+-- Durable flags: read anywhere, written host-side (write() is host-gated).
+function M.getFlag(key) return M._flags[key] end
+
+function M.setFlag(key, value)
+  if M._flags[key] == value then return end
+  M._flags[key] = value
+  M.write()
 end
 
 function M.write()
@@ -58,6 +70,11 @@ function M.read()
     log.warn(string.format("save schema %s != %s; ignoring old fields", tostring(data.schema), tostring(M.schemaVersion)))
   end
   M._pending = data
+  if type(data.flags) == "table" then
+    for k, v in pairs(data.flags) do
+      if M._flags[k] == nil then M._flags[k] = v end
+    end
+  end
   log.info("mod state loaded (reconciling as actors appear)")
 end
 

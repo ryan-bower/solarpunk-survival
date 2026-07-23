@@ -262,5 +262,78 @@ do
   eq(health.get("m2").current, 200, "repair: restores full HP")
 end
 
+------------------------------------------------------------------ evil animals (the Unlit)
+do
+  local m = mapping.resolve("24038177")
+  -- offline-RE'd animal symbols (docs/RE-ANIMALS.md)
+  eq(m.animal.masterClass, "BP_Animal_MASTER_C", "animal: master class")
+  eq(m.animal.pigClass, "BP_Animal_Pig_C", "animal: pig class (future species)")
+  eq(m.animal.classPaths["BP_Animal_Sheep_C"],
+     "/Game/Code/Animals/Chicken/BP_Animal_Sheep.BP_Animal_Sheep_C",
+     "animal: sheep BP lives in the (misfiled) Chicken folder")
+  eq(m.animal.nameProp, "Name", "animal: the replicated Name beacon")
+  eq(m.animal.montageSetFn, "BB_SetMontage", "animal: blackboard montage setter")
+  eq(m.animal.montageSleepValue, 3, "animal: Sleep montage byte (the lie-down)")
+  eq(m.animal.moveCompProp, "CharacterMovement", "animal: movement comp (engine default profile)")
+  eq(m.animal.stopLogicFn, "StopLogic", "animal: brain stop fn")
+  eq(m.animal.moveToActorFn, "MoveToActor", "animal: chase move order")
+  eq(m.animal.audioCompProp, "S_Chicken_NoLicense", "animal: per-animal audio component prop")
+  ok(#m.animal.soundsChicken == 7, "animal: seven chicken cries")
+  ok(#m.animal.soundsSheep == 6, "animal: six sheep cries")
+  eq(m.animal.screamChicken, "S_Chicken_Scream", "animal: the aggro cry")
+
+  -- config tunables
+  eq(config.get("evil_spawn_radius"), 20000.0, "evil: 200 m spawn ring")
+  eq(config.get("evil_cap_per_player"), 10, "evil: 10 per player cap")
+  eq(config.get("evil_lockon_radius"), 10000.0, "evil: 100 m lock-on")
+  eq(config.get("evil_bite_radius"), 200.0, "evil: 2 m bite range")
+  eq(config.get("evil_bite_interval"), 2.0, "evil: bite every 2 s")
+  eq(config.get("evil_bite_chicken"), 10.0, "evil: bird pecks for 10")
+  eq(config.get("evil_bite_sheep"), 20.0, "evil: lamb bites for 20")
+  eq(config.get("evil_hp_chicken"), 30.0, "evil: bird has 30 HP")
+  eq(config.get("evil_hp_sheep"), 50.0, "evil: lamb has 50 HP")
+  eq(config.get("evil_wander_mult"), 2.0, "evil: prowl at 2x")
+  eq(config.get("evil_chase_mult"), 4.0, "evil: charge at 4x")
+  eq(config.get("evil_dmg_base"), 20.0, "evil: base tools hit 20")
+  eq(config.get("evil_dmg_metal"), 30.0, "evil: metal tools hit 30")
+  eq(config.get("evil_dmg_diamond"), 40.0, "evil: diamond tools hit 40")
+  ok(config.get("evil_sound_pitch") < 1.0, "evil: voices pitched DOWN")
+
+  -- pure helpers
+  local evil = require("features.evil_animals")
+  local A, D = "Unlit ", "Fallen "
+  local st, hits = evil.parseEvilName("Unlit Ewe 3", A, D)
+  eq(st, "alive", "parse: living Unlit"); eq(hits, 0, "parse: no hits yet")
+  st, hits = evil.parseEvilName("Unlit Ewe 3''", A, D)
+  eq(st, "alive", "parse: tallied Unlit"); eq(hits, 2, "parse: two landed hits")
+  st = evil.parseEvilName("Fallen Ewe 3", A, D)
+  eq(st, "dead", "parse: fallen Unlit")
+  eq(evil.parseEvilName("Dolly", A, D), nil, "parse: a vanilla animal is no Unlit")
+  eq(evil.parseEvilName(nil, A, D), nil, "parse: nil-safe")
+
+  local dmg = { base = 20, metal = 30, diamond = 40 }
+  eq(evil.toolDamageForClass("BP_Pickaxe_Item_C", dmg), 20, "tool: stone pickaxe 20")
+  eq(evil.toolDamageForClass("BP_Axe_Item_C", dmg), 20, "tool: stone axe 20")
+  eq(evil.toolDamageForClass("BP_Hoe_Item_C", dmg), 20, "tool: stone hoe 20")
+  eq(evil.toolDamageForClass("BP_AxeMetal_Item_C", dmg), 30, "tool: metal axe 30")
+  eq(evil.toolDamageForClass("BP_Axe_Metal_Item_C", dmg), 30, "tool: metal axe (underscored row) 30")
+  eq(evil.toolDamageForClass("BP_Hoe_Diamond_Item_C", dmg), 40, "tool: diamond hoe 40")
+  eq(evil.toolDamageForClass("BP_PickaxeDiamond_Item_C", dmg), 40, "tool: diamond pickaxe 40")
+  eq(evil.toolDamageForClass("BP_Axe_Kickstarter_Item_C", dmg), 20, "tool: kickstarter skin = base")
+  eq(evil.toolDamageForClass("BP_Hammer_Item_C", dmg), nil, "tool: the hammer is no weapon")
+  eq(evil.toolDamageForClass("BP_Stick_Item_C", dmg), nil, "tool: a stick is no weapon")
+  eq(evil.toolDamageForClass(nil, dmg), nil, "tool: empty hand nil-safe")
+end
+
+------------------------------------------------------------------ save flags
+do
+  local save = require("core.save")
+  save.init(nil, "./__no_such_modroot__/")
+  eq(save.getFlag("evil_chicken"), nil, "flags: unset reads nil")
+  save.setFlag("evil_chicken", true)   -- write() fails silently on the missing dir; flag stays
+  eq(save.getFlag("evil_chicken"), true, "flags: set/get roundtrip")
+  ok(save.serialize().flags.evil_chicken == true, "flags: serialized with the save")
+end
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
