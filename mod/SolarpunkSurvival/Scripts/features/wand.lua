@@ -24,12 +24,13 @@
 --              The whole custom-component-on-pawn family is unsafe here, which is why the tint is
 --              a material override and the actor spawn rides the game's own equip function.
 --              Risky steps append to dump/wand_steps.txt.
---   obtain   = craft the Mundane Wand at the bench; the rites imbue it in TWO rungs (the codex's
---              ladder): chicken + five clean waters -> Hydration Wand (blue, 240 water measures =
+--   obtain   = craft the Mundane Wand at the bench; the BLANK rod then takes exactly ONE nature
+--              at the pentagram: the bird's rite -> Hydration Wand (blue, 240 water measures =
 --              2x the watering can; pours into growboxes, quenches teammates, refills on drinking
---              any water or wading in pond/river); then sheep + the five offerings -> the
---              Electrick Wand (gold when spent, BRIGHT yellow when charged). `sps_wand forge`
---              grants a test Mundane; `sps_wand soak` a full Hydration.
+--              any water or wading in pond/river), OR the lamb's rite -> the Charged Electrick
+--              Wand (gold when spent, BRIGHT yellow when charged). A rod once turned never turns
+--              again -- only the spent electrick rod recharges (same nature, fresh fire).
+--              `sps_wand forge` grants a test Mundane; `sps_wand soak` a full Hydration.
 --   carry    = press the draw key (V) or `sps_wand draw` to draw/stow. Drawing stashes the held
 --              item (the game's own StashHandItem); stowing restores it; picking a hotbar tool
 --              while the wand is out stows the wand -- exactly like swapping tools.
@@ -66,9 +67,9 @@ local lastHandAction = -1e9  -- our own stash/restore fires HotbarSlotChanged; t
 local meshCache     -- assetName -> UStaticMesh (successes only -- misses always retry)
 local donorMats = {} -- donor mesh assetName -> its slot-0 material (the wand tint source)
 
--- The rite ladder (host-side, survives hotbar swaps and stowing): nil -> "hydration" ->
--- "electrick". The rites promote it; the held MUNDANE item then renders/behaves at the earned
--- rung (the blank rod is what gets imbued -- the inventory item itself cannot change).
+-- LEGACY rite state (host-side; pre-item / V-forged rods only): nil -> "hydration" | "electrick".
+-- Real cooked rod items carry their OWN nature (heldItemKind) and a turned rod never changes
+-- type again; tiers only judges a player with no real rod item in hand.
 local tiers   = {}  -- playerId -> "hydration" | "electrick" (nil = the rod is still mundane)
 local charges = {}  -- playerId -> water measures left in the blue rod (hydration tier only)
 local zaps    = {}  -- playerId -> bolts left in the charged rod (wand_electric_charges per fill)
@@ -76,9 +77,9 @@ local barLevel = {} -- playerId -> durability notches the held HYDRATION item cu
 local lastSoak = {} -- playerId -> os.clock() of the last wade-refill (footstep events spam)
 local hydroKnown = {} -- playerId -> true once a REAL HydrationWand item was seen in their hand:
                       -- the dedicated item keeps its own nature at ANY tier, so drink/wade
-                      -- refills must keep working for it even after the rite ladder reads
+                      -- refills must keep working for it even if the legacy tier reads
                       -- electrick (and even while a carafe/tool is in hand -- you drink with
-                      -- the carafe up, not the rod). Cleared when the rod transmutes to charged.
+                      -- the carafe up, not the rod). Never cleared: the blue rod is blue forever.
 local transmuteHeld -- fwd decls (defined after onHotbarChanged; earlier code calls them at runtime)
 local syncHydroBar
 local refreshHotbarUi
@@ -519,7 +520,8 @@ local function setState(pawn, state, quiet)
         "*** HYDRATION WAND *** the rod runs river-blue (%.0f measures). Left click to pour.",
         charges[id] or 0))
     elseif state == "mundane" then
-      ctx.log.info("a Mundane Wand -- a wax-sealed stick. The rites will wake it: first water, then fire.")
+      ctx.log.info("a Mundane Wand -- a wax-sealed stick. The rites will wake it -- to water by"
+        .. " the bird, or to fire by the lamb. Choose well: a rod once turned never turns again.")
     end
   end
   -- refresh the rig OUTSIDE whatever call chain set the state (the ritual sets it from inside
@@ -534,14 +536,14 @@ local function setState(pawn, state, quiet)
   end))
 end
 
--- Sheep-rite payout (the SECOND rung): the storm only enters a rod that has first drunk the
--- deluge. Players in the circle whose rod is hydration-tier (or already electrick) -> Lightning
--- Wand (charged); a still-mundane rod is passed over (the codex warns: skip no rung); wandless
+-- Sheep-rite payout (the path of FIRE): the storm enters the BLANK rod. A held mundane rod
+-- becomes the Lightning Wand (charged); a spent/charged electrick rod is refilled; a HYDRATION
+-- rod is passed over -- a rod once turned never turns again (the water keeps its own); wandless
 -- bystanders receive nothing.
 function F.chargeWands(center, radius)
   if not ctx.net.isHost() then return 0 end
   local r2 = (radius or ctx.config.get("ritual_radius")) ^ 2
-  local woken, rewoken, dry = 0, 0, 0
+  local woken, rewoken, kept = 0, 0, 0
   for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
     local pl = ctx.identity.locationOf(pawn)
     if pl and ctx.uehelp.dist2(pl, center) <= r2 then
@@ -552,7 +554,11 @@ function F.chargeWands(center, radius)
         local held = heldItemKind[id]
         local st, tier = wands[id], tiers[id]
         if held == "mundane" then
-          dry = dry + 1                -- the codex warns: skip no rung
+          woken = woken + 1
+          charges[id] = nil
+          zaps[id] = ctx.config.get("wand_electric_charges")
+          setState(pawn, "charged", true)
+          transmuteHeld(pawn, "charged")  -- the blank rod takes the fire as its one nature
         elseif held == "electric" or held == "charged" then
           rewoken = rewoken + 1
           charges[id] = nil            -- whatever water was left boiled away long ago
@@ -560,25 +566,21 @@ function F.chargeWands(center, radius)
           setState(pawn, "charged", true)
           transmuteHeld(pawn, "charged")
         elseif held == "hydration" then
-          woken = woken + 1
-          charges[id] = nil            -- the water boils away; the fire moves in
-          zaps[id] = ctx.config.get("wand_electric_charges")
-          setState(pawn, "charged", true)
-          transmuteHeld(pawn, "charged")  -- the REAL blue rod in hand becomes the charged rod item
+          kept = kept + 1              -- the water keeps its own: a turned rod never turns again
         elseif held == nil then
-          -- legacy (pre-item / V-forged) rods judged by rite-ladder state, as before
+          -- legacy (pre-item / V-forged) rods judged by rite-ladder state, same new rules
           if tier == "electrick" or st == "charged" or st == "uncharged" then
             rewoken = rewoken + 1
             charges[id] = nil
             zaps[id] = ctx.config.get("wand_electric_charges")
             setState(pawn, "charged", true)
           elseif tier == "hydration" or st == "hydration" then
+            kept = kept + 1
+          elseif st == "mundane" then
             woken = woken + 1
             charges[id] = nil
             zaps[id] = ctx.config.get("wand_electric_charges")
             setState(pawn, "charged", true)
-          elseif st == "mundane" then
-            dry = dry + 1
           end
         end
       end
@@ -587,22 +589,22 @@ function F.chargeWands(center, radius)
   local total = woken + rewoken
   if total > 0 then
     ctx.log.info(string.format(
-      "*** the bolt is BOUND -- %d Lightning Wand(s) (charged): %d transmuted from water, %d reawakened ***",
+      "*** the bolt is BOUND -- %d Lightning Wand(s) (charged): %d blank rod(s) woken, %d reawakened ***",
       total, woken, rewoken))
     ctx.log.info("    press V to draw/stow the wand; left click while it's drawn to cast")
   else
-    ctx.log.info("ritual: no quenched rod stood inside the circle to receive the fire")
+    ctx.log.info("ritual: no blank or electrick rod stood inside the circle to receive the fire")
   end
-  if dry > 0 then
+  if kept > 0 then
     ctx.log.info(string.format(
-      "    the sky passed over %d dry rod(s) -- the deluge comes before the fire (chicken + five waters)", dry))
+      "    the water keeps its own -- %d blue rod(s) passed over (a rod once turned never turns again)", kept))
   end
   return total
 end
 
--- Chicken-rite payout (the FIRST rung): every mundane rod held by a player in the circle turns
+-- Chicken-rite payout (the path of WATER): every mundane rod held by a player in the circle turns
 -- river-blue -- a Hydration Wand, full to the brim (2x the watering can); an already-blue rod is
--- refilled; an electrick rod is beyond water and is passed over.
+-- refilled; an electrick rod is beyond water and is passed over (a turned rod never turns again).
 function F.hydrateWands(center, radius)
   if not ctx.net.isHost() then return 0 end
   local max = ctx.config.get("wand_hydration_max")
@@ -691,25 +693,35 @@ local function aimPoint(pc, pawn)
   return hitLoc or endp
 end
 
--- The watercan's own splash on a wand pour. The watered target (growbox and kin) carries a
--- BC_WateringParticleManager component whose bytecode spawns the NS_Watering_Hit Niagara itself;
--- we only make two plain BP calls on it (register the pourer, play for a beat). Cosmetic --
--- every miss is silent. NEVER spawn Niagara via reflected statics from Lua (proven native crash).
-local function sprayAt(pawn, targetActor)
+-- The watered target's own BC_WateringParticleManager component. Growbox and kin carry one;
+-- FARMLAND does not (its water storage is bare). Both pour-FX paths hang off this comp -- and
+-- it is the ONLY object legal to hand the watercan RPC: SERVER_WaterCanParticles calls
+-- RegisterWateringPlayer ON whatever object it is passed, inside BP bytecode, and a wrong-class
+-- object there is a FATAL ScriptCore assert, not a soft miss ("Failed to find function
+-- RegisterWateringPlayer in BC_WaterStorage_C" -- crashed the game live 2026-07-22 23:52 on a
+-- farmland pour; pcall catches nothing in the BP VM). Type it right or don't call at all.
+local function wateringMgrOf(targetActor)
   local u, m = ctx.uehelp, ctx.map
   local cls = m.wand.wateringFxComponentClass
-  if not (cls and u.isValid(targetActor)) then return end
+  if not (cls and u.isValid(targetActor)) then return nil end
   for _, comp in ipairs(u.findAll(cls)) do
     if u.isValid(comp) then
       local owner
       pcall(function() owner = comp:GetOwner() end)
-      if u.isValid(owner) and u.sameObject(owner, targetActor) then
-        u.call(comp, m.wand.sprayRegisterFn, pawn)
-        u.call(comp, m.wand.sprayPlayFn, ctx.config.get("wand_spray_seconds") or 0.8)
-        return
-      end
+      if u.isValid(owner) and u.sameObject(owner, targetActor) then return comp end
     end
   end
+  return nil
+end
+
+-- The watercan's own splash on a wand pour: two plain BP calls on the target's particle manager
+-- (register the pourer, play for a beat). Cosmetic -- a target with no manager is a silent miss.
+-- NEVER spawn Niagara via reflected statics from Lua (proven native crash).
+local function sprayAt(pawn, mgr)
+  local u, m = ctx.uehelp, ctx.map
+  if not u.isValid(mgr) then return end
+  u.call(mgr, m.wand.sprayRegisterFn, pawn)
+  u.call(mgr, m.wand.sprayPlayFn, ctx.config.get("wand_spray_seconds") or 0.8)
 end
 
 -- The can's own pour STREAM, from the wand's tip. The watering can's tick fires the
@@ -718,7 +730,10 @@ end
 -- TARGET's BC_WateringParticleManager -- the pawn carries none while idle (live 19:54:
 -- "pawn has no particle manager"), the can's tick fetches it off the traced hit actor.
 -- Plain BP calls on live objects -- cosmetic, every miss is silent; a delayed State=false
--- shuts the stream off after the spray window.
+-- shuts the stream off after the spray window. mgr MUST be the BC_WateringParticleManager
+-- (wateringMgrOf) -- the RPC dispatches BP calls on it, and any other class is a fatal
+-- ScriptCore assert (the 2026-07-22 23:52 farmland-pour crash: the WATER STORAGE comp was
+-- passed here).
 local function pourStream(pawn, mgr)
   local u, m = ctx.uehelp, ctx.map.wand
   if not (m.waterFxRpcFn and u.isValid(mgr)) then return end
@@ -812,8 +827,10 @@ local function hydroCast(pawn, id)
     if u.call(store, m.wand.storageAddWaterFn, pour) then
       charges[id] = ch - pour
       syncHydroBar(pawn, id)
-      sprayAt(pawn, storeOwner)
-      pourStream(pawn, store)
+      -- FX ride the target's particle manager ONLY (farmland has none -> water lands, no FX)
+      local fxMgr = wateringMgrOf(storeOwner)
+      sprayAt(pawn, fxMgr)
+      pourStream(pawn, fxMgr)
       ctx.log.info(string.format(
         "*** the rod POURS (%.0f water) -- %.0f measures remain ***", pour, charges[id]))
     else
@@ -1231,11 +1248,13 @@ transmuteHeld = function(pawn, toKind)
   local id = playerIdOf(pawn)
   if not id then return end
   local held = heldItemKind[id]
-  -- electric<->charged transmute, the sheep rite's hydration->charged, the chicken rite's
-  -- mundane->hydration (first rung), or a hydration->hydration bar rewrite (rite refill)
+  -- The BLANK rod takes any one nature (mundane->hydration by the bird, mundane->charged by
+  -- the lamb); electric<->charged is the same rod's charge state; hydration->hydration is a
+  -- bar rewrite (rite refill). A rod once turned NEVER changes type again -- the old
+  -- hydration->charged rung-climb is gone (user rule 2026-07-22).
   local legal = ((held == "electric" or held == "charged") and held ~= toKind)
-             or (held == "hydration" and (toKind == "hydration" or toKind == "charged"))
-             or (held == "mundane" and toKind == "hydration")
+             or (held == "hydration" and toKind == "hydration")
+             or (held == "mundane" and (toKind == "hydration" or toKind == "charged"))
   if not legal then return end
   local rows = ctx.map.wand.itemRows or {}
   if not (rows[toKind] and ctx.items) then return end
@@ -1255,15 +1274,12 @@ transmuteHeld = function(pawn, toKind)
     savedata = durabilitySavedata(n)
   end
   if overwriteHeldSlot(pawn, cls, savedata) then
-    if held == "hydration" and toKind == "charged" then hydroKnown[id] = nil end
     -- barLevel mirrors the HYDRATION item only -- an electric<->charged transmute must NOT
     -- touch it (clobbering it here broke the refill sync and got the blue rod destroyed,
     -- live 2026-07-22 19:54)
     if toKind == "hydration" then
       local per = ctx.config.get("wand_pour_amount")
       barLevel[id] = (per and per > 0) and math.max(1, math.ceil((charges[id] or 0) / per)) or nil
-    elseif held == "hydration" then
-      barLevel[id] = nil
     end
     heldItemKind[id] = toKind
     pcall(ExecuteWithDelay, 1200, ctx.log.guard("wand.transmute", function()

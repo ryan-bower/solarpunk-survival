@@ -461,7 +461,7 @@ def patch_db_items():
     make_row(d, rows, "MundaneWand", "Mundane Wand",
              "A stick sealed with beeswax. It hums faintly when storms pass. The dark arts know its true name.",
              icon_brown, mund_cls, tools_tab=True)
-    # The middle rung of the ladder: the chicken-and-water rite quenches the mundane rod blue.
+    # The path of water: the chicken rite quenches a BLANK rod blue (one nature, forever).
     # durability 12 = the charge bar: one notch per 20-measure pour (240 max / 20).
     make_row(d, rows, "HydrationWand", "Hydration Wand",
              "A rod that remembers the rain. It pours what it has drunk, and it is always thirsty.",
@@ -645,19 +645,20 @@ CODEX_PAGES = [
      " storm shall set its own stone there in time. But mark: the shape is NOT the weapon. What"
      " thou holdest now is a wand the way a coffin is a ship."),
     ("Codex_I4", 2, "Icon_Stormy",
-     "No forge of man can wake the rod. Power is not smithed; it is OWED -- and it is owed TWICE."
-     " The rod must climb a ladder of two rungs: first the WATER, then the FIRE. Carry it to the"
-     " pentagram once for each, and pay what each rite demands, in the manner written upon the"
-     " leaves that follow. Skip no rung: the sky does not deal with those who cut the line."),
+     "No forge of man can wake the rod. Power is not smithed; it is OWED. And mark this before"
+     " all else: the blank rod may be woken but ONCE. Carry it to the pentagram and choose its"
+     " nature -- the WATER, by the rite of the bird, or the FIRE, by the rite of the lamb --"
+     " each paid in the manner written upon the leaves that follow. Choose with care: a rod once"
+     " turned never turns again, and the sky hears no appeals."),
     ("Codex_I5", 2, "Icon_Stick",
      "Of other implements -- the crook that herds hail, the needle that sews wounds in the wind,"
      " the bell that unringable rings -- this codex keeps its silence yet. Feed the ledger, and"
      " perhaps the ledger feeds thee."),
-    # -------- HYDRATION WAND (the first rung: the Rite of the Quenched Rod) --------
+    # -------- HYDRATION WAND (the path of water: the Rite of the Quenched Rod) --------
     ("Codex_H1", 3, "Icon_Caraffe_Water",
-     "I. Of the First Rung. The dry rod is a beggar; before it may argue with the sky it must"
-     " first learn to HOLD. Water is the humblest of the sky's coins, and so it is the first"
-     " taught. Return to thy pentagram beneath a gathering storm, and bring the five wet"
+     "I. Of the Path of Water. The blank rod is a beggar: it holds nothing and argues with no"
+     " one. Of the two natures it may be given, water is the humbler -- and by far the kinder"
+     " creditor. Return to thy pentagram beneath a gathering storm, and bring the five wet"
      " tributes: WATER clear of impurities, boiled and blameless, for the sky will not school"
      " a rod on silt. WAX of the honeybee, that seals the rod and calls to its own. LEAF of"
      " the trees, that drinks the rain all its green life. CLAY of the earth, that holds the"
@@ -681,37 +682,47 @@ CODEX_PAGES = [
      "III. Of the Refilling. The blue rod is refilled without ceremony, for water is owed to"
      " all things: DRINK, and it drinks with thee -- pure water or foul, the rod does not"
      " judge. Or WADE into pond or river, and it fills through thy boots. A rod so easily"
-     " sated should teach thee suspicion of the next rung, which is not."),
-    # -------- ELECTRICK WAND (the second rung) --------
-    ("Codex_W1", 4, "Icon_Caraffe_Water",
-     "I. Of the Things to be Gathered. Ere the tempest breaks, thou shalt set forth these five"
-     " offerings, that the storm find them pleasing and stay its hand a while: WATER -- clear of"
-     " every impurity, boiled and still as a drowned man's final breath. COMB OF THE HONEYBEE --"
-     " the wax-wrought cell, sweet labour reft from the golden host."),
+     " sated should teach thee suspicion of the other nature, which is not sated at all -- and"
+     " mark, that road is now shut to this rod forever: what has turned to water stays water,"
+     " and the fire will pass it over as a stranger."),
+    # -------- ELECTRICK WAND (the path of fire) --------
+    ("Codex_W1", 4, "Icon_Copper",
+     "I. Of the Things to be Gathered. The rite of the bird asks soft things -- water and wax"
+     " and leaf. This one asks for CONDUCTORS: the fire must be given a road, else it shall cut"
+     " one through thee. Ere the tempest breaks, set forth these five, that the storm find them"
+     " pleasing and stay its hand a while: COPPER -- rounded and refined, drawn red from the"
+     " furnace and hammered honest, that carries the spark as a river carries a leaf. RAW IRON"
+     " ORE -- unsmelted and stubborn, dug cold from the deep and lightless belly of the ground,"
+     " that the earth stand witness to its own robbery."),
     ("Codex_W2", 4, "Icon_Sunflower",
-     "LEAF OF THE TREE -- plucked living and green from the crown of an elder wood. CLAY OF THE"
-     " EARTH -- dug cold and yielding from the deep and lightless belly of the ground. FLOWER OF"
-     " THE SUN -- the great bloom that turns its face forever toward the light, stolen and laid"
-     " down in the dark to spite the elder brother."),
+     "PURIFIED WATER -- boiled and still as a drowned man's final breath, for even the fire's"
+     " own rite will not be bought with silt. FLOWER OF THE"
+     " SUN -- the great bloom that turns its face forever toward the elder brother, stolen and"
+     " laid down in the dark to spite him. And CLOTH THAT DRESSED AN OLD WOUND -- linen that has"
+     " known blood and been washed of it: alone among the five, this tribute hath already tasted"
+     " pain, and knows what is being asked."),
     ("Codex_W3", 4, "AnimalIcon_Sheep",
      "And -- most dreadful of all -- thou shalt bring an innocent lamb, unblemished and free of"
      " sin, that hath done no wrong in all its short days, and suspecteth no ill of thee."),
-    ("Codex_W4", 4, "ICON_Honey",
-     "II. Of the Laying of the Offering. Lay the gathered catalysts about the star, each within"
-     " two strides of a candle, and in the very heart of the shape lay down the lamb."
-     "\n\n. . . . flower of the sun . . . .\ncomb of bee . . . . clay of earth\n. . . . . . the"
-     " lamb . . . . . .\n. leaf of tree . . pure water .\n\n-- the pattern, as it must be drawn --"),
+    ("Codex_W4", 4, "ICON_Ore_Pebbles_Iron",
+     "II. Of the Laying of the Offering. Lay the gathered conductors about the star, each within"
+     " ten paces of a candle -- the sky measures loosely, so long as the gift lies upon the open"
+     " ground and not in thy pocket -- and in the very heart of the shape lay down the lamb."
+     "\n\n. . . flower of the sun . . .\ncopper . . . . raw iron ore\n. . . . the lamb . . . ."
+     "\n. cloth of wound . . water .\n\n-- the pattern, as it must be drawn --"),
     ("Codex_W5", 4, "Icon_Stormy",
      "III. Of the Coming of the Storm. Now wait. Wait while the clouds swell black and the very"
      " air turns to iron upon the tongue. When the storm is come in its full and terrible"
      " strength, and the heavens are split by white fire, the lightning shall descend upon the"
      " star. The lamb shall be consumed, and its innocence spent like a coin dropped into a"
-     " beggar's hand. And in that same breath every BLUE rod held by all who stand and bear"
-     " witness shall boil dry and drink the sky's own fury in the water's stead. Mark it well:"
-     " the fire only enters where the water went before -- a rod that never drank the deluge"
-     " stays cold, and the sky will not look at it. The quenched is made ELECTRICK, and burns"
-     " thereafter yellow as noon.\n\n-- blink not when the fire falls, lest thy rod stay cold --"),
-    ("Codex_W6", 4, "ICON_Honey",
+     " beggar's hand. And in that same breath every BLANK rod held by all who stand and bear"
+     " witness shall drink the sky's own fury and be made ELECTRICK, burning thereafter yellow"
+     " as noon. Mark it well: the fire takes only the rod that is still NOTHING. A rod already"
+     " turned to water is passed over as a stranger -- the river keeps its own, and a rod once"
+     " turned never turns again. Only the spent electrick rod may stand here twice, and then"
+     " only to be filled with what it already is."
+     "\n\n-- blink not when the fire falls, lest thy rod stay cold --"),
+    ("Codex_W6", 4, "Icon_Copper",
      "IV. Of the Wielding, and the Refilling. Draw the wand and look upon what offends thee, and"
      " strike -- the sky answers WHERE THINE EYE RESTS, in any weather, asking no leave of the"
      " clouds. One bolt, one payment: the wand then sleeps again, dim and spent. To refill it,"
