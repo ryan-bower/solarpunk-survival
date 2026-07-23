@@ -17,7 +17,6 @@ local ctx
 local stormActive = false
 local severity    = 1.0
 local strikeToken = 0       -- bumped on every start/stop; stale scheduled callbacks self-cancel
-local pingHooked  = false   -- the G-ping->lightning hook is armed once (needs a live controller)
 local preStormWind          -- wind intensity captured at storm start, restored on stop
 local modBolts    = {}      -- FINAL FNames of bolt actors WE spawned (the native-bolt tap skips them)
 local modBoltLocs = {}      -- { {loc,t} } of recent mod spawns -- the tap's proximity fallback
@@ -29,9 +28,9 @@ local naturalStorm = false  -- a GAME-weather storm detected via its own bolts (
 local function stormy() return stormActive or naturalStorm end
 
 -- Auto-strikes at the LOCAL player on a timer are OFF by default: with no visible bolt yet they read
--- as invisible random damage + confusing soft-deaths (an "aimbot"). H just sets the weather; the
--- player calls bolts deliberately with G (ping). Flip to true (or `sps_auto`) to re-enable the
--- hunting scheduler once the located-bolt VFX is solved.
+-- as invisible random damage + confusing soft-deaths (an "aimbot"). H just sets the weather;
+-- deliberate bolts come from the wand and the rites. Flip to true (or `sps_auto`) to re-enable
+-- the hunting scheduler once the located-bolt VFX is solved.
 local autoStrikePlayer = false
 
 --------------------------------------------------------------------- helpers
@@ -90,16 +89,8 @@ local function spawnBoltAt(loc)
   return a
 end
 
--- Unwrap a hook's struct param (RemoteUnrealParam) into a plain {X,Y,Z}.
-local function readVecParam(p)
-  if not p then return nil end
-  local v = p
-  pcall(function() v = p:get() end)
-  return ctx.uehelp.vec(v)
-end
-
 -- RegisterHook needs a UFunction's FULL object path (short "Class:Fn" is rejected). Resolve it live
--- off an instance of the class. e.g. -> "/Game/Code/Character/BP_MainPlayerController...:MULTI_Ping"
+-- off an instance of the class. e.g. -> "/Game/Code/Character/BP_MainPlayerController...:Reduce Health"
 local function fullFuncPath(obj, fnName)
   local full
   pcall(function()
@@ -142,8 +133,7 @@ function F.startStorm()
   ctx.uehelp.call(mgr, ctx.map.weather.startStormFn)  -- InstantThunderstorm()
   -- NOTE: do NOT call StartThunderLoop -- it's a persistent native loop that keeps cracking thunder
   -- and does NOT stop on InstantSunny (runaway). The weather visuals alone are enough for the storm.
-  F.hookPing()        -- (re)arm the ping hook now that a controller definitely exists
-  F.hookDamageGuard() -- likewise the lightning damage guard
+  F.hookDamageGuard() -- (re)arm the lightning damage guard now that a controller definitely exists
 
   if not stormActive then
     stormActive = true
@@ -154,7 +144,7 @@ function F.startStorm()
       ctx.log.info("*** STORM STARTED *** lightning is now hunting you — move to break line-of-sky!")
       F.scheduleNextStrike(strikeToken)
     else
-      ctx.log.info("*** STORM STARTED *** ping (G) to call down a bolt. (auto-strikes off: sps_auto to enable)")
+      ctx.log.info("*** STORM STARTED *** the sky rages. (auto-strikes off: sps_auto to enable)")
     end
   else
     ctx.log.info("storm: refreshed")
@@ -356,28 +346,6 @@ function F.naturalWatchdog()
   end))
 end
 
---------------------------------------------------------------------- ping -> lightning
--- Hook the vanilla ping (G). While a storm is active, a ping calls down a bolt at the pinged spot.
-function F.hookPing()
-  if pingHooked then return end
-  local pl = ctx.map.player
-  if not (pl and pl.controllerClass and pl.pingFn) then
-    ctx.log.info("storms: ping->lightning unmapped (player.pingFn); skipping")
-    return
-  end
-  local pc = ctx.uehelp.findFirst(pl.controllerClass)
-  if not pc then return end  -- no controller yet (menu); retried on storm start
-  local path = fullFuncPath(pc, pl.pingFn)
-  if not path then ctx.log.warn("storms: could not resolve ping path for " .. pl.pingFn); return end
-  local ok, r = pcall(RegisterHook, path, ctx.log.guard("ping.hook", function(_, Location)
-    if not stormy() then return end  -- works in OUR storms and the game's natural ones
-    local loc = readVecParam(Location)
-    if loc then F.strikeAt(loc, "ping") end
-  end))
-  if ok then pingHooked = true; ctx.log.info("storms: G-ping -> lightning armed")
-  else ctx.log.warn("storms: could not hook ping: " .. tostring(r)) end
-end
-
 --------------------------------------------------------------------- lightning damage guard
 -- The game's own bolt logic hurts players far outside our kill radius (killed the user from ~10 m
 -- during a ritual). Unified rule: NATIVE bolt damage is grounded to 0; instead every bolt (native
@@ -409,11 +377,11 @@ function F.hookDamageGuard()
   end
 end
 
--- Call a bolt down at an explicit world location (used by the ping; scheduler uses fireBolt).
+-- Call a bolt down at an explicit world location (used by the ritual; scheduler uses fireBolt).
 function F.strikeAt(loc, tag)
   if not ctx.net.isHost() or not stormy() then return end
 
-  -- Lightning rod: pings/ritual bolts within range of a Weather Station ground at the rod.
+  -- Lightning rod: ritual bolts within range of a Weather Station ground at the rod.
   local rod
   if ctx.services.rodIntercept then
     local r, rl = ctx.services.rodIntercept(loc)
@@ -517,7 +485,7 @@ function F.onBoltSpawned(bolt)
         end
       end
       -- a bolt we did not spawn, outside our storm = the GAME's weather is storming. Arm the
-      -- machinery (ritual chain, ping-strikes) exactly as if H had been pressed.
+      -- machinery (ritual chain) exactly as if H had been pressed.
       if not stormy() then
         naturalStorm = true
         ctx.bus.emit("weather.changed", { storm = true, natural = true })
@@ -552,14 +520,12 @@ function F.init(c)
     RegisterConsoleCommandHandler("sps_storm_off", function() onGameThread(function() F.stopStorm() end);  return true end)
     RegisterConsoleCommandHandler("sps_auto", function()
       autoStrikePlayer = not autoStrikePlayer
-      ctx.log.info("storm auto-strikes " .. (autoStrikePlayer and "ON (lightning hunts you)" or "OFF (ping-only)"))
+      ctx.log.info("storm auto-strikes " .. (autoStrikePlayer and "ON (lightning hunts you)" or "OFF"))
       if autoStrikePlayer and stormActive then F.scheduleNextStrike(strikeToken) end
       return true
     end)
   end)
 
-  -- G-ping -> lightning at the pinged spot (while a storm is active).
-  F.hookPing()
   F.hookDamageGuard()
 
   -- Tap every bolt actor the game (or we) spawn, so NATIVE storm lightning also affects the world.
@@ -574,7 +540,7 @@ function F.init(c)
   ctx.services.strikeAt   = F.strikeAt
   ctx.services.castBolt   = F.castBolt
 
-  ctx.log.info("storms: ready -- H toggles storm on/off; during a storm, ping (G) calls a bolt there.")
+  ctx.log.info("storms: ready -- H toggles storm on/off.")
   return true
 end
 
