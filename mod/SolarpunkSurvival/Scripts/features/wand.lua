@@ -678,23 +678,16 @@ end
 
 -- The can's own pour STREAM, from the wand's tip. The watering can's tick fires the
 -- controller RPC SERVER_WaterCanParticles(ParticleManager, State, TargetPlayer) (offline RE
--- 2026-07-22 of BP_HandItem_Watercan + BP_MainPlayerController); the manager is the PAWN's
--- own BC_WateringParticleManager component. Plain BP calls on live objects -- cosmetic,
--- every miss is silent; a delayed State=false shuts the stream off after the spray window.
-local function pourStream(pawn)
+-- 2026-07-22 of BP_HandItem_Watercan + BP_MainPlayerController); mgr is the WATERED
+-- TARGET's BC_WateringParticleManager -- the pawn carries none while idle (live 19:54:
+-- "pawn has no particle manager"), the can's tick fetches it off the traced hit actor.
+-- Plain BP calls on live objects -- cosmetic, every miss is silent; a delayed State=false
+-- shuts the stream off after the spray window.
+local function pourStream(pawn, mgr)
   local u, m = ctx.uehelp, ctx.map.wand
-  if not (m.waterFxRpcFn and m.wateringFxComponentClass) then return end
+  if not (m.waterFxRpcFn and u.isValid(mgr)) then return end
   local pc = pawnController(pawn)
   if not pc then return end
-  local mgr
-  for _, comp in ipairs(u.findAll(m.wateringFxComponentClass)) do
-    if u.isValid(comp) then
-      local owner
-      pcall(function() owner = comp:GetOwner() end)
-      if u.isValid(owner) and sameObject(owner, pawn) then mgr = comp; break end
-    end
-  end
-  if not mgr then mark("pour stream: pawn has no particle manager") return end
   if u.call(pc, m.waterFxRpcFn, mgr, true, pawn) then
     mark("pour stream on")
     local ms = math.floor((ctx.config.get("wand_spray_seconds") or 0.8) * 1000)
@@ -754,7 +747,6 @@ local function hydroCast(pawn, id)
     if ok then
       charges[id] = math.max(0, ch - ctx.config.get("wand_hydrate_cost"))
       syncHydroBar(pawn, id)
-      pourStream(pawn)
       ctx.log.info(string.format(
         "*** the rod QUENCHES thy companion (+%.0f thirst) -- %.0f measures remain ***",
         amt, charges[id]))
@@ -785,7 +777,7 @@ local function hydroCast(pawn, id)
       charges[id] = ch - pour
       syncHydroBar(pawn, id)
       sprayAt(pawn, storeOwner)
-      pourStream(pawn)
+      pourStream(pawn, store)
       ctx.log.info(string.format(
         "*** the rod POURS (%.0f water) -- %.0f measures remain ***", pour, charges[id]))
     else
@@ -1188,6 +1180,13 @@ local function overwriteHeldSlot(pawn, cls, savedata)
   end
   if m.forceHandRefreshFn then ctx.uehelp.call(pawn, m.forceHandRefreshFn) end
   refreshHotbarUi(pawn)
+  -- the forced hand refresh destroys+respawns the hand actor while lastHandAction still
+  -- suppresses the rebuild hook -- re-heal the rig ourselves once the equip settles
+  pcall(ExecuteWithDelay, 600, ctx.log.guard("wand.overwrite.rig", function()
+    onGameThread(function()
+      if ctx.uehelp.isValid(pawn) then refreshRig(pawn) end
+    end)
+  end))
   return true
 end
 
@@ -1226,13 +1225,16 @@ transmuteHeld = function(pawn, toKind)
   end
   if overwriteHeldSlot(pawn, cls, savedata) then
     if held == "hydration" and toKind == "charged" then hydroKnown[id] = nil end
-    heldItemKind[id] = toKind
+    -- barLevel mirrors the HYDRATION item only -- an electric<->charged transmute must NOT
+    -- touch it (clobbering it here broke the refill sync and got the blue rod destroyed,
+    -- live 2026-07-22 19:54)
     if toKind == "hydration" then
       local per = ctx.config.get("wand_pour_amount")
       barLevel[id] = (per and per > 0) and math.max(1, math.ceil((charges[id] or 0) / per)) or nil
-    else
+    elseif held == "hydration" then
       barLevel[id] = nil
     end
+    heldItemKind[id] = toKind
     pcall(ExecuteWithDelay, 1200, ctx.log.guard("wand.transmute", function()
       onGameThread(function()
         lastHandAction = -1e9
@@ -1267,28 +1269,26 @@ end
 
 -- Mirror the blue rod's measures onto the held item's DURABILITY BAR, BOTH directions --
 -- the watering-can behavior (the cooked row ships DefaultAttribues DURABILITY=12 = 240
--- measures / 20 per pour; W_InventorySlot renders the bar for any attribute-bearing item --
--- offline RE of BPL_AttributeFunctions 2026-07-22). DOWN rides the pawn's own
--- DecreaseCurItemDurability and NEVER reaches 0 (zero DESTROYS the item; target floors at
--- 1). UP (a refill) rewrites the held slot's savedata in place (overwriteHeldSlot) -- the
--- rod never leaves its slot.
+-- measures / 20 per pour; W_InventorySlot renders the bar for any attribute-bearing item).
+-- ALWAYS an ABSOLUTE in-place rewrite of the slot's savedata, never a relative decrement:
+-- a decrement sized off the barLevel MIRROR destroyed the rod live (2026-07-22 19:54 --
+-- the electrick transmutes had nil'd the shared mirror, the refill write got skipped as
+-- "already full", and the next pour stepped REAL durability 1 -> 0 = the game deletes the
+-- item). An absolute write is right even when the mirror is wrong; the mirror only skips
+-- redundant writes, and a FAILED write nils it so the next sync retries.
 syncHydroBar = function(pawn, id)
   if heldItemKind[id] ~= "hydration" then return end
   local per = ctx.config.get("wand_pour_amount")
   if not per or per <= 0 then return end
   local target = math.max(1, math.ceil((charges[id] or 0) / per))
-  local maxN = math.max(1, math.ceil(ctx.config.get("wand_hydration_max") / per))
-  local cur = barLevel[id] or maxN
-  if cur > target and ctx.map.wand.durabilityFn then
-    -- two args: DecreaseAmt + a fresh TABLE for the ItemDestroyed OUT param (UE4SS rule)
-    local okD = ctx.uehelp.call(pawn, ctx.map.wand.durabilityFn, cur - target, {})
-    mark("hydro bar -" .. (cur - target) .. " ok=" .. tostring(okD))
-    refreshHotbarUi(pawn)
-  elseif cur < target then
-    local cls = ctx.items and ctx.items.classFor((ctx.map.wand.itemRows or {}).hydration)
-    if cls then overwriteHeldSlot(pawn, cls, durabilitySavedata(target)) end
+  if barLevel[id] == target then return end
+  local cls = ctx.items and ctx.items.classFor((ctx.map.wand.itemRows or {}).hydration)
+  if not cls then mark("hydro bar: no item class -- sync skipped") return end
+  if overwriteHeldSlot(pawn, cls, durabilitySavedata(target)) then
+    barLevel[id] = target
+  else
+    barLevel[id] = nil
   end
-  barLevel[id] = target
 end
 
 -- Watch the game's own tool-switch signal so the wand steps aside like any other tool would.
