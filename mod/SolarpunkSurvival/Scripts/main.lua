@@ -9,6 +9,9 @@ local ok, err = pcall(function()
   local modRoot = scriptsDir:match("^(.*[/\\])[Ss]cripts[/\\]$") or scriptsDir
 
   local log       = require("core.log")
+  -- FIRST, before anything can schedule: shadow ExecuteWithDelay/ExecuteInGameThread with the
+  -- queue-backed dispatcher (hook-thread function refs abort the process -- see the module).
+  require("core.scheduler").init(log)
   local bus       = require("core.eventbus")
   local gate      = require("core.gate")
   local config    = require("core.config").init(modRoot)

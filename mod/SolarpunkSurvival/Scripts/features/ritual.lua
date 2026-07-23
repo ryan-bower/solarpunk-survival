@@ -38,7 +38,7 @@ local pendingOfferings, pendingCandles           -- corner items to consume + ca
 -- Friendly names for the corner offerings (log flavor).
 local OFFERING_NAMES = {
   water     = "water clear of impurities",
-  honey     = "comb of the honeybee",
+  wax       = "wax of the honeybee",
   leaf      = "leaf of the trees",
   clay      = "clay of the earth",
   berry     = "a berry nourished by the sun",

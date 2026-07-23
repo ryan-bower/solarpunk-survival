@@ -70,7 +70,9 @@ do
   eq(m.ritual.bookItemRow, "Handbook", "mapping: ritual book item")
   eq(m.ritual.hydrationOfferings.water, "BP_CarafeDrinkableWater_Item_C",
      "mapping: water clear of impurities = the BOILED carafe's world actor")
-  eq(m.ritual.hydrationOfferings.honey, "BP_Honey_Item_C", "mapping: comb of the honeybee")
+  eq(m.ritual.hydrationOfferings.wax, "BP_Beeswax_Item_C",
+     "mapping: wax of the honeybee (user swapped honey -> beeswax)")
+  eq(m.ritual.hydrationOfferings.honey, nil, "mapping: honey is no longer an offering")
   eq(m.ritual.hydrationOfferings.leaf, "BP_Leaf_Item_C", "mapping: leaf of the trees")
   eq(type(m.ritual.hydrationOfferings.clay), "table",
      "mapping: clay of the earth accepts multiple dropped forms")

@@ -144,13 +144,14 @@ M.profiles = {
       -- ItemActors dir. "Water clear of impurities" = the BOILED carafe's world actor;
       -- dirty water (BP_CarafeDirtWater_Item) does not count.
       -- Per-rite corner offerings (kind -> dropped item-actor class, or a LIST of acceptable
-      -- classes; one of each kind by the candles). No honeycomb item exists in DB_Items, so
-      -- "comb of the honeybee" is the Honey item; the boiled carafe IS the game's purified tier
-      -- ("Water Bottle"); no bandage exists, so the wound-dressing is Cloth. Verified against
-      -- db_items_src.json 2026-07-22.
+      -- classes; one of each kind by the candles). The boiled carafe IS the game's purified
+      -- tier ("Water Bottle"); no bandage exists, so the wound-dressing is Cloth. Verified
+      -- against db_items_src.json 2026-07-22.
       hydrationOfferings = {
         water = "BP_CarafeDrinkableWater_Item_C",  -- water clear of impurities
-        honey = "BP_Honey_Item_C",                 -- comb of the honeybee
+        -- user swapped honey -> beeswax 2026-07-22 (the wand IS a wax-sealed stick; the wax
+        -- calls to the wax)
+        wax   = "BP_Beeswax_Item_C",               -- wax of the honeybee
         leaf  = "BP_Leaf_Item_C",                  -- leaf of the trees
         -- clay dropped from inventory spawns the GRABITEM form, not the _Item actor (live
         -- census at the pentagram 2026-07-22; Stick/Stone share this dual-class pattern)

@@ -657,18 +657,21 @@ CODEX_PAGES = [
     ("Codex_H1", 3, "Icon_Caraffe_Water",
      "I. Of the First Rung. The dry rod is a beggar; before it may argue with the sky it must"
      " first learn to HOLD. Water is the humblest of the sky's coins, and so it is the first"
-     " taught. Return to thy pentagram beneath a gathering storm, and bring vessels: five"
-     " carafes of water, boiled and blameless -- the sky will not school a rod on silt."),
+     " taught. Return to thy pentagram beneath a gathering storm, and bring the five wet"
+     " tributes: WATER clear of impurities, boiled and blameless, for the sky will not school"
+     " a rod on silt. WAX of the honeybee, that seals the rod and calls to its own. LEAF of"
+     " the trees, that drinks the rain all its green life. CLAY of the earth, that holds the"
+     " river's shape. And a BERRY nourished by the sun, swollen fat with juice."),
     ("Codex_H2", 3, "AnimalIcon_Chicken",
      "And bring the offering: a chicken, bright of eye and busy of foot, that hath scratched"
      " all its small days in honest dirt. It is a lesser innocence than the lamb's, for this is"
      " a lesser asking -- but innocence it is, and the sky counts it fair coin for rain."),
     ("Codex_H3", 3, "ICON_CandlePlate",
-     "Pen the bird in the heart of the star, and at the five corners set the five waters, each"
-     " within two strides of its candle. Then wait upon the storm. When the bolt takes the bird,"
-     " the five waters leap from their vessels into the rod, and the rod turns river-blue: a"
-     " HYDRATION WAND, brimming with two hundred and forty measures -- twice what any tinker's"
-     " can may carry."),
+     "Pen the bird in the heart of the star, and lay the five tributes upon the ground by the"
+     " candles -- anywhere within the circle's heart will serve; the star is not fussy about"
+     " strides. Then wait upon the storm. When the bolt takes the bird, the five tributes leap"
+     " into the rod, and the rod turns river-blue: a HYDRATION WAND, brimming with two hundred"
+     " and forty measures -- twice what any tinker's can may carry."),
     ("Codex_H4", 3, "Icon_Watercan_Wood",
      "II. Of the Pouring. Draw the blue rod and look upon what thirsts, and pour. Aim it at the"
      " tilled box and the soil drinks its fill in one gesture. Aim it at a COMPANION -- parched,"
