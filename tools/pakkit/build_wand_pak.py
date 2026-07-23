@@ -715,9 +715,11 @@ CODEX_PAGES = [
      "IV. Of the Wielding, and the Refilling. Draw the wand and look upon what offends thee, and"
      " strike -- the sky answers WHERE THINE EYE RESTS, in any weather, asking no leave of the"
      " clouds. One bolt, one payment: the wand then sleeps again, dim and spent. To refill it,"
-     " thou needst not the pentagram twice: stand within five paces of any bolt thou didst not"
-     " cast, wand drawn, feet planted, and let thy rod drink from thy neighbour's misfortune."
-     " The storm does not care WHOSE hand holds the cup."),
+     " thou needst not the pentagram twice, nor to stand beneath the falling fire: where a bolt"
+     " is coming, the ground first CRACKLES with the sky's intent. Run the spent rod through"
+     " that creeping charge -- within five paces, before the strike falls -- and be gone before"
+     " the white fire follows. Any bolt serves, save thine own: the storm does not care WHOSE"
+     " hand holds the cup, only that the hand be quick."),
     ("Codex_W7", 4, "Icon_Stormy",
      "But mark this well, and forget it never: the heavens keep a ledger, and every spark is a"
      " debt set down against thy name. The lamb was but the first payment.\n\nThe sky will"

@@ -41,8 +41,9 @@
 --              real bolt at the aimed point, ANY weather. The stash means the game still sees
 --              EMPTY hands while the wand is drawn, so the generic left click keeps firing --
 --              and no real tool's action can double-trigger under a cast.
---   recharge = stand within wand_recharge_radius (5 m) of a strike that isn't your own cast
---              while the wand is drawn.
+--   recharge = run within wand_recharge_radius (5 m) of a bolt's GROUND-CHARGE -- the crackle
+--              that plays for bolt_impact_delay seconds before the strike frame -- while holding
+--              the spent rod. Any bolt that isn't your own cast counts; no need to take the hit.
 --
 -- MP: wand state lives on the host (fully functional for the host player; remote players'
 -- states are tracked host-side, but their draw key/visuals run on their own machine -- a
@@ -512,7 +513,7 @@ local function setState(pawn, state, quiet)
         zaps[id] or ctx.config.get("wand_electric_charges")))
     elseif state == "uncharged" then
       ctx.log.info("Lightning Wand (uncharged) -- the rod dims to old gold."
-        .. " Hold it within 5 m of a strike to recharge.")
+        .. " Run it through a bolt's ground-charge (before the strike lands) to recharge.")
     elseif state == "hydration" then
       ctx.log.info(string.format(
         "*** HYDRATION WAND *** the rod runs river-blue (%.0f measures). Left click to pour.",
@@ -1418,31 +1419,49 @@ function F.init(c)
   ctx.services.chargeWands = function(center, radius) return F.chargeWands(center, radius) end
   ctx.services.hydrateWands = function(center, radius) return F.hydrateWands(center, radius) end
 
-  -- Recharge: a strike within wand_recharge_radius (5 m) of a player HOLDING the spent rod
-  -- refills it to wand_electric_charges bolts and the item turns back into the charged rod --
-  -- except the caster's own bolt (no self-recharge loop). "Holding" is the drawn flag; remote
-  -- players' flag is unknown host-side (nil), which counts as holding -- the generous reading.
-  -- The HELD ITEM must actually be the spent Electrick rod (equippedWandKind, read fresh off
-  -- the pawn): wands[id] is PER-PLAYER state, so a player who owns a spent rod but is holding
-  -- their MUNDANE one passed the state check and transmuteHeld rewrote the wrong rod in hand
+  -- Recharge: RUN THE SPENT ROD THROUGH THE GROUND-CHARGE. Every bolt crackles on the ground
+  -- for the whole bolt_impact_delay window before the big strike frame; passing within
+  -- wand_recharge_radius (5 m) of the charge at ANY moment of that window refills the rod to
+  -- wand_electric_charges bolts and the item turns back into the charged rod -- no need to be
+  -- there when the bolt lands (the recharge reach is wider than the strike_radius damage core,
+  -- so a dash through the crackle's edge never even risks the hit). The caster's own bolt is
+  -- excluded (no self-recharge loop -- the last cast would otherwise instantly refill itself).
+  -- "Holding" is the drawn flag; remote players' flag is unknown host-side (nil), which counts
+  -- as holding -- the generous reading. The HELD ITEM must actually be the spent Electrick rod
+  -- (equippedWandKind, read fresh off the pawn): wands[id] is PER-PLAYER state, so a player who
+  -- owns a spent rod but is holding their MUNDANE one must not have the wrong rod rewritten
   -- (live 2026-07-22 -- "mundane wands get charged by lightning"). Only the spent rod drinks.
-  ctx.bus.on("lightning.strike", ctx.log.guard("wand.recharge", function(e)
+  -- The watch is a BOUNDED chain of one-shot samples (every ~300ms until the strike frame) --
+  -- never a free-running timer; every UObject is re-fetched fresh, on the game thread.
+  ctx.bus.on("lightning.crackle", ctx.log.guard("wand.recharge", function(e)
     if not (ctx.net.isHost() and e and e.location) then return end
-    local r2 = ctx.config.get("wand_recharge_radius") ^ 2
-    for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
-      local id = playerIdOf(pawn)
-      if id and wands[id] == "uncharged" and id ~= e.castBy and drawn[id] ~= false
-          and equippedWandKind(pawn) == "electric" then
-        local pl = ctx.identity.locationOf(pawn)
-        if pl and ctx.uehelp.dist2(pl, e.location) <= r2 then
-          zaps[id] = ctx.config.get("wand_electric_charges")
-          setState(pawn, "charged")
-          transmuteHeld(pawn, "charged")
-          ctx.log.info(string.format(
-            "*** the wand drinks the storm -- RECHARGED (%d bolts) ***", zaps[id]))
+    local deadline = os.clock()
+      + math.max(0.1, tonumber(e.window) or ctx.config.get("bolt_impact_delay"))
+    local claimed = {}  -- ids this bolt already refilled (each rod drinks once per bolt)
+    local function sample()
+      local r2 = ctx.config.get("wand_recharge_radius") ^ 2
+      for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
+        local id = playerIdOf(pawn)
+        if id and not claimed[id] and wands[id] == "uncharged" and id ~= e.castBy
+            and drawn[id] ~= false and equippedWandKind(pawn) == "electric" then
+          local pl = ctx.identity.locationOf(pawn)
+          if pl and ctx.uehelp.dist2(pl, e.location) <= r2 then
+            claimed[id] = true
+            zaps[id] = ctx.config.get("wand_electric_charges")
+            setState(pawn, "charged")
+            transmuteHeld(pawn, "charged")
+            ctx.log.info(string.format(
+              "*** the rod drinks the ground-charge -- RECHARGED (%d bolts) ***", zaps[id]))
+          end
         end
       end
+      if os.clock() < deadline then
+        pcall(ExecuteWithDelay, 300, ctx.log.guard("wand.recharge2", function()
+          onGameThread(sample)
+        end))
+      end
     end
+    onGameThread(sample)
   end))
 
   -- The draw key (config wand_draw_key, default V).

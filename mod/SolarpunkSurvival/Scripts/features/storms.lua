@@ -245,6 +245,7 @@ function F.resolveStrike(loc, rod)
   local mgr = weatherMgr()
   if mgr and ctx.map.weather.thunderFn then ctx.uehelp.call(mgr, ctx.map.weather.thunderFn) end
   ctx.net.multicast("Multicast_Bolt", { X = loc.X, Y = loc.Y, Z = loc.Z })
+  ctx.bus.emit("lightning.crackle", { location = loc, window = ctx.config.get("bolt_impact_delay") })
   afterIfActive(ctx.config.get("bolt_impact_delay"), strikeToken, function() F.impact(loc, rod) end)
 end
 
@@ -434,6 +435,7 @@ function F.strikeAt(loc, tag)
       if ctx.map.weather.thunderFn then ctx.uehelp.call(mgr, ctx.map.weather.thunderFn) end
     end
     ctx.net.multicast("Multicast_Bolt", { X = loc.X, Y = loc.Y, Z = loc.Z })
+    ctx.bus.emit("lightning.crackle", { location = loc, window = ctx.config.get("bolt_impact_delay") })
     -- damage + world effects land with the big strike frame (see F.impact), not at spawn
     afterIfActive(ctx.config.get("bolt_impact_delay"), token, function() F.impact(loc, rod) end)
   end)
@@ -448,6 +450,8 @@ function F.castBolt(loc, casterId)
   local mgr = weatherMgr()
   if mgr and ctx.map.weather.thunderFn then ctx.uehelp.call(mgr, ctx.map.weather.thunderFn) end
   ctx.net.multicast("Multicast_Bolt", { X = loc.X, Y = loc.Y, Z = loc.Z })
+  ctx.bus.emit("lightning.crackle",
+    { location = loc, castBy = casterId, window = ctx.config.get("bolt_impact_delay") })
   local ms = math.floor(ctx.config.get("bolt_impact_delay") * 1000)
   pcall(ExecuteWithDelay, ms, ctx.log.guard("cast.impact", function()
     onGameThread(function()
@@ -468,6 +472,28 @@ function F.onBoltSpawned(bolt)
   -- open the damage-guard window on EVERY machine (clients see replicated native bolts too)
   lastBoltSeen = os.clock()
   if not ctx.net.isHost() or not ctx.config.get("native_strike_effects") then return end
+  -- The crackle window OPENS at spawn: after a beat (our own spawnBoltAt registers the final
+  -- name synchronously, so by now modBolts already holds it for our bolts), announce a genuinely
+  -- NATIVE bolt's ground-charge so the wand's run-through recharge can watch this bolt too.
+  -- READ-ONLY on modBolts/modBoltLocs -- the impact check below still consumes the entry.
+  pcall(ExecuteWithDelay, 200, ctx.log.guard("bolt.crackle", function()
+    onGameThread(function()
+      local nm
+      pcall(function() if ctx.uehelp.isValid(bolt) then nm = bolt:GetFName():ToString() end end)
+      if nm and modBolts[nm] then return end  -- ours: the spawn site already emitted the crackle
+      local loc = locOf(bolt)
+      if not loc then return end
+      for i = #modBoltLocs, 1, -1 do
+        local e = modBoltLocs[i]
+        if os.clock() - e.t <= 6
+            and (loc.X - e.loc.X) ^ 2 + (loc.Y - e.loc.Y) ^ 2 <= 1000 * 1000 then
+          return  -- proximity says ours (a second actor at the same strike)
+        end
+      end
+      ctx.bus.emit("lightning.crackle", { location = loc, native = true,
+        window = math.max(0.5, ctx.config.get("bolt_impact_delay") - 0.2) })
+    end)
+  end))
   local ms = math.floor(ctx.config.get("bolt_impact_delay") * 1000)
   pcall(ExecuteWithDelay, ms, ctx.log.guard("bolt.native", function()
     onGameThread(function()

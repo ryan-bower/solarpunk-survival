@@ -4,6 +4,8 @@
 --   weather.changed    { storm=bool, severity=0..1 }
 --   storm.warning      { lead=seconds }
 --   lightning.telegraph{ location, radius, lead }
+--   lightning.crackle  { location, window, castBy?, native? } (ground-charge phase: bolt spawned,
+--                                                              strike frame ~window seconds away)
 --   lightning.strike   { location }                       (bolt landed, pre-classification)
 --   strike.player      { actor, id, location }
 --   strike.crop        { actor, id, location }
