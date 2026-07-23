@@ -573,170 +573,159 @@ def add_rowkey(d, s, anchor):
     nm.insert(i, s)
 
 # ---- the codex text ----------------------------------------------------------
-# Four sections; each page is one S_GameplayTip row (icon, passage, category).
+# Five sections; each page is one S_GameplayTip row (icon, passage, category).
 # Category BYTE -> ORIGINAL-enum FName (rows use the original S_GameplayTip, whose Category
 # property resolves names against EGameplayTipCategory; its name<->value order is permuted):
 CAT_FNAME = {
     0: "EGameplayTipCategory::NewEnumerator0",   # byte 0 -> section "Origins"
     1: "EGameplayTipCategory::NewEnumerator2",   # byte 1 -> "Pentagram"
-    2: "EGameplayTipCategory::NewEnumerator1",   # byte 2 -> "Implements"
-    3: "EGameplayTipCategory::NewEnumerator4",   # byte 3 -> "Hydration Wand"
-    4: "EGameplayTipCategory::NewEnumerator3",   # byte 4 -> "Electrick Wand"
+    2: "EGameplayTipCategory::NewEnumerator1",   # byte 2 -> "Instruments"
+    3: "EGameplayTipCategory::NewEnumerator4",   # byte 3 -> "Hydration"
+    4: "EGameplayTipCategory::NewEnumerator3",   # byte 4 -> "Electrick"
 }
-CODEX_SECTIONS = ["Origins", "Pentagram", "Implements", "Hydration Wand", "Electrick Wand"]
+CODEX_SECTIONS = ["Origins", "Pentagram", "Instruments", "Hydration", "Electrick"]
 ICONS_ART = "/Game/Art/Textures/Icons/"
 # icons that do NOT live in the Art/Textures/Icons flat dir (verified against the legacy extract)
 ICON_DIR_OVERRIDES = { "Icon_Stick": "/Game/UI/ItemIcons/" }
 
 CODEX_PAGES = [
     # -------- ORIGINS --------
-    ("Codex_O1", 0, "Icon_Weather_Sunny",
-     "In the beginning there were two fires, and they were brothers, and they hated one another"
-     " as only brothers can. The elder is AURELION, the Patient Furnace, Warden of the Day, who"
-     " lays his gold upon every leaf and every pane of glass, and asks for nothing. The younger"
-     " is KERAUNOS, the Jealous Fire, Lord of the Riven Sky, who gives nothing -- but trades."),
-    ("Codex_O2", 0, "Icon_Stormy",
-     "Keraunos coils behind the clouds and counts what is owed him. Every shadow cast by his"
-     " brother's light he writes down as an insult. When the ledger grows too heavy the sky"
-     " turns black, and he comes down upon the land in white letters, and what he underlines is"
-     " burned, and what is burned is his."),
-    ("Codex_O3", 0, "Icon_Weather_Sunny",
-     "Neither brother may slay the other, for the world is the wager, and the world must stand."
-     " So they keep the old balance: the day is Aurelion's, given freely; the storm is Keraunos',"
-     " and everything in it has a price. Thy panels of glass drink the elder's charity. This"
-     " codex concerns the younger, and his terrible shop."),
+    ("Codex_O1", 0, "Icon_Handbook",
+     "Wherein is set downe the beginning of the storme, and who is to blame for it."
+     "\n\nI write this because they that taught me are dead, and they wrote nothing downe, and I"
+     " am wearie of bearing it alone."
+     "\n\nThere be two. There were never more than two, and they have not agreed in all the yeares"
+     " of the worlde."),
+    ("Codex_O2", 0, "Icon_Weather_Sunny",
+     "The first is Solenne, whom the olde folke named the Open Hand. She is the long light. Every"
+     " good thing that ever laye in thy palm came forth from betwixt her fingers -- the wood and"
+     " the wax, the vein of copper sleeping in the rocke, the bone of iron, the fyre that scoureth"
+     " the rot out of standing watir. She taught our mothers to draw the metal into barre and tube,"
+     " to worke the loome, and to speake so gentlie unto the sunneflower that it turneth its face"
+     " and followeth her the whole daye long. I have loved her. I set that downe plainlie, that"
+     " what cometh after may be rightlie understood."),
+    ("Codex_O3", 0, "Icon_Stormy",
+     "The second is Vorrach, called the Unlit, and he is elder than she by an age, being the darke"
+     " that stood alone before ever there was a sunne for it to stand against. He hath made nothing"
+     " in all his yeares. He cannot. It is not in him. He may onlie take, and counte, and remember"
+     " -- and he remembereth all."
+     "\n\nWhen Solenne began her giving, he spake but once, and hath had no cause to speake againe:"
+     " nothing given shall goe unpaid."),
     ("Codex_O4", 0, "Icon_Stormy",
-     "Ask why any soul would trade with the Jealous Fire, when the Patient Furnace gives for"
-     " free. Because Aurelion's gift falls soft and slow, and some works want fire that ARGUES."
-     " Because the storm can be aimed. Because, little witch, thou hast already read this far."),
+     "So he keepeth his accompt. Every gift of hers is writ downe against us, and the stormes are"
+     " him walking abroad to gather what is owed. When the white fyre falleth, a debt is struck"
+     " through. The thunder after is but the sound of his booke closing."),
+    ("Codex_O5", 0, "Icon_Stick",
+     "Marke well why the rods will not answere. Solenne shaped the vessel -- so much she could doe."
+     " But she cannot fill it. Onlie the Unlit filleth, and he filleth nothing till he be paid in"
+     " somewhat warme and breathing. Herein lieth the whole of the arte. All else in this booke is"
+     " but the manner of the paying."),
     # -------- PENTAGRAM --------
     ("Codex_P1", 1, "ICON_CandlePlate",
-     "Of the Raising of the Shape. Raise up a pentagon of fence -- five walls of equal length --"
-     " to pen the innocent within, that it may not flee. Then from each of the five sides draw"
-     " forth a point, so that the walls give birth to a star of five sharp points: the old and"
-     " evil geometry, the shape the wise will not name aloud."),
+     "Of the raising of the Starre, common unto everie rite herein."
+     "\n\nThe shape is one and the same for all workes I have knowledge of, and I doe not thinke it"
+     " was ever ours. I thinke it was founde."
+     "\n\nRaise up a fence of five walles, each of the length of the last, so that a pen be made"
+     " which the offering cannot leave. Then from everie walle draw forth a point, till the pen"
+     " hath flowered into a starre of five sharpe armes. Thou shalt know when it standeth true, for"
+     " thy handes will not wishe to finish it. Finish it notwithstanding."),
     ("Codex_P2", 1, "ICON_CandlePlate",
-     "Upon each of the five corners set a single candle, and leave every one of them dark."
-     " Suffer no earthly flame to touch them -- for the sky itself shall be their spark."),
+     "Sette a candle upon each of the five corners, and leave everie one of them darke."
+     "\n\nCaveat. Light them not. There be women who have set fyre to them out of kindnesse,"
+     " thinking the darke unfriendlie to the worke, and the storme passed over their heades and"
+     " gave them nothing, and they went to their graves not knowing wherefore. The skie is the"
+     " onlie flame suffered here. Aught else is an insult, and he is easilie insulted."),
     ("Codex_P3", 1, "AnimalIcon_Sheep",
-     "In the very heart of the shape the offering must stand. Bind it not, and comfort it not --"
-     " for the truly innocent do not run."),
+     "Lay the offerings upon the points, one unto each arme, that he may counte them without"
+     " stooping. Sette the beast in the hearte. Binde it not. Gentle it not. The innocent runne not"
+     " away, and it is their not running that he weigheth."),
     ("Codex_P4", 1, "Icon_Weather",
-     "The sky is exact in its sums: no fewer than fifteen posts of fence and five candles, all"
-     " within twenty paces of the heart. Work in the rain if thou must -- the storm snuffs every"
-     " flame regardless; it is the PLACING that the sky reads, not the light."
-     "\n\n-- count thy witnesses well, for the storm counts them too --"),
-    # -------- IMPLEMENTS --------
+     "Thereafter remaineth nothing but waiting, and the waiting is the hardest part of anie rite."
+     " The worke answereth not unto thee. It answereth unto the weather. Stand thou within the"
+     " circle when the cloudes goe blacke and the ayre turneth to iron upon the tongue, holde thy"
+     " rod, and when the fyre commeth downe --"
+     "\n\nCaveat. Blink not. Everie rod helde by everie soule standing witnesse is quickened in"
+     " that same breath, and the breath is verie short. He that looketh away hath looked away for"
+     " good and all."),
+    # -------- INSTRUMENTS --------
     ("Codex_I1", 2, "Icon_Stick",
-     "Hearken, thou who bearest in thy hand a rod both mundane and mute -- a dead branch of no"
-     " more worth than a corpse's cold finger. It sleepeth, and shall sleep forever, unless the"
-     " wrath of the heavens be called down to wake it. Whisper these steps to no living soul,"
-     " and work them only in the dark of a gathering storm."),
-    ("Codex_I2", 2, "Icon_Handbook",
-     "No soul is born knowing the shape. Go first to the table of research and pay the ledger"
-     " its opening tithe -- wax of the bee, clay of the earth, leaf of the tree, one measure of"
-     " each -- and the old and evil geometry shall unfold to thee: the binding of this very"
-     " codex, and the shaping of the rod alike. Knowledge is the first sacrifice. It is not the"
-     " last."),
-    ("Codex_I3", 2, "ICON_Beeswax",
-     "Then cut thy rod: a stick, dry and honest, no longer than thy forearm. Seal its crown with"
-     " the wax of the honeybee, molded warm and set cold, and work the two as one at the bench --"
-     " no bare hand suffices for so exact a sin. Fret not that the crown sits soft and pale; the"
-     " storm shall set its own stone there in time. But mark: the shape is NOT the weapon. What"
-     " thou holdest now is a wand the way a coffin is a ship."),
-    ("Codex_I4", 2, "Icon_Stormy",
-     "No forge of man can wake the rod. Power is not smithed; it is OWED. And mark this before"
-     " all else: the blank rod may be woken but ONCE. Carry it to the pentagram and choose its"
-     " nature -- the WATER, by the rite of the bird, or the FIRE, by the rite of the lamb --"
-     " each paid in the manner written upon the leaves that follow. Choose with care: a rod once"
-     " turned never turns again, and the sky hears no appeals."),
-    ("Codex_I5", 2, "Icon_Stick",
-     "Of other implements -- the crook that herds hail, the needle that sews wounds in the wind,"
-     " the bell that unringable rings -- this codex keeps its silence yet. Feed the ledger, and"
-     " perhaps the ledger feeds thee."),
-    # -------- HYDRATION WAND (the path of water: the Rite of the Quenched Rod) --------
-    ("Codex_H1", 3, "Icon_Caraffe_Water",
-     "I. Of the Path of Water. The blank rod is a beggar: it holds nothing and argues with no"
-     " one. Of the two natures it may be given, water is the humbler -- and by far the kinder"
-     " creditor. Return to thy pentagram beneath a gathering storm, and bring the five wet"
-     " tributes: WATER clear of impurities, boiled and blameless, for the sky will not school"
-     " a rod on silt. WAX of the honeybee, that seals the rod and calls to its own. LEAF of"
-     " the trees, that drinks the rain all its green life. CLAY of the earth, that holds the"
-     " river's shape. And a BERRY nourished by the sun, swollen fat with juice."),
-    ("Codex_H2", 3, "AnimalIcon_Chicken",
-     "And bring the offering: a chicken, bright of eye and busy of foot, that hath scratched"
-     " all its small days in honest dirt. It is a lesser innocence than the lamb's, for this is"
-     " a lesser asking -- but innocence it is, and the sky counts it fair coin for rain."),
-    ("Codex_H3", 3, "ICON_CandlePlate",
-     "Pen the bird in the heart of the star, and lay the five tributes upon the ground by the"
-     " candles -- anywhere within the circle's heart will serve; the star is not fussy about"
-     " strides. Then wait upon the storm. When the bolt takes the bird, the five tributes leap"
-     " into the rod, and the rod turns river-blue: a HYDRATION WAND, brimming with two hundred"
-     " and forty measures -- twice what any tinker's can may carry."),
+     "Of the making of a blanke rod, and of the feeding of a quickened one."
+     "\n\nTo make a Mundane Wand. Take thou one sticke, and one measure of beeswax. Binde them."
+     " There is no more to it, and it availeth nothing."),
+    ("Codex_I2", 2, "ICON_Beeswax",
+     "Consider the crueltie herein. Both partes are hers -- the braunch off her trees, the wax off"
+     " her bees -- and she giveth them freelie, and thou mayest binde them into the verie shape a"
+     " wand ought to take, and it shall lye in thy palme as dead as a corpse his colde finger. It"
+     " hath no nature. Such a rod is called blanke, and blanke it abideth, and no quantitie of"
+     " wanting shall alter it. The shape is hers. The filling is his. She hath never in all her"
+     " yeares beene able to give us both."),
+    ("Codex_I3", 2, "Icon_Stormy",
+     "Nota bene. Once a rod be filled, the nature thereof is sette and cannot be unsette. No second"
+     " rite shall write over it, nor yet a third. Whatsoever thou callest downe into that sticke is"
+     " what it shall be untill the wood rotteth. Choose thou the path afore thou raisest the starre,"
+     " and not after."),
+    ("Codex_I4", 2, "Icon_Caraffe_Water",
+     "Of the feeding. Everie filled rod must be fed, and each feedeth after its owne kinde."
+     "\n\nThe quenched rod drinketh when thou drinkest. Putte watir to thine owne lippes and thou"
+     " shalt feele it fill beside thee; or els wade thou out into ponde or running river and stand"
+     " still, and it shall take its fill without thy lifting a hande."),
+    ("Codex_I5", 2, "Icon_Stormy",
+     "The other is not so easilie satisfied. It waketh onlie when the white fyre falleth neare"
+     " enough to lift the haire upon thy necke. Thou must stand close unto the stroke."
+     "\n\nCaveat. Closer than anie sensible woman would stand. They that have done it beare the"
+     " markes upon their armes, and they doe it againe."),
+    # -------- HYDRATION (the path of water: the Rite of the Quenched Rod) --------
+    ("Codex_H1", 3, "AnimalIcon_Chicken",
+     "The Rite of the Quenched Rod. The path of watir."
+     "\n\nFor this he asketh a chicken. A common thing, a foolish thing, that will walke into the"
+     " starre upon its owne feete if a little graine be scattered, and will stand there in the"
+     " myddes of it looking at nothing at all."),
+    ("Codex_H2", 3, "Icon_Caraffe_Water",
+     "Unto the five points give:"
+     "\n\nItem, watir made cleane by boiling and boiling againe."
+     "\nItem, a measure of the bees their owne wax."
+     "\nItem, a leafe pluckt greene and living from the crowne of an elder wood."
+     "\nItem, claye digged colde and yielding out of the lightlesse bellie of the ground."
+     "\nItem, a rasberrie, the small red droppe off the bramble."),
+    ("Codex_H3", 3, "Icon_Caraffe_Water",
+     "Caveat concerning the watir. Be exacte. He will not take that which is filthie. Whole rites"
+     " have failed in silence for a carafe drawen from a streame and never sette over the fyre --"
+     " and there is no signe given, no refusall spoken, onlie the storme passing over, and the"
+     " beast yet living, and everie rod yet dead in everie hande. Boile it. Boile it twice if thou"
+     " be uncertaine."),
     ("Codex_H4", 3, "Icon_Watercan_Wood",
-     "II. Of the Pouring. Draw the blue rod and look upon what thirsts, and pour. Aim it at the"
-     " tilled box and the soil drinks its fill in one gesture. Aim it at a COMPANION -- parched,"
-     " staggering, too proud to ask -- and the rod quenches them where they stand, across the"
-     " reach of thine eye. Every pouring spends its measures; the rod keeps its own ledger."),
-    ("Codex_H5", 3, "Icon_Caraffe_Water",
-     "III. Of the Refilling. The blue rod is refilled without ceremony, for water is owed to"
-     " all things: DRINK, and it drinks with thee -- pure water or foul, the rod does not"
-     " judge. Or WADE into pond or river, and it fills through thy boots. A rod so easily"
-     " sated should teach thee suspicion of the other nature, which is not sated at all -- and"
-     " mark, that road is now shut to this rod forever: what has turned to water stays water,"
-     " and the fire will pass it over as a stranger."),
-    # -------- ELECTRICK WAND (the path of fire) --------
-    ("Codex_W1", 4, "Icon_Copper",
-     "I. Of the Things to be Gathered. The rite of the bird asks soft things -- water and wax"
-     " and leaf. This one asks for CONDUCTORS: the fire must be given a road, else it shall cut"
-     " one through thee. Ere the tempest breaks, set forth these five, that the storm find them"
-     " pleasing and stay its hand a while: COPPER -- rounded and refined, drawn red from the"
-     " furnace and hammered honest, that carries the spark as a river carries a leaf. RAW IRON"
-     " ORE -- unsmelted and stubborn, dug cold from the deep and lightless belly of the ground,"
-     " that the earth stand witness to its own robbery."),
-    ("Codex_W2", 4, "Icon_Sunflower",
-     "PURIFIED WATER -- boiled and still as a drowned man's final breath, for even the fire's"
-     " own rite will not be bought with silt. FLOWER OF THE"
-     " SUN -- the great bloom that turns its face forever toward the elder brother, stolen and"
-     " laid down in the dark to spite him. And CLOTH THAT DRESSED AN OLD WOUND -- linen that has"
-     " known blood and been washed of it: alone among the five, this tribute hath already tasted"
-     " pain, and knows what is being asked."),
-    ("Codex_W3", 4, "AnimalIcon_Sheep",
-     "And -- most dreadful of all -- thou shalt bring an innocent lamb, unblemished and free of"
-     " sin, that hath done no wrong in all its short days, and suspecteth no ill of thee."),
+     "When the fyre falleth, everie mundane rod helde within that circle is quenched through and"
+     " made a Hydration Wand, and commeth away filled unto two hundred and fortie measures."
+     "\n\nProbatum est."),
+    # -------- ELECTRICK (the path of fire) --------
+    ("Codex_W1", 4, "AnimalIcon_Sheep",
+     "The Rite of the Grounded Bolte. The path of fyre."
+     "\n\nFor this he asketh a sheepe. A lambe will serve, and it is honestlie sette downe here that"
+     " a lambe serveth better, and wherefore that should be is not written in this booke."),
+    ("Codex_W2", 4, "Icon_Copper",
+     "Unto the five points give:"
+     "\n\nItem, a barre of copper refined and drawen by the craft she taught us."
+     "\nItem, iron ore yet rawe, yet rough with the ground it was torne from."
+     "\nItem, watir purified by fyre."
+     "\nItem, a sunneflower, the greate bloome that turneth its face toward her all the daye long."
+     "\nItem, a length of woven cloth."),
+    ("Codex_W3", 4, "Icon_Sunflower",
+     "Marke what he asketh for. Everie one of them is hers -- her metal wrought by her methodes,"
+     " her flower that followeth her light, her flame in the watir, her loome in the cloth. He"
+     " asketh not for materialls. He asketh that thou carrie her best worke out into the open and"
+     " lay it upon the armes of his starre where he may see it, and then he taketh it, and the"
+     " taking is the whole of the point."),
     ("Codex_W4", 4, "ICON_Ore_Pebbles_Iron",
-     "II. Of the Laying of the Offering. Lay the gathered conductors about the star, each within"
-     " ten paces of a candle -- the sky measures loosely, so long as the gift lies upon the open"
-     " ground and not in thy pocket -- and in the very heart of the shape lay down the lamb."
-     "\n\n. . . flower of the sun . . .\ncopper . . . . raw iron ore\n. . . . the lamb . . . ."
-     "\n. cloth of wound . . water .\n\n-- the pattern, as it must be drawn --"),
+     "When the bolte commeth downe, everie blanke rod within the circle is grounded through and"
+     " made a Lightning Wand, and commeth away charged."),
     ("Codex_W5", 4, "Icon_Stormy",
-     "III. Of the Coming of the Storm. Now wait. Wait while the clouds swell black and the very"
-     " air turns to iron upon the tongue. When the storm is come in its full and terrible"
-     " strength, and the heavens are split by white fire, the lightning shall descend upon the"
-     " star. The lamb shall be consumed, and its innocence spent like a coin dropped into a"
-     " beggar's hand. And in that same breath every BLANK rod held by all who stand and bear"
-     " witness shall drink the sky's own fury and be made ELECTRICK, burning thereafter yellow"
-     " as noon. Mark it well: the fire takes only the rod that is still NOTHING. A rod already"
-     " turned to water is passed over as a stranger -- the river keeps its own, and a rod once"
-     " turned never turns again. Only the spent electrick rod may stand here twice, and then"
-     " only to be filled with what it already is."
-     "\n\n-- blink not when the fire falls, lest thy rod stay cold --"),
-    ("Codex_W6", 4, "Icon_Copper",
-     "IV. Of the Wielding, and the Refilling. Draw the wand and look upon what offends thee, and"
-     " strike -- the sky answers WHERE THINE EYE RESTS, in any weather, asking no leave of the"
-     " clouds. One bolt, one payment: the wand then sleeps again, dim and spent. To refill it,"
-     " thou needst not the pentagram twice, nor to stand beneath the falling fire: where a bolt"
-     " is coming, the ground first CRACKLES with the sky's intent. Run the spent rod through"
-     " that creeping charge -- within five paces, before the strike falls -- and be gone before"
-     " the white fire follows. Any bolt serves, save thine own: the storm does not care WHOSE"
-     " hand holds the cup, only that the hand be quick."),
-    ("Codex_W7", 4, "Icon_Stormy",
-     "But mark this well, and forget it never: the heavens keep a ledger, and every spark is a"
-     " debt set down against thy name. The lamb was but the first payment.\n\nThe sky will"
-     " remember the rest."),
+     "Caveat. Blanke, it saith, and blanke it meaneth. A rod alreadie quenched by watir is passed"
+     " over as though it were not there -- the fyre readeth the nature of it, findeth it spoken"
+     " for, and goeth about. Bring nought but emptie wood unto this one. There was a girle helde up"
+     " a watir rod in a storme looking for a second gift, and got nothing, and the sheepe died all"
+     " the same."
+     "\n\nProbatum est."),
 ]
-
 def build_codex_enum():
     def patch(d):
         enum = d["Exports"][0]["Enum"]
@@ -1214,7 +1203,10 @@ def pack():
         if not os.path.exists(f):
             sys.exit(f"missing pack output {f}")
         print("built", f, os.path.getsize(f), "bytes")
-    print("build complete -- install the triple to <game>/Content/Paks/~mods/ separately")
+    # NOT ~mods/ -- that mounts at order 103, BELOW the base container, where these edits are
+    # silently shadowed. install.ps1 copies the triple in under the _1_P name (order 204).
+    print("build complete -- run install.ps1 (game closed) to install the triple as"
+          " <game>/Content/Paks/Solarpunk-Windows_1_P.*")
 
 if __name__ == "__main__":
     shutil.rmtree(STAGED, ignore_errors=True)

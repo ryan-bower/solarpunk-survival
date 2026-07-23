@@ -1,9 +1,12 @@
 # The Mundane Grimoire — on the calling-down of sky-fire
 
 *The lore now lives IN THE GAME as the **Tempest Codex** — a real craftable book, placed
-anywhere and read like the survival guide. Its five sections (Origins / Pentagram / Implements /
-Hydration Wand / Electrick Wand) are cooked into the content pak (`tools/pakkit`, `CODEX_PAGES`
-in build_wand_pak.py). Both crafts are gated behind ONE research card, "The Dark Arts"
+anywhere and read like the survival guide. Its five sections (Origins / Pentagram / Instruments /
+Hydration / Electrick) are cooked into the content pak (`tools/pakkit`, `CODEX_PAGES`
+in build_wand_pak.py) — 23 pages in the hand of a woman who learned the rites from women now dead,
+and who names the two powers behind them: **Solenne** the Open Hand, who shapes and gives, and
+**Vorrach** the Unlit, who makes nothing, keeps the ledger, and fills a rod only when he is paid
+in something warm and breathing. Both crafts are gated behind ONE research card, "The Dark Arts"
 (cost: 1 beeswax + 1 clay + 1 leaf), which unlocks the codex (1 log, 2 leaves, 1 clay) and the
 Mundane Wand (1 stick + 1 beeswax) together — crafted at the crafting bench, not in the
 quick-craft hand menu. The blank rod then takes exactly ONE nature at the pentagram — water by
