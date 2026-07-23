@@ -1,5 +1,5 @@
 # Launch Solarpunk, wait for UE4SS to produce output (log + any re_capture.txt), copy it into
-# dumps/ (git-ignored), then stop the game. Use after install-dev-env.ps1.
+# dumps/ (git-ignored), then stop the game. Use after install.ps1.
 # Usage:  powershell -File tools/capture-dump.ps1 [-WaitSeconds 90]
 param(
   [string]$GameWin64 = 'C:\Program Files (x86)\Steam\steamapps\common\Solarpunk\Solarpunk\Binaries\Win64',

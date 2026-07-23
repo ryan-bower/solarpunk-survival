@@ -1,61 +1,115 @@
 # Solarpunk Survival
 
 A co-op **total-conversion mod** that turns [Solarpunk](https://store.steampowered.com/app/1805110/Solarpunk/)
-(Cyberwave, Unreal Engine 5) from a cozy builder into a survival / base-defense
-experience: **deadly storms & lightning, destructible structures, defense buildings,
-enemies, and weapons** — all working in co-op.
+(Cyberwave, Unreal Engine 5) from a cozy builder into a survival experience: **deadly storms,
+telegraphed lightning, destructible machines, dark-arts rites, and storm-forged wands** — all
+working in host-authoritative co-op.
 
-Built with [UE4SS](https://docs.ue4ss.com/) (Lua scripting + Blueprint hooking).
-
-> ### ⚠️ Status: pre-alpha scaffold
-> The **core framework and all storm/lightning/destruction logic are implemented**, but
-> they are **mapping-driven** and the game-specific hooks are **not yet filled in**.
-> On first run the mod loads safely, detects your game build, and prints the exact list of
-> game symbols it still needs (see [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md)).
-> **It does not change gameplay yet** — it will once `Scripts/mapping.lua` is populated from a
-> UE4SS dump of the current build.
+Two halves: a [UE4SS](https://docs.ue4ss.com/) Lua mod (all the behaviour) and a cooked content
+pak (the new items — wands, the Tempest Codex, its research card).
 
 ---
 
-## What's in Milestone 1 (Deadly Storms)
+## Install
 
-| Feature | Behavior |
+**One script does everything.** It finds your game, installs the Visual C++ runtime if it's
+missing, puts UE4SS next to the game exe with the right engine-version settings, and copies in
+both the Lua mod and the content pak.
+
+You need three things first:
+
+| | |
 |---|---|
-| **Frequent, telegraphed lightning** | Strikes far more often, sometimes in bursts of 2–3. A glowing ground decal warns ~1.2 s before impact — move or take it. |
-| **Player strike** | **70 % max HP** per hit, so a double strike is lethal. Dodgeable via the telegraph. Death → respawn at base, drop carried items. |
-| **Per-target effects** | Crop → killed, no seed. Battery → fully charged. Drill/sprinkler → smokes, breaks if struck again unrepaired. Airship in flight → −1/3 HP, crashes at 0. |
-| **Lightning Rod** (new build) | 25 m range; redirects every strike in range to itself. Link to a battery to charge it from storms. |
-| **Storm Repair Tool** (new item) | Cheaper clone of the ship-repair item; clears the "smoking" damaged state. |
-| **Destruction** | Only strikes damage structures (no passive erosion). Destroyed pieces drop partial salvage. |
+| Windows + **Solarpunk** on Steam | tested against build `24038177` |
+| **[The Solarpunk-patched UE4SS](https://www.nexusmods.com/solarpunk/mods/4)** (`UE4SS-SP-Developer.zip`) | stock UE4SS can't scan this game's engine build. Nexus needs a login, so this is the one file the installer can't fetch for you — just leave it in your **Downloads** folder |
+| This mod — the **release zip**, or a clone of this repo | a clone has no content pak (game-derived data isn't committed); [build it](#building-the-content-pak) or use the release zip |
 
-All numbers are tunable at runtime — see [`mod/SolarpunkSurvival/config/config.default.json`](mod/SolarpunkSurvival/config/config.default.json).
-New items/buildings register into the game's existing unlock system.
+Then, with the game closed:
 
-Full design & roadmap: [`docs/DESIGN.md`](docs/DESIGN.md).
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
 
-## Multiplayer
+Launch Solarpunk. The UE4SS console window opens and logs `SolarpunkSurvival v0.1.0 starting`.
 
-Solarpunk co-op is a **host-authoritative listen-server**. This mod runs all authoritative
-logic on the host and replicates to clients, so **every player in the session must install the
-same version of the mod**. Unmodded clients are unsupported.
+<details>
+<summary>Options</summary>
 
-## Requirements & install
+| Flag | |
+|---|---|
+| `-GameDir <path>` | skip auto-detection — pass the `Solarpunk` folder (or its `Binaries\Win64`) |
+| `-Ue4ssZip <path>` | point at the UE4SS zip explicitly |
+| `-SkipPak` | Lua mod only — no wands, no codex |
+| `-SkipVcRedist` | don't check for / install the Visual C++ runtime |
+| `-Force` | reinstall the UE4SS core even if it's already there |
+| `-Uninstall` | remove the mod and the content pak (leaves UE4SS in place) |
 
-1. Install **UE4SS** for Solarpunk (the Solarpunk-patched build — see `docs/INSTALL.md`).
-2. Copy `mod/SolarpunkSurvival/` into your UE4SS `Mods/` folder.
-3. (Later) Copy the LogicMod paks into `Solarpunk/Content/Paks/LogicMods`.
+</details>
 
-Detailed steps: [`docs/INSTALL.md`](docs/INSTALL.md).
+**Updating:** `git pull` (or unzip the newer release) and run `install.ps1` again — it's idempotent,
+and it leaves your config and mod save alone.
 
-- **Tested game build:** `24038177` (Steam App 1805110)
-- Because Solarpunk has no official mod API, **game updates can break this mod** until it is
-  re-mapped. See [`docs/RELEASE-CHECKLIST.md`](docs/RELEASE-CHECKLIST.md).
-- **Back up your save** before playing — the mod adds persistent state.
+**Multiplayer:** Solarpunk co-op is a host-authoritative listen server. All the logic runs on the
+host, so **every player in the session needs this same install**. Unmodded clients are unsupported.
 
-## Contributing / reverse-engineering
+Manual steps, troubleshooting and what goes where: [`docs/INSTALL.md`](docs/INSTALL.md).
 
-The only thing standing between the scaffold and a playable build is filling in
-`Scripts/mapping.lua` from a UE4SS dump. Start at [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md).
+## Playing
+
+| | |
+|---|---|
+| **P** | toggle the storm (`sps_storm` / `sps_storm_off`; `sps_auto` re-enables hunting auto-strikes) |
+| **V** | draw / stow the wand |
+| **left click** (wand drawn) | cast — a bolt where you look, or a pour / a drink for a teammate |
+| **F7** | in-game config panel |
+| **F8** | write an RE dump (`sps_dump`) — dev tool, safe to ignore |
+
+Other console commands: `sps_wand` (state, `forge`/`soak`/`charge`/`give`), `sps_codex`,
+`sps_repair`, `sps_find <text>`, `sps_ritual_test`.
+
+The two rites — the chicken's for water, the lamb's for fire — are written up in
+[`docs/DARK-ARTS.md`](docs/DARK-ARTS.md), and in-game in the **Tempest Codex** (a craftable book;
+research *The Dark Arts*, then craft the codex and a Mundane Wand at the bench).
+
+**Tuning:** every number lives in `Mods/SolarpunkSurvival/config/config.json` (copy
+`config.default.json` next to it and edit), or press **F7**. In co-op the host's values win.
+
+## What's in it
+
+| | |
+|---|---|
+| **Storms & lightning** | frequent telegraphed strikes with a ~1.2 s ground decal, bursts, and a 70 %-max-HP player hit — two bolts kill. Struck players are stunned, T-posed and whited out. |
+| **Lightning vs the world** | batteries/generators charge to full, furnaces fuel themselves, other tech smokes then breaks on a second hit (half its components drop as salvage), trees fall. |
+| **Lightning rod** | the game's own Weather Station redirects every strike within 25 m to itself, and charges an adjacent battery. |
+| **Dark-arts rites** | a pentagram of fences + candles + five offerings around a sacrifice; the bolt that takes it turns every blank wand in the circle. |
+| **Wands** | Mundane → **Hydration** (240 measures: fills growboxes, quenches teammates, refills on drinking/wading) or → **Electrick** (aimed bolts in any weather, recharges near strikes). One nature per rod, forever. |
+| **Tempest Codex** | a real craftable, placeable, readable in-game book — five sections of lore, cooked into the content pak. |
+
+Design and roadmap: [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/MILESTONE-2.md`](docs/MILESTONE-2.md).
+
+## Building the content pak
+
+Only needed if you're working from a clone. The pak is cooked offline — no Unreal Editor — by
+round-tripping the game's own assets, so it can't be redistributed in a public repo.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/pakkit/setup.ps1   # one-time: every build dependency
+python tools/pakkit/build_wand_pak.py                             # -> tools/pakkit/out/z_SolarpunkWand_P.*
+powershell -ExecutionPolicy Bypass -File install.ps1              # installs the result into the game
+```
+
+`setup.ps1` fetches Python, the .NET SDK, Lua, retoc and UAssetAPI, builds the `wandsmith` CLI, and
+extracts the game's own assets to work from. The single piece it can't fetch is `Solarpunk.usmap`,
+which is dumped out of the *running* game — that step, and the toolchain's one very sharp gotcha,
+are in [`tools/pakkit/HOWTO.md`](tools/pakkit/HOWTO.md). Unit tests: `lua tests/spec.lua`.
+
+## Caveats
+
+- **Back up your save.** The mod writes persistent state (and the research migration touches the
+  host save).
+- Solarpunk has no mod API, so **a game update can break this mod** until it's re-mapped against a
+  fresh dump — see [`docs/RELEASE-CHECKLIST.md`](docs/RELEASE-CHECKLIST.md) and
+  [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md).
 
 ## License
 

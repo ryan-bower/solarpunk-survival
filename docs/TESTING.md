@@ -17,7 +17,8 @@ alongside `luacheck` (Lua static analysis) and Python byte-compile.
 
 ## 2. In-game self-check + RE capture — needs the game running with UE4SS
 
-Once UE4SS + the mod are installed (`tools/install-dev-env.ps1`) and you launch the game:
+Once UE4SS + the mod are installed (`install.ps1`, see [`INSTALL.md`](INSTALL.md)) and you launch
+the game:
 
 - **Status / self-check:** press **F7**, or open the UE4SS console and type `sps`. It prints the
   detected game build, host-authority state, and the list of still-unmapped symbols.
@@ -35,7 +36,7 @@ world location on both, destruction replicates, saves persist, and an unmodded c
 
 ## Convenience scripts
 
-- `tools/install-dev-env.ps1` — download + install UE4SS into the game, copy this mod in, enable it,
-  turn on the UE4SS console. Idempotent; re-run to update the mod.
+- `install.ps1` — installs every runtime dependency (VC++ runtime, UE4SS, the Lua mod, the content
+  pak) into the detected game install. Idempotent; re-run to sync the mod after an edit.
 - `tools/capture-dump.ps1` — launch the game, wait for the UE4SS log + any `re_capture.txt`, copy
   them into `dumps/` (git-ignored), then stop the game.

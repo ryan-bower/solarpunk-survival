@@ -23,8 +23,14 @@ item-actor Blueprints (and a whole cloned book UI), all offline via binary asset
 
 ## Prerequisites (one-time)
 
-- **.NET 10 SDK** (`winget install Microsoft.DotNet.SDK.8` pulls the runtime; UAssetAPI targets
-  net10.0 — install the matching SDK). Build wandsmith: `dotnet build -c Release wandsmith`.
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/pakkit/setup.ps1
+```
+
+does everything below except the usmap dump (which needs the game running). By hand:
+
+- **.NET 10 SDK** (`winget install Microsoft.DotNet.SDK.10` — UAssetAPI targets net10.0, so the
+  matching SDK is required). Build wandsmith: `dotnet build -c Release wandsmith`.
 - **retoc.exe** — download the `x86_64-pc-windows-msvc` zip from the retoc releases.
 - **UAssetAPI** — `git clone --depth 1 https://github.com/atenfyr/UAssetAPI`.
 - **Solarpunk.usmap** — in-game, run the mod's remote channel `exec` with `DumpUSMAP()` (it needs
@@ -40,8 +46,9 @@ item-actor Blueprints (and a whole cloned book UI), all offline via binary asset
 python build_wand_pak.py          # -> out/z_SolarpunkWand_P.{utoc,ucas,pak}
 ```
 
-Install by copying the triple into `<game>/Content/Paks/` **renamed to a patch layer above the
-game's own** — `Solarpunk-Windows_1_P.{utoc,ucas,pak}`. The game's base container is
+`install.ps1` in the repo root picks that output up and installs it (game closed). By hand: copy the
+triple into `<game>/Content/Paks/` **renamed to a patch layer above the game's own** —
+`Solarpunk-Windows_1_P.{utoc,ucas,pak}`. The game's base container is
 `Solarpunk-Windows_0_P` at mount Order 104; a `_1_P` name mounts at Order 204 and therefore
 *overrides* the base `DB_Items`. (A `~mods/` install lands at Order 103 — BELOW the base — so the
 edit would be shadowed and do nothing. This bit us once; use the `_1_P` name.)

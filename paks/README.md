@@ -1,24 +1,25 @@
-# Cooked content paks
+# Cooked paks
 
-The Lua mod stays engine-version-agnostic; anything Lua can't produce is a small, single-purpose
-cooked `.pak`. These require the **Unreal Editor** (matching the game's UE version) to cook and are
-**not** checked in as source here — only the built `.pak` outputs are distributed with releases.
+Release copies of the cooked content live here (git-ignored — they contain game-derived data, so
+they ship in the release zip, not in the public repo). `install.ps1` picks up a triple from this
+folder first, then falls back to `tools/pakkit/out/`.
 
-## LogicMods (Blueprint-only, replication carriers)
+## The content pak
 
-Install to `...\Solarpunk\Content\Paks\LogicMods\`:
+`Solarpunk-Windows_1_P.{utoc,ucas,pak}` — built by [`tools/pakkit`](../tools/pakkit/HOWTO.md)
+(`python tools/pakkit/build_wand_pak.py`, output `out/z_SolarpunkWand_P.*`), **no Unreal Editor
+involved**: it round-trips the game's own cooked assets. It adds the four wand items, the Tempest
+Codex (item, placeable, and its whole cloned reader UI), the "Tempest Codex" and "The Dark Arts"
+research cards, and the recipes that unlock them — as edits to the game's own `DB_Items` /
+`DB_CraftingRecipes` / `DB_Researchables` / `DB_Buildables`.
 
-| Pak | Contents | Why |
-|---|---|---|
-| `BP_ModStateActor.pak` | `AActor`, `bReplicates=true`, replicated vars (storm severity, difficulty) + `Multicast_*` / `Server_*` CustomEvents (`Multicast_Telegraph`, `Multicast_Bolt`, `Multicast_Smoke`, `Multicast_Destroy`, `Multicast_PlayerHit`, `Multicast_AirshipCrash`, `Server_RequestDamage`) | Lets Unreal replicate custom state/effects to clients natively; Lua fires the events. |
-| `BP_HealthState.pak` | replicated component (`Health`, `MaxHealth`, `bDestroyed`) | Per-actor HP visible to clients. |
-| `BP_LightningRod.pak` | rod mesh + build piece (`BP_LightningRod_C`) | The buildable Lightning Rod. |
+Install to `<game>\Content\Paks\` under exactly that name: the base container
+`Solarpunk-Windows_0_P` mounts at order 104, `_1_P` at 204 (so its DataTable edits win), and
+`~mods\` at 103 — below the base, where the same edits are silently shadowed.
 
-Until these exist, `net.lua` runs single-player / degraded (no client sync of custom state), and the
-Lua event names above are the contract the Blueprints must implement.
+## LogicMods (Blueprint-only replication carriers) — not built, not required
 
-## Content paks
-
-Install to `...\Solarpunk\Content\Paks\~mods\`. Reserve for meshes/materials/VFX/UMG that can't be
-reused from the game. Milestone 1 deliberately **reuses** the game's ship-damage smoke and vanilla
-demolish VFX, so the content-pak surface is intentionally near-zero.
+The original design called for `BP_ModStateActor` / `BP_HealthState` paks to carry custom
+replicated state. They turned out to be unnecessary: the mod replicates through the game's own
+RPCs and native replication instead, so `core/net.lua` runs without them. If a future feature
+needs custom replicated state, those would go in `<game>\Content\Paks\LogicMods\`.

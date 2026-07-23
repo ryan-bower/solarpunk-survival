@@ -6,12 +6,13 @@
   "steamAppId": 1805110,
   "engine": "Unreal Engine 5 (IoStore; exe stamped UE5-CL-0, exact minor TBD via UE4SS dump)",
   "testedGameBuilds": ["24038177"],
-  "ue4ssVersion": "TBD (install the Solarpunk-patched UE4SS before use)",
+  "ue4ssVersion": "Solarpunk-patched UE4SS (Nexus mod 4, SP Developer 1.0.3) — stock UE4SS cannot scan UE 5.7.1",
   "requiresAllPlayersInstalled": true,
-  "logicModPaks": [
-    "BP_ModStateActor.pak",
-    "BP_HealthState.pak"
+  "logicModPaks": [],
+  "contentPaks": [
+    "Solarpunk-Windows_1_P.utoc",
+    "Solarpunk-Windows_1_P.ucas",
+    "Solarpunk-Windows_1_P.pak"
   ],
-  "contentPaks": [],
-  "notes": "Pre-alpha scaffold. Game-specific hooks in Scripts/mapping.lua are unpopulated; the mod self-reports missing symbols until a dump is mapped for the tested build."
+  "notes": "Install with install.ps1 (see docs/INSTALL.md). The content pak carries the wands, the Tempest Codex and its research cards; without it the Lua mod still runs, minus those items."
 }

@@ -1,59 +1,111 @@
 # Install
 
-> For a private co-op group: **every player must install the same mod version.** The host runs all
+> **Every player in a co-op session must install the same version.** The host runs all
 > authoritative logic; unmodded clients are unsupported.
 
-## 1. Install UE4SS for Solarpunk
+The short version lives in the [README](../README.md): drop the Solarpunk-patched UE4SS zip in your
+Downloads folder, close the game, and run
 
-This mod requires **UE4SS** (Unreal Engine Scripting System). Use the **Solarpunk-patched build**
-so its symbol scanning matches the game.
-
-- Get it from the Solarpunk mod hub (e.g. the "UE4SS" entry) or build official UE4SS against this game.
-- Solarpunk's shipping binary is:
-  `...\steamapps\common\Solarpunk\Solarpunk\Binaries\Win64\SolarpunkSteam-Win64-Shipping.exe`
-- Install UE4SS into that **`Win64`** folder (so `dwmapi.dll` / `UE4SS` sit next to the exe),
-  following the UE4SS install guide. Launch the game once and confirm the UE4SS console opens.
-
-> The game ships its full `SolarpunkSteam-Win64-Shipping.pdb` next to the exe, which lets UE4SS
-> resolve symbols reliably — keep it in place.
-
-## 2. Install this mod
-
-Copy the mod folder into the UE4SS `Mods` directory that UE4SS created:
-
-```
-...\Win64\ue4ss\Mods\SolarpunkSurvival\      <-- copy mod/SolarpunkSurvival/ here
-        ├─ enabled.txt
-        ├─ Scripts/
-        └─ config/
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-(The exact `Mods` path depends on your UE4SS version/layout — it's wherever `Mods/mods.txt` or other
-`Mods/<Name>/enabled.txt` mods live.)
+This page is the long version — what that script actually does, how to do it by hand, and what to
+check when something doesn't work.
 
-## 3. (Later) Install the LogicMod paks
+## What gets installed, and where
 
-Once cooked, copy the replication carriers to:
+`<game>` below is the folder holding `Binaries\` and `Content\`, normally
+`C:\Program Files (x86)\Steam\steamapps\common\Solarpunk\Solarpunk` (the installer finds it via the
+Steam registry keys and `libraryfolders.vdf`, so second drives and non-default library folders work;
+`-GameDir` overrides it).
+
+| Dependency | Where it goes | Automatic? |
+|---|---|---|
+| **Visual C++ 2015-2022 x64 runtime** — UE4SS links against it | system | yes, downloaded from `aka.ms` and installed silently (one UAC prompt) if missing |
+| **UE4SS** (Solarpunk-patched) | `<game>\Binaries\Win64\` — `dwmapi.dll` + `ue4ss\` beside the exe | from a local zip only: Nexus needs a login. Found automatically beside `install.ps1`, in `Downloads`, or on the `Desktop` |
+| **UE4SS settings** | `<game>\Binaries\Win64\ue4ss\UE4SS-settings.ini` | yes — console on, engine pinned to 5.7, scan budget 120 s |
+| **The Lua mod** | `<game>\Binaries\Win64\ue4ss\Mods\SolarpunkSurvival\` | yes |
+| **The content pak** (wands, Tempest Codex) | `<game>\Content\Paks\Solarpunk-Windows_1_P.{utoc,ucas,pak}` | yes, if the pak is present in the release zip's `paks\` or in `tools\pakkit\out\` |
+| **`SolarpunkSteam-Win64-Shipping.pdb`** — UE4SS resolves symbols from it | ships with the game, beside the exe | verified; you're warned if it's gone |
+
+Two settings in that ini matter and are easy to get wrong by hand: the game is **UE 5.7.1**, which
+UE4SS cannot auto-detect (`MajorVersion = 5`, `MinorVersion = 7`), and its AOB scan needs longer
+than the stock budget (`SecondsToScanBeforeGivingUp = 120`).
+
+The pak name is not cosmetic. The game's own container is `Solarpunk-Windows_0_P` at mount
+**order 104**; `_1_P` mounts at **204** and so overrides the base `DB_Items`. A `~mods\` install
+lands at order **103** — *below* the base — where the same edit is silently shadowed and does
+nothing.
+
+## Doing it by hand
+
+1. Install the [VC++ 2015-2022 x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+2. Unzip the patched UE4SS and copy `dwmapi.dll` and the `ue4ss\` folder into
+   `<game>\Binaries\Win64\`.
+3. In `ue4ss\UE4SS-settings.ini` set `ConsoleEnabled`, `GuiConsoleEnabled` and `GuiConsoleVisible`
+   to `1`, `MajorVersion = 5`, `MinorVersion = 7`, `SecondsToScanBeforeGivingUp = 120`.
+4. Copy `mod\SolarpunkSurvival\` into `<game>\Binaries\Win64\ue4ss\Mods\`, and create an empty
+   `dump\` folder inside it (the dev dumper writes there and can't create it itself).
+5. Copy the pak triple into `<game>\Content\Paks\`, renamed `Solarpunk-Windows_1_P.utoc` / `.ucas` /
+   `.pak`.
+
+The mod ships an `enabled.txt`, which is what actually enables it — that file **overrides**
+`Mods\mods.txt`, so a `SolarpunkSurvival : 1` line there is belt-and-braces only.
+
+## First launch
+
+The UE4SS console window opens with the game and logs:
 
 ```
-...\Solarpunk\Content\Paks\LogicMods\BP_ModStateActor.pak
-...\Solarpunk\Content\Paks\LogicMods\BP_HealthState.pak
+[SolarpunkSurvival] SolarpunkSurvival v0.1.0 starting
+[SolarpunkSurvival] SolarpunkSurvival ready
 ```
 
-Until these exist, the mod runs in single-player / degraded (no client sync of custom state).
-
-## 4. First launch
-
-Open the UE4SS console. `SolarpunkSurvival` prints its version, the detected game build, and — until
-`Scripts/mapping.lua` is populated — a checklist of the game symbols it still needs. That checklist is
-the reverse-engineering to-do list (see `REVERSE-ENGINEERING.md`).
+Load a save (the menu has no pawn, so most commands need a world), then press **P** for a storm.
 
 ## Configuration
 
-Edit `Mods/SolarpunkSurvival/config/config.json` (copy from `config.default.json`) or use the in-game
-ImGui panel (default toggle key: **F7**). The host's balance values are authoritative in co-op.
+Copy `config\config.default.json` to `config\config.json` in the installed mod folder and edit it,
+or press **F7** in-game. Unknown keys are ignored, a malformed file falls back to the defaults, and
+in co-op the host's values are the ones that count.
+
+## Troubleshooting
+
+**"Solarpunk is running - quit the game first."** The game holds `dwmapi.dll` and its paks open.
+Quit it (not just to the menu — all the way out) and re-run.
+
+**No UE4SS console window.** Either UE4SS didn't load (`dwmapi.dll` missing from `Binaries\Win64`,
+or the VC++ runtime isn't installed), or the console is off in `UE4SS-settings.ini`. Re-run
+`install.ps1 -Force` to reinstall the core and rewrite the settings.
+
+**Console opens, but no `SolarpunkSurvival` lines.** The mod folder isn't where UE4SS looks — it
+must be `Binaries\Win64\ue4ss\Mods\SolarpunkSurvival\` with `Scripts\main.lua` inside, and it needs
+its `enabled.txt`.
+
+**The mod loads but there are no wands, no codex, no research card.** The content pak isn't
+installed. Check for `Content\Paks\Solarpunk-Windows_1_P.*` — and make sure it isn't sitting in
+`Content\Paks\~mods\`, where it would be shadowed by the base game (see above).
+
+**`sps_wand give` warns that the class can't be found.** Same cause: the pak isn't mounted.
+
+**The mod logs `DEGRADED` and disables features.** It couldn't resolve the game symbols it needs —
+usually a game update. Press **F7** for the missing-symbol list, then re-map from a fresh dump
+(**F8** in a loaded world) per [`REVERSE-ENGINEERING.md`](REVERSE-ENGINEERING.md).
+
+**Symbols look wrong / UE4SS scan fails.** Confirm `SolarpunkSteam-Win64-Shipping.pdb` is still
+beside the exe; Steam > Solarpunk > Properties > Installed Files > Verify integrity restores it.
+
+**PowerShell refuses to run the script.** Use the full command with
+`-ExecutionPolicy Bypass -File`, rather than right-click > Run with PowerShell.
 
 ## Uninstall
 
-Delete the `SolarpunkSurvival` mod folder and the two LogicMod paks. Back up your save first — the mod
-adds persistent state to the host save.
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+```
+
+Removes the mod folder and the content pak; UE4SS itself is left in place (other mods may be using
+it) — to remove that too, delete `dwmapi.dll` and the `ue4ss\` folder from `Binaries\Win64`.
+
+Back up your save first: the mod adds persistent state to the host save.

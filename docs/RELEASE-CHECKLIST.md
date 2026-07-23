@@ -11,12 +11,17 @@ runbook makes re-patching fast. Everything fragile lives in one file: `Scripts/m
    This prints only the mapped symbols that were removed/renamed/changed — your punch-list.
 5. **Patch `mapping.lua`.** Add a new profile keyed by the new build id (inherit `default`, override
    what moved). Leave the old profile so users on the previous build still work.
-6. **Smoke test** (single player): launch, confirm no red errors, storms fire, a structure takes a
-   strike, the Lightning Rod redirects.
-7. **Multiplayer test** (see below).
-8. **Bump versions:** `manifest.json` (`modVersion`, add build to `testedGameBuilds`), `CHANGELOG.md`.
-9. **Package:** `pwsh tools/package.ps1` → `dist/SolarpunkSurvival-vX.Y.Z.zip`.
-10. **Release:** tag git (`vX.Y.Z`), upload the zip to GitHub Releases, tell the group to update in
+6. **Rebuild the content pak** against the new game assets: delete `tools/pakkit/legacy/`, re-run
+   `tools/pakkit/setup.ps1` (re-extracts it), re-dump `Solarpunk.usmap`, then
+   `python tools/pakkit/build_wand_pak.py`. Its DataTable edits are made against the game's own
+   tables, so a patched `DB_Items` must be re-patched.
+7. **Install and smoke test** (single player): `install.ps1`, launch, confirm no red errors, storms
+   fire, a structure takes a strike, the Lightning Rod redirects, the wands and codex still exist.
+8. **Multiplayer test** (see below).
+9. **Bump versions:** `manifest.json` (`modVersion`, add build to `testedGameBuilds`), `CHANGELOG.md`.
+10. **Package:** `powershell -File tools/package.ps1` → `dist/SolarpunkSurvival-vX.Y.Z.zip`
+    (installer + mod + pak; players just unzip and run `install.ps1`).
+11. **Release:** tag git (`vX.Y.Z`), upload the zip to GitHub Releases, tell the group to update in
     lockstep (host + all clients on the same version).
 
 ## Multiplayer smoke test
