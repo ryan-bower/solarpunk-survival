@@ -45,6 +45,7 @@ M.schema = {
                "itemRows", "holdItemFn", "handItemDataProp", "holdIndexFn", "removeQtyAtIndexFn",
                "overwriteSlotFn", "slotItemField", "slotQtyField", "slotSavedataField",
                "forceHandRefreshFn", "waterFxRpcFn",
+               "gesturePourFn", "gesturePourStopFn", "gestureCastFn",
                "waterStorageClass", "storageAddWaterFn", "consumeEffectsFn", "waterTouchFns",
                "drinkClasses", "wateringFxComponentClass", "sprayRegisterFn", "sprayPlayFn" },
   codex    = { "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath",
@@ -294,6 +295,12 @@ M.profiles = {
       slotSavedataField  = "AdditionalSavedata_12_7C875E564155FCA4AA2B4597ACB03361",
       forceHandRefreshFn = "ForceUpdateHotbarSlot",           -- pawn fn, no args: re-read the
                                                               -- active slot into the hand
+      -- Use-gestures (offline signature read 2026-07-23 from BP_MainPlayerCharacter's
+      -- FunctionExports): all are param-less BlueprintCallable pawn events except the swing,
+      -- which takes one byte (SwingMissType; 0 = the default tool whiff).
+      gesturePourFn      = "Watercan_Watering_Animation",     -- wrist-tilt pour loop, on
+      gesturePourStopFn  = "StopWatercanAnimation",           -- wrist-tilt pour loop, off
+      gestureCastFn      = "Swing Miss",                      -- one-shot forward swing
       waterFxRpcFn       = "SERVER_WaterCanParticles",        -- controller RPC (offline RE of
                                                               -- BP_HandItem_Watercan's watering
                                                               -- tick): (ParticleManager, State,

@@ -138,6 +138,9 @@ do
      "mapping: watered-target splash component")
   eq(m.wand.sprayRegisterFn, "RegisterWateringPlayer", "mapping: splash pourer registration")
   eq(m.wand.sprayPlayFn, "PlayParticleEffect", "mapping: splash play fn (seconds param)")
+  eq(m.wand.gesturePourFn, "Watercan_Watering_Animation", "mapping: pour wrist-tilt gesture on")
+  eq(m.wand.gesturePourStopFn, "StopWatercanAnimation", "mapping: pour wrist-tilt gesture off")
+  eq(m.wand.gestureCastFn, "Swing Miss", "mapping: cast forward-swing gesture (byte param)")
   eq(m.wand.holdItemFn, "GetCurrentHoldItem", "mapping: held-item getter (real-item rig trigger)")
   eq(m.wand.handItemDataProp, "CurItemdataInHand", "mapping: held-item S_Item data prop")
   eq(string.format(m.items.classFmt, m.wand.itemRows.mundane), "BP_MundaneWand_Item_C",

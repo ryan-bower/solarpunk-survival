@@ -739,6 +739,28 @@ local function sprayAt(pawn, mgr)
   u.call(mgr, m.wand.sprayPlayFn, ctx.config.get("wand_spray_seconds") or 0.8)
 end
 
+-- The can's own wrist-tilt USE gesture, on our pawn, with the rod still in hand.
+-- Watercan_Watering_Animation()/StopWatercanAnimation() are param-less BlueprintCallable pawn
+-- events (offline signature read 2026-07-23 -- NOT the banned SERVER_WaterCanParticles RPC,
+-- which swaps the hand). The stop is sequence-guarded so rapid pours aren't cut short by a
+-- stale stop from the previous pour.
+local gestureSeq = {}
+local function playPourGesture(pawn, id)
+  local m = ctx.map.wand
+  if not m.gesturePourFn then return end
+  if not ctx.uehelp.call(pawn, m.gesturePourFn) then return end
+  gestureSeq[id] = (gestureSeq[id] or 0) + 1
+  local seq = gestureSeq[id]
+  local ms = math.floor((ctx.config.get("wand_spray_seconds") or 0.8) * 1000)
+  pcall(ExecuteWithDelay, ms, ctx.log.guard("wand.gesture", function()
+    onGameThread(function()
+      if gestureSeq[id] == seq and m.gesturePourStopFn and ctx.uehelp.isValid(pawn) then
+        ctx.uehelp.call(pawn, m.gesturePourStopFn)
+      end
+    end)
+  end))
+end
+
 -- NOTE (removed 2026-07-23): the watercan pour-STREAM RPC (mapping wand.waterFxRpcFn =
 -- SERVER_WaterCanParticles) is a dead end for the wand and must NOT be called. Live result:
 -- it flips the pawn into the game's watering state -- the pour GESTURE plays and the hand-mesh
@@ -793,6 +815,7 @@ local function hydroCast(pawn, id)
     if ok then
       charges[id] = math.max(0, ch - ctx.config.get("wand_hydrate_cost"))
       syncHydroBar(pawn, id)
+      playPourGesture(pawn, id)
       healRigSoon(pawn)
       ctx.log.info(string.format(
         "*** the rod QUENCHES thy companion (+%.0f thirst) -- %.0f measures remain ***",
@@ -826,6 +849,7 @@ local function hydroCast(pawn, id)
       -- FX = the target-side splash ONLY (farmland has no manager -> water lands, no FX);
       -- the can's stream RPC is banned -- see the pourStream removal note above
       sprayAt(pawn, wateringMgrOf(storeOwner))
+      playPourGesture(pawn, id)
       healRigSoon(pawn)
       ctx.log.info(string.format(
         "*** the rod POURS (%.0f water) -- %.0f measures remain ***", pour, charges[id]))
@@ -858,6 +882,8 @@ local function tryCast(pawn)
   local loc = aimPoint(pc, pawn)
   if not loc then return end
   if ctx.services.castBolt and ctx.services.castBolt(loc, id) then
+    -- the forward swing sells the cast (one-shot; byte 0 = the default tool whiff)
+    if ctx.map.wand.gestureCastFn then ctx.uehelp.call(pawn, ctx.map.wand.gestureCastFn, 0) end
     ctx.log.info(string.format("*** the wand SPEAKS -- bolt cast at (%.0f,%.0f) ***", loc.X, loc.Y))
     -- a full rod holds wand_electric_charges bolts; only the LAST one dims it (clamped at
     -- 0 -- a stray negative count would turn every later cast into an instant transmute)
