@@ -12,25 +12,21 @@ the steps.**
 
 ## Do this
 
-Pick by platform (the game is Windows-only; Linux/Steam Deck run it via Proton):
+One cross-platform script (the game is Windows-only; Linux/Steam Deck run it via Proton):
 
-- **Windows** (PowerShell tool):
-  ```
-  powershell -ExecutionPolicy Bypass -File tools/run.ps1
-  ```
-- **Linux / Steam Deck** (Bash tool):
-  ```
-  bash tools/run.sh
-  ```
+```
+python tools/run.py
+```
 
-Each script: stops any running instance → runs the installer (`install.ps1` / `install.sh`) to copy
-in the current `mod/` + pak → launches via `steam://rungameid/1805110` → tails
+The script: stops any running instance → fast-syncs the current `mod/` + pak into the game install
+(changed files only; it falls back to the full installer `install.ps1` / `install.sh` when UE4SS
+isn't set up yet, or on `--full`) → launches via `steam://rungameid/1805110` → tails
 `<game>/Binaries/Win64/ue4ss/UE4SS.log` until the mod prints `SolarpunkSurvival vX.Y.Z starting`
-(≤120 s), then echoes the recent mod log lines.
+(≤120 s, failing fast if the game process crashes), then echoes the recent mod log lines.
 
-Useful flags: `-NoInstall` / `--no-install` (relaunch without redeploying — faster when only testing
-a launch), `-WaitSeconds N` / `--wait N`, `-GameDir <path>` / `--game-dir <path>` if auto-detection
-misses the install.
+Useful flags: `--no-install` (relaunch without redeploying — faster when only testing a launch),
+`--full` (run the complete installer instead of the fast sync), `--wait N`, `--game-dir <path>`
+if auto-detection misses the install (the detected dir is cached in `tools/.gamedir`).
 
 ## What "success" looks like
 
@@ -57,5 +53,5 @@ so most features (storms on **P**, the wand on **V**, `sps_*` console commands) 
 
 If the game is already running and you only changed Lua, you usually don't need `/run` at all: copy
 the changed file into the installed `ue4ss/Mods/SolarpunkSurvival/Scripts/` and hot-reload it through
-the `dump/cmd.txt` exec channel (`solarpunk-live-hotload` memory). Reserve `tools/run.*` for a clean
-deploy-and-launch or after changing the content pak.
+the `dump/cmd.txt` exec channel (`solarpunk-live-hotload` memory). Reserve `tools/run.py` for a
+clean deploy-and-launch or after changing the content pak.

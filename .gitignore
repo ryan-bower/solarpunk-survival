@@ -23,6 +23,7 @@ ue4ss.log
 # Python tooling cruft
 __pycache__/
 *.pyc
+/tools/.gamedir
 
 # Editor / OS cruft
 .vscode/
