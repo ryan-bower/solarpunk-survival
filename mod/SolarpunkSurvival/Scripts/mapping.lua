@@ -32,9 +32,9 @@ M.schema = {
   tree     = { "classPrefix", "fellFn", "growMeshesProp", "fakeMeshProp" },
   animal   = { "sheepClass", "chickenClass", "pigClass", "masterClass", "classPaths",
                "nameProp", "montageSetFn", "montageSleepValue", "moveCompProp",
-               "maxWalkSpeedProp", "brainProp", "stopLogicFn", "moveToActorFn",
-               "moveToLocationFn", "stopMovementFn", "audioCompProp", "soundDir",
-               "soundsChicken", "soundsSheep", "screamChicken" },
+               "maxWalkSpeedProp", "brainProp", "stopLogicFn", "stopLogicFns", "isOwnedFn",
+               "moveToActorFn", "moveToLocationFn", "stopMovementFn", "audioCompProp",
+               "soundDir", "soundsChicken", "soundsSheep", "screamChicken" },
   ritual   = { "bookItemRow", "hydrationOfferings", "electrickOfferings",
                "candleBurningProp", "candleBurnRepFn" },
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
@@ -72,6 +72,9 @@ M.profiles = {
       maxWalkSpeedProp = "MaxWalkSpeed",
       brainProp        = "BrainComponent",    -- AAIController -> UBrainComponent
       stopLogicFn      = "StopLogic",         -- UBrainComponent: halt the behavior tree for good
+      -- tried in order until one exists on this build (RE-ANIMALS.md verify item 2 lists these):
+      stopLogicFns     = { "StopLogic", "PauseLogic" },
+      isOwnedFn        = "IsOwned",           -- animal-side: a player's tamed/named pet returns true
       moveToActorFn    = "MoveToActor",       -- AAIController: native pathfinding move orders
       moveToLocationFn = "MoveToLocation",
       stopMovementFn   = "StopMovement",      -- AController

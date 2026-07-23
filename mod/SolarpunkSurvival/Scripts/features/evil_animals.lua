@@ -139,11 +139,6 @@ local function speciesClass(spKey)
   return ctx.map.animal and ctx.map.animal[SPECIES[spKey].classKey]
 end
 
-local function speciesOfClass(cls)
-  for k in pairs(SPECIES) do if speciesClass(k) == cls then return k end end
-  return nil
-end
-
 local function playerPawns()
   local out = {}
   for _, p in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
@@ -152,10 +147,33 @@ local function playerPawns()
   return out
 end
 
+-- A stable per-player key for the swing debounce. identity.idOf keys a MOVING pawn by rounded
+-- world location, so it changes every step and leaks a fresh table entry per position swung from;
+-- UniquePlayerID does not move (the wand keys its owner map on the same prop).
+local function playerIdOf(pawn)
+  local prop = ctx.map.pawn and ctx.map.pawn.playerIdProp
+  if prop then
+    local ok, v = ctx.uehelp.get(pawn, prop)
+    if ok and v ~= nil and tostring(v) ~= "" then return "pid:" .. tostring(v) end
+  end
+  return "local"  -- single-player / unmapped: one shared debounce is correct enough
+end
+
 local function countAlive()
   local n = 0
   for _, rec in pairs(evils) do if not rec.dying then n = n + 1 end end
   return n
+end
+
+-- THE authoritative "is this one of ours?" check: object identity against the host's tracking
+-- table, NOT the replicated Name (which a player can reproduce by renaming a pet via AnimalTag).
+-- Host-only decisions -- ritual exclusion, and could-be more -- must use this, never the beacon.
+local function isTrackedEvil(a)
+  if not ctx.uehelp.isValid(a) then return false end
+  for _, rec in pairs(evils) do
+    if rec.actor == a or ctx.uehelp.sameObject(rec.actor, a) then return true end
+  end
+  return false
 end
 
 --------------------------------------------------------------------- host: spawning
@@ -193,8 +211,7 @@ local function groundPoint(pc, x, y, zref)
   return hitLoc
 end
 
-local function pickSpawnSpot(pc)
-  local pawns = playerPawns()
+local function pickSpawnSpot(pc, pawns)
   if #pawns == 0 then return nil end
   local anchor = pawns[math.random(#pawns)]
   local al = ctx.identity.locationOf(anchor)
@@ -205,7 +222,8 @@ local function pickSpawnSpot(pc)
   return groundPoint(pc, al.X + math.cos(ang) * r, al.Y + math.sin(ang) * r, al.Z)
 end
 
-local function trySpawnOne(pc)
+local function trySpawnOne(pc, pawns)
+  pawns = pawns or playerPawns()
   local pool = {}
   for k in pairs(SPECIES) do if unlocked[k] then pool[#pool + 1] = k end end
   if #pool == 0 then return end
@@ -214,7 +232,7 @@ local function trySpawnOne(pc)
   local paths = ctx.map.animal.classPaths or {}
   local cls = ctx.uehelp.classByName(clsName, paths[clsName])
   if not cls then ctx.log.debug("evil: class " .. tostring(clsName) .. " unresolved"); return end
-  local loc = pickSpawnSpot(pc)
+  local loc = pickSpawnSpot(pc, pawns)
   if not loc then return end  -- bad ground this attempt; the chain simply tries again
   local a = ctx.uehelp.spawnActorAt(pc, cls, { X = loc.X, Y = loc.Y, Z = loc.Z + 30 })
   if not a then return end
@@ -229,7 +247,7 @@ local function trySpawnOne(pc)
   evils[rec.key] = rec
   setName(a, aliveName(rec))  -- the beacon goes up first: even pre-AI, every machine can dress it
   ctx.log.info(string.format("an %s slips out of the rain (%d/%d abroad)",
-    aliveName(rec), countAlive(), ctx.config.get("evil_cap_per_player") * math.max(1, #playerPawns())))
+    aliveName(rec), countAlive(), ctx.config.get("evil_cap_per_player") * math.max(1, #pawns)))
 end
 
 -- AI possession happens a beat after spawn; the brain tick keeps trying until the controller
@@ -250,8 +268,26 @@ local function initEvil(rec)
     end
     return false
   end
+  -- Stop the behavior tree for GOOD, or the host and the tree fight forever: BTD_ModifyWalkSpeed
+  -- restores MaxWalkSpeed every branch (undoing our 2x/4x) and BTTask_MoveTo overrides our move
+  -- orders. Try the mapped fn then the documented fallbacks (the exact name is build-dependent --
+  -- RE-ANIMALS.md verify item 2). Do NOT latch inited unless we actually stopped it, so a build
+  -- where the name differs keeps retrying instead of silently prowling at 1x with no lock-on.
   local brain; pcall(function() brain = aic[m.brainProp] end)
-  if brain and m.stopLogicFn then ctx.uehelp.call(brain, m.stopLogicFn, "unlit") end
+  if not ctx.uehelp.isValid(brain) then
+    rec.initTries = rec.initTries + 1
+    if rec.initTries > 12 then rec.inited = true end  -- give up cleanly rather than retry forever
+    return rec.inited
+  end
+  local stopped = false
+  for _, fn in ipairs(m.stopLogicFns or { m.stopLogicFn }) do
+    if fn and ctx.uehelp.call(brain, fn, "unlit") then stopped = true; break end
+  end
+  if not stopped then
+    rec.initTries = rec.initTries + 1
+    if rec.initTries <= 12 then return false end       -- retry: the stop fn may register late
+    ctx.log.warn("evil: could not stop the Unlit's behavior tree -- check animal.stopLogicFns")
+  end
   local cm; pcall(function() cm = a[m.moveCompProp] end)
   if cm then
     local ok, v = ctx.uehelp.get(cm, m.maxWalkSpeedProp)
@@ -381,10 +417,11 @@ local function spawnChain(tok)
   if not stormOn or tok ~= token then return end
   afterIfStorm(ctx.config.get("evil_spawn_interval"), tok, function()
     if ctx.net.isHost() and ctx.config.get("evil_animals") and anyUnlocked() then
-      local cap = ctx.config.get("evil_cap_per_player") * math.max(1, #playerPawns())
+      local pawns = playerPawns()  -- scanned ONCE per attempt; threaded into the cap + spawn spot
+      local cap = ctx.config.get("evil_cap_per_player") * math.max(1, #pawns)
       if countAlive() < cap then
         local pc = ctx.uehelp.localController(ctx.map.player.controllerClass)
-        if pc then trySpawnOne(pc) end
+        if pc then trySpawnOne(pc, pawns) end
       end
     end
     spawnChain(tok)
@@ -392,22 +429,28 @@ local function spawnChain(tok)
 end
 
 -- A previous session's Unlit that leaked into the game save (or survived a crash) wakes up as a
--- plain animal wearing our marker name. Sweep them once, at the first storm of the session.
+-- plain animal wearing our marker name. Sweeping them is DESTRUCTIVE and keyed on the spoofable
+-- Name, so it is OFF by default (a player who renames a pet "Unlit Clucky" via AnimalTag must
+-- never have it destroyed) and, when enabled, skips owned animals (a tamed/named pet reports
+-- IsOwned). Untracked + our-marker + not-owned is the only thing it will remove.
+local function isOwnedAnimal(a)
+  local fn = ctx.map.animal.isOwnedFn
+  if not fn then return false end
+  local ok, res = ctx.uehelp.call(a, fn)
+  return ok and res == true
+end
+
 local function sweepStrays()
   if straysSwept or not ctx.net.isHost() then return end
   straysSwept = true
+  if not ctx.config.get("evil_sweep_strays") then return end
   local swept = 0
   for spKey in pairs(SPECIES) do
     for _, a in ipairs(ctx.uehelp.findAll(speciesClass(spKey))) do
-      if ctx.uehelp.isValid(a) and parseEvil(nameOf(a) or "") then
-        local tracked = false
-        for _, rec in pairs(evils) do
-          if rec.actor == a or ctx.uehelp.sameObject(rec.actor, a) then tracked = true; break end
-        end
-        if not tracked then
-          pcall(function() a:K2_DestroyActor() end)
-          swept = swept + 1
-        end
+      if ctx.uehelp.isValid(a) and parseEvil(nameOf(a) or "")
+          and not isTrackedEvil(a) and not isOwnedAnimal(a) then
+        pcall(function() a:K2_DestroyActor() end)
+        swept = swept + 1
       end
     end
   end
@@ -435,6 +478,7 @@ end
 -- struct type. An EMPTY hand returns ItemActor as a userdata wrapping NULL -- isValid is the
 -- only safe guard (ia == nil lets it through and GetFName() on it is a native crash).
 local structMembers
+local structMemberTries = 0
 local function itemStructMembers(pawn)
   if structMembers ~= nil then return structMembers or nil end
   local prop = ctx.map.wand and ctx.map.wand.handItemDataProp
@@ -460,7 +504,14 @@ local function itemStructMembers(pawn)
       end
     end)
   end)
-  if found then structMembers = found end
+  if found then
+    structMembers = found
+  else
+    -- cap the retries: a build where the struct never resolves must not re-walk every pawn
+    -- property on every swing forever (the wand's own recipe caps at 5 -- keep them in step).
+    structMemberTries = structMemberTries + 1
+    if structMemberTries >= 5 then structMembers = false end
+  end
   return found
 end
 
@@ -502,7 +553,7 @@ local function onSwing(pawn)
   if not ctx.net.isHost() then return end             -- authority only (client swings: see note in init)
   if not ctx.uehelp.isValid(pawn) then return end
   if countAlive() == 0 then return end
-  local pid = ctx.identity.idOf(pawn) or "?"
+  local pid = playerIdOf(pawn)  -- stable key: idOf drifts with the pawn's location and leaks entries
   local now = os.clock()
   if now - (lastSwing[pid] or 0) < 0.35 then return end -- input events fire multiple phases
   lastSwing[pid] = now
@@ -525,8 +576,10 @@ local function onSwing(pawn)
   best.hp = best.hp - dmg
   best.hits = (best.hits or 0) + 1
   setName(best.actor, aliveName(best))  -- tally change = the replicated blink signal
+  -- floor dmg for the log: a fractional config override + "%d" throws "no integer representation"
+  -- (Lua 5.3+), and log.guard would swallow it BEFORE the kill check below -- unkillable Unlit.
   ctx.log.info(string.format("your tool bites the Unlit %s -- %d (%d left)",
-    best.flavor, dmg, math.max(0, math.floor(best.hp))))
+    best.flavor, math.floor(dmg), math.max(0, math.floor(best.hp))))
   if best.hp <= 0 then killEvil(best, "struck down") end
 end
 
@@ -630,8 +683,8 @@ local function dressBody(a, d)
   if not mesh then return end
   if not d.origMat then pcall(function() d.origMat = mesh:GetMaterial(0) end) end
   local body = materialByName(ctx.config.get("evil_mat_body"))
-  if body then pcall(function() mesh:SetMaterial(0, body) end) end
-  d.mat = true
+  if not body then return end  -- material not resident yet: DON'T latch d.mat -- retry next pass
+  if pcall(function() mesh:SetMaterial(0, body) end) then d.mat = true end
 end
 
 local function blink(a, d)
@@ -679,7 +732,9 @@ local function fxPass()
               end
             end
             if state == "alive" then
-              if hits > (d.hits or 0) then blink(a, d) end
+              -- blink on ANY tally change, not just an increase: the name encodes hits mod 4, so
+              -- the 4th landed hit wraps 3 -> 0 and a `>` test would skip its flash.
+              if hits ~= (d.hits or 0) then blink(a, d) end
               d.hits = hits
               -- chatter: its own calls, pitched down; frantic once it hunts the LOCAL player
               local al = ctx.identity.locationOf(a)
@@ -807,11 +862,11 @@ function F.init(c)
       end))
   end
 
-  -- Ritual detection must never claim an Unlit as an offering (any machine: by the beacon name).
-  ctx.services.isEvilAnimal = function(a)
-    if not ctx.uehelp.isValid(a) then return false end
-    return parseEvil(nameOf(a) or "") ~= nil
-  end
+  -- Ritual detection must never claim an Unlit as an offering. ritual.lua is host-only, and the
+  -- host spawned every Unlit, so use the authoritative tracking table (object identity) -- NOT the
+  -- replicated Name, which a player-renamed pet ("Unlit Clucky") would falsely match and be barred
+  -- from ever being sacrificed.
+  ctx.services.isEvilAnimal = isTrackedEvil
 
   pcall(function()
     RegisterConsoleCommandHandler("sps_evil", function(_, parts)

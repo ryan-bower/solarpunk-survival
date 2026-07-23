@@ -200,6 +200,10 @@ M.defaults = {
   evil_blink_seconds  = 0.18,    -- how long the red flash holds
   evil_prefix_alive   = "Unlit ",  -- replicated-Name marker for a living Unlit (the MP beacon)
   evil_prefix_dead    = "Fallen ", -- ...and for one playing its death
+  evil_sweep_strays   = false,   -- OFF by default: destroying animals by the spoofable Name marker
+                                 -- can wipe a player pet renamed "Unlit ..." via AnimalTag. When on,
+                                 -- the sweep still skips owned animals. Host decisions (ritual,
+                                 -- lightning, tools) use the authoritative tracking table, not names.
 
   -- misc
   friendly_fire       = true,

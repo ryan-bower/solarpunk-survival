@@ -413,15 +413,42 @@ end
 -- Unlit's bites). Wrapped in selfDamage so the lightning damage guard -- which zeroes all
 -- unrecognized damage for lightning_guard_window after any bolt, exactly when the Unlit are
 -- active -- lets deliberate mod damage through. Host-side; native death/loot/respawn included.
+-- Mirrors damageController's fallback + death backstops so it behaves identically to the
+-- lightning path: accepts addHealthFn where reduceHealthFn is unmapped, and if the native death
+-- flow somehow leaves the player at <=0, fires Die + player.died so loot/respawn still run.
 function F.damagePlayerBy(pc, amount, label)
   local pl = ctx.map.player
-  if not (pl and pc and pl.reduceHealthFn) then return false end
+  if not (pl and pc and (pl.reduceHealthFn or pl.addHealthFn)) then return false end
   local dmg = math.max(1, math.floor(amount or 0))
+  local before
+  if pl.curHealthProp then
+    local okc, cv = ctx.uehelp.get(pc, pl.curHealthProp)
+    if okc and type(cv) == "number" then before = cv end
+  end
   selfDamage = true
-  local ok = ctx.uehelp.call(pc, pl.reduceHealthFn, dmg)
+  local ok
+  if pl.reduceHealthFn then
+    ok = ctx.uehelp.call(pc, pl.reduceHealthFn, dmg)
+  else
+    ok = ctx.uehelp.call(pc, pl.addHealthFn, -dmg)  -- unmapped-build fallback (no native death)
+  end
   selfDamage = false
-  if ok and label then ctx.log.info(string.format("%s -- -%d HP", label, dmg)) end
-  return ok
+  if not ok then return false end
+  if label then ctx.log.info(string.format("%s -- -%d HP", label, dmg)) end
+
+  local hpNow
+  if pl.curHealthProp then
+    local okc, cv = ctx.uehelp.get(pc, pl.curHealthProp)
+    if okc and type(cv) == "number" then hpNow = cv end
+  end
+  -- death backstops (same as damageController): if the hit was lethal but the native death flow
+  -- didn't fire, force it so gear drops + respawn happen instead of a stuck 0-HP player.
+  if hpNow ~= nil and hpNow <= 0 and pl.dieFn then ctx.uehelp.call(pc, pl.dieFn) end
+  if before and before <= dmg then
+    local vp; pcall(function() vp = pc:K2_GetPawn() end)
+    ctx.bus.emit("player.died", { actor = vp })
+  end
+  return true
 end
 
 -- Natural storms have no "stopped" signal, so a chained one-shot watchdog (timestamps only --

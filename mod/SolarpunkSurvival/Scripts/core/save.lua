@@ -33,10 +33,16 @@ end
 function M.serialize()
   local data = { schema = M.schemaVersion, structures = {}, flags = M._flags }
   for id, rec in pairs(health.byId) do
-    data.structures[id] = {
-      current = rec.current, max = rec.max,
-      damaged = rec.damaged, destroyed = rec.destroyed, kind = rec.kind,
-    }
+    -- Never persist a DESTROYED record. idOf keys structures by a 0.5 m world grid, so a
+    -- tombstone (destroyed=true) would be reapplied by M.restore to whatever new structure is
+    -- later built in that cell -- and health.applyDamage early-returns on destroyed, making the
+    -- rebuilt structure silently immune to lightning forever. A gone structure has no state to keep.
+    if not rec.destroyed then
+      data.structures[id] = {
+        current = rec.current, max = rec.max,
+        damaged = rec.damaged, destroyed = false, kind = rec.kind,
+      }
+    end
   end
   return data
 end
@@ -66,11 +72,14 @@ function M.read()
   local raw = f:read("*a"); f:close()
   local ok, data = pcall(json.decode, raw)
   if not ok or type(data) ~= "table" then log.warn("save parse failed"); return end
-  if data.schema ~= M.schemaVersion then
+  local schemaOk = data.schema == M.schemaVersion
+  if not schemaOk then
     log.warn(string.format("save schema %s != %s; ignoring old fields", tostring(data.schema), tostring(M.schemaVersion)))
   end
   M._pending = data
-  if type(data.flags) == "table" then
+  -- Only carry flags forward on a matching schema: a version bump is how incompatible state
+  -- (e.g. an evil-species unlock) is meant to be cleared, so a stale flags table must NOT survive it.
+  if schemaOk and type(data.flags) == "table" then
     for k, v in pairs(data.flags) do
       if M._flags[k] == nil then M._flags[k] = v end
     end

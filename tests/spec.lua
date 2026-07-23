@@ -276,6 +276,9 @@ do
   eq(m.animal.montageSleepValue, 3, "animal: Sleep montage byte (the lie-down)")
   eq(m.animal.moveCompProp, "CharacterMovement", "animal: movement comp (engine default profile)")
   eq(m.animal.stopLogicFn, "StopLogic", "animal: brain stop fn")
+  ok(type(m.animal.stopLogicFns) == "table" and m.animal.stopLogicFns[1] == "StopLogic",
+     "animal: brain-stop fallback list (build-dependent name)")
+  eq(m.animal.isOwnedFn, "IsOwned", "animal: owned-pet probe (guards the stray sweep)")
   eq(m.animal.moveToActorFn, "MoveToActor", "animal: chase move order")
   eq(m.animal.audioCompProp, "S_Chicken_NoLicense", "animal: per-animal audio component prop")
   ok(#m.animal.soundsChicken == 7, "animal: seven chicken cries")
@@ -298,6 +301,7 @@ do
   eq(config.get("evil_dmg_metal"), 30.0, "evil: metal tools hit 30")
   eq(config.get("evil_dmg_diamond"), 40.0, "evil: diamond tools hit 40")
   ok(config.get("evil_sound_pitch") < 1.0, "evil: voices pitched DOWN")
+  eq(config.get("evil_sweep_strays"), false, "evil: destructive stray sweep is OFF by default")
 
   -- pure helpers
   local evil = require("features.evil_animals")
@@ -333,6 +337,11 @@ do
   save.setFlag("evil_chicken", true)   -- write() fails silently on the missing dir; flag stays
   eq(save.getFlag("evil_chicken"), true, "flags: set/get roundtrip")
   ok(save.serialize().flags.evil_chicken == true, "flags: serialized with the save")
+  -- serialize never persists a destroyed record (would ghost-collide with a rebuild at that grid)
+  local health2 = require("core.health")
+  health2.attach({ id = "s_dead" }, { max = 100, kind = "structure" })
+  health2.applyDamage("s_dead", 999, { source = "lightning" })  -- -> destroyed
+  ok(save.serialize().structures["s_dead"] == nil, "flags: destroyed structures are not persisted")
 end
 
 print(string.format("\n%d passed, %d failed", passed, failed))
