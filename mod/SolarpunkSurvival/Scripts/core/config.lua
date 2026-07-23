@@ -28,6 +28,19 @@ M.defaults = {
   natural_storm_timeout  = 180.0, -- seconds without a native bolt before a game-weather storm is
                                   -- declared over (natural storms have no stop signal to hook)
 
+  -- Ambient world strikes. The VANILLA thunder loop is not tunable from data: offline bytecode RE
+  -- of ExecuteUbergraph_BP_DayNightCycle (2026-07-23) shows PlayThunder -> Delay(
+  -- RandomIntegerInRange(10, 30)) -> loop, with the impact point taken from GetPlayerCharacter(0)
+  -- + RandomFloatInRange(1500, 4000) / (-5000, -1500) per axis (sign by RandomBool) -- every one
+  -- of those is an inline graph literal, and BP_DayNightCycle_C has no interval variable at all.
+  -- So the mod runs its own copy of that loop on top, at a rate we control: bolts land AROUND the
+  -- player (never on them, unlike the hunting scheduler), damage what they hit, and feed the rites.
+  ambient_strikes      = true,   -- extra world bolts during any storm (ours or the game's own)
+  ambient_interval_min = 6.0,    -- seconds; vanilla is 10
+  ambient_interval_max = 14.0,   -- seconds; vanilla is 30
+  ambient_ring_min     = 1500.0, -- cm (15 m) nearest an ambient bolt lands to the player
+  ambient_ring_max     = 4000.0, -- cm (40 m) farthest -- both are vanilla's own ring
+
   -- lightning wand (a mod-managed tool, not an inventory item -- features/wand.lua)
   wand_cast_range      = 15000.0, -- cm; max aim distance for a cast bolt (150 m)
   wand_cast_debounce   = 0.5,     -- seconds between cast attempts (input events fire multiple phases)
@@ -48,6 +61,7 @@ M.defaults = {
   wand_tip_flip        = false,   -- seat the cobalt on the stick mesh's OTHER end
   wand_step_log        = true,    -- append each risky rig step to dump/wand_steps.txt so a native
                                   -- crash names its killer (the proven bisection method)
+  storm_key            = "P",     -- key that toggles the storm on/off (any UE4SS Key name)
   wand_draw_key        = "V",     -- key that draws/stows the wand (any UE4SS Key name)
   wand_fx              = false,   -- electricity crackle on the charged wand -- OFF until the
                                   -- Niagara attach call is live-proven (probe it like P1-P6)

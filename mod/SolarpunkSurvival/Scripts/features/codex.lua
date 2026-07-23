@@ -48,8 +48,24 @@ local whyNot = "not attempted"
 -- widget chain. This feature still parks its widget in the viewport as belt-and-braces.
 local function loadWidgetClass(m)
   local cls = ctx.uehelp.classByName(m.widgetClass, m.widgetPath)
-  if not cls then whyNot = "widget class not resident (UI chain GC'd; is the pak current?)" end
-  return cls
+  if cls then return cls end
+  -- FALLBACK (live 2026-07-23): classByName's FindObject(kind, name) query returned nil for all
+  -- three kinds while StaticFindObject(widgetPath) DID hand back the class object -- the pak was
+  -- proven complete offline that same night (ClassExport + both rooting imports intact), so the
+  -- miss is in the name query, not the asset. Look it up by full path, but never hand Create() an
+  -- object that is not a generated class: that call goes native.
+  local o
+  pcall(function() o = StaticFindObject and StaticFindObject(m.widgetPath) end)
+  if ctx.uehelp.isValid(o) then
+    local kind = ctx.uehelp.className(o)
+    if kind == "WidgetBlueprintGeneratedClass" or kind == "BlueprintGeneratedClass" then
+      return o
+    end
+    whyNot = "object at the widget path is a " .. tostring(kind) .. ", not a widget class"
+    return nil
+  end
+  whyNot = "widget class not resident (UI chain GC'd; is the pak current?)"
+  return nil
 end
 
 -- Create the widget once and PARK IT IN THE VIEWPORT (hidden by design, exactly like the

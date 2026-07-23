@@ -1,6 +1,6 @@
 -- Deadly Storms + Lightning (Milestone 1).
 --
--- Host-authoritative. A storm is started on demand (F6 keybind / `sps_storm`), which fires the
+-- Host-authoritative. A storm is started on demand (storm_key, default P / `sps_storm`), which fires the
 -- game's own InstantThunderstorm (full sky/rain/thunder visuals) and starts a self-chaining strike
 -- scheduler. Each strike telegraphs near the local player, gives a dodge window, then lands: it
 -- plays the game's thunder and deals real damage through the player's own health (70% max HP, so
@@ -146,6 +146,7 @@ function F.startStorm()
     else
       ctx.log.info("*** STORM STARTED *** the sky rages. (auto-strikes off: sps_auto to enable)")
     end
+    F.startAmbient()   -- world bolts fall around you either way
   else
     ctx.log.info("storm: refreshed")
   end
@@ -188,6 +189,65 @@ function F.scheduleNextStrike(token)
     F.fireBurst(token)
     F.scheduleNextStrike(token)
   end)
+end
+
+--------------------------------------------------------------------- ambient world strikes
+-- The mod's tunable copy of the game's own thunder loop (see config ambient_*): during ANY storm
+-- (ours or a natural one) a bolt lands at a random point in a ring around the local player --
+-- never ON them (that is the hunting scheduler above). Bolts ride the normal strikeAt path, so
+-- they telegraph, ground at lightning rods, damage what they hit and feed the rites.
+--
+-- Own token + `ambientLive` guard: the chain must survive `stormy()` flipping between our storms
+-- and natural ones without ever running two chains at once (that would silently double the rate).
+local ambientToken = 0
+local ambientLive  = false
+
+-- Vanilla's geometry: |ring_min..ring_max| offset on each axis, sign picked at random.
+local function ambientPoint(loc)
+  local lo = ctx.config.get("ambient_ring_min")
+  local hi = math.max(lo, ctx.config.get("ambient_ring_max"))
+  local function axis()
+    local d = lo + math.random() * (hi - lo)
+    if math.random() < 0.5 then d = -d end
+    return d
+  end
+  -- Z rides the player's own: the bolt actor's BeginPlay lands its VFX on the ground beneath it
+  -- (the same assumption fireBolt/ping strikes already make).
+  return { X = loc.X + axis(), Y = loc.Y + axis(), Z = loc.Z }
+end
+
+function F.scheduleAmbient(token)
+  if token ~= ambientToken or not stormy() or not ctx.config.get("ambient_strikes") then
+    ambientLive = false
+    return
+  end
+  ambientLive = true
+  local lo = ctx.config.get("ambient_interval_min")
+  local hi = math.max(lo, ctx.config.get("ambient_interval_max"))
+  local wait = math.floor((lo + math.random() * (hi - lo)) * 1000)
+  local guarded = ctx.log.guard("storm.ambient", function()
+    onGameThread(function()
+      if token ~= ambientToken or not stormy() then ambientLive = false; return end
+      F.ambientBolt()
+      F.scheduleAmbient(token)
+    end)
+  end)
+  if not pcall(ExecuteWithDelay, math.max(1, wait), guarded) then ambientLive = false end
+end
+
+-- Start the chain if one is not already running (safe to call on every storm start).
+function F.startAmbient()
+  if ambientLive or not ctx.config.get("ambient_strikes") then return end
+  ambientToken = ambientToken + 1
+  F.scheduleAmbient(ambientToken)
+end
+
+function F.ambientBolt()
+  if not ctx.net.isHost() then return end
+  local pawn = localPawn()
+  local loc  = pawn and locOf(pawn)
+  if not loc then return end
+  F.strikeAt(ambientPoint(loc), "ambient")
 end
 
 -- A strike is sometimes a burst of 2-3 bolts (the real killer: 2 hits = 140% HP = lethal).
@@ -485,12 +545,13 @@ function F.onBoltSpawned(bolt)
         end
       end
       -- a bolt we did not spawn, outside our storm = the GAME's weather is storming. Arm the
-      -- machinery (ritual chain) exactly as if H had been pressed.
+      -- machinery (ritual chain) exactly as if the storm key had been pressed.
       if not stormy() then
         naturalStorm = true
         ctx.bus.emit("weather.changed", { storm = true, natural = true })
         ctx.log.info("*** a natural storm rages -- the dark arts are listening ***")
         F.naturalWatchdog()
+        F.startAmbient()  -- thicken the game's own 10-30s cadence with ours
       end
       ctx.bus.emit("lightning.strike", { location = loc, native = true })
       -- the guard grounded this bolt's own wide-range damage; deal ours (radius-checked) instead
@@ -508,10 +569,11 @@ function F.init(c)
     return false
   end
 
-  -- H toggles the weather normal <-> stormy.
+  -- The storm key (config storm_key, default P) toggles the weather normal <-> stormy.
+  local kname = ctx.config.get("storm_key")
   pcall(function()
-    if RegisterKeyBind and Key and Key.H then
-      RegisterKeyBind(Key.H, ctx.log.guard("storm.key.toggle",
+    if RegisterKeyBind and Key and kname and Key[kname] then
+      RegisterKeyBind(Key[kname], ctx.log.guard("storm.key.toggle",
         function() onGameThread(function() F.toggleStorm() end) end))
     end
   end)
@@ -540,7 +602,7 @@ function F.init(c)
   ctx.services.strikeAt   = F.strikeAt
   ctx.services.castBolt   = F.castBolt
 
-  ctx.log.info("storms: ready -- H toggles storm on/off.")
+  ctx.log.info("storms: ready -- " .. tostring(kname) .. " toggles storm on/off.")
   return true
 end
 
