@@ -72,7 +72,11 @@ do
      "mapping: water clear of impurities = the BOILED carafe's world actor")
   eq(m.ritual.hydrationOfferings.honey, "BP_Honey_Item_C", "mapping: comb of the honeybee")
   eq(m.ritual.hydrationOfferings.leaf, "BP_Leaf_Item_C", "mapping: leaf of the trees")
-  eq(m.ritual.hydrationOfferings.clay, "BP_Clay_Item_C", "mapping: clay of the earth")
+  eq(type(m.ritual.hydrationOfferings.clay), "table",
+     "mapping: clay of the earth accepts multiple dropped forms")
+  eq(m.ritual.hydrationOfferings.clay[1], "BP_Clay_Item_C", "mapping: clay _Item form accepted")
+  eq(m.ritual.hydrationOfferings.clay[2], "BP_Clay_GrabItem_C",
+     "mapping: clay GrabItem form accepted (what an inventory drop actually spawns)")
   eq(m.ritual.hydrationOfferings.berry, "BP_Raspberry_Item_C", "mapping: a berry nourished by the sun")
   eq(m.ritual.electrickOfferings.copper, "BP_Copper_Item_C", "mapping: rounded refined copper")
   eq(m.ritual.electrickOfferings.ironore, "BP_IronOre_Item_C", "mapping: raw iron ore")
@@ -205,7 +209,7 @@ do
   eq(config.get("foundation_snap_ignore_ground"), true,
      "config: snapped foundations skip the corner-ground rule by default")
   eq(config.get("wand_transmute_items"), true, "config: cast/recharge swaps the real rod items")
-  eq(config.get("ritual_corner_radius"), 250.0, "config: corner offerings sit within 2.5 m of a candle")
+  eq(config.get("ritual_corner_radius"), 500.0, "config: corner offerings sit within 5 m of a candle")
   local changedKey
   bus.on("config.changed", function(p) changedKey = p.key end)
   config.set("player_strike_pct", 0.9)

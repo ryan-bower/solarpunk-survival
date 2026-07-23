@@ -546,21 +546,39 @@ function F.chargeWands(center, radius)
     if pl and ctx.uehelp.dist2(pl, center) <= r2 then
       local id = playerIdOf(pawn)
       if id then
+        -- the rod IN HAND is what the rite judges (each item keeps its own nature; the old
+        -- player-tier checks charged a held MUNDANE rod for a player who once held electrick)
+        local held = heldItemKind[id]
         local st, tier = wands[id], tiers[id]
-        if tier == "electrick" or st == "charged" or st == "uncharged" then
+        if held == "mundane" then
+          dry = dry + 1                -- the codex warns: skip no rung
+        elseif held == "electric" or held == "charged" then
           rewoken = rewoken + 1
           charges[id] = nil            -- whatever water was left boiled away long ago
           zaps[id] = ctx.config.get("wand_electric_charges")
           setState(pawn, "charged", true)
           transmuteHeld(pawn, "charged")
-        elseif tier == "hydration" or st == "hydration" then
+        elseif held == "hydration" then
           woken = woken + 1
           charges[id] = nil            -- the water boils away; the fire moves in
           zaps[id] = ctx.config.get("wand_electric_charges")
           setState(pawn, "charged", true)
-          transmuteHeld(pawn, "charged")  -- a REAL blue rod in hand becomes the charged rod item
-        elseif st == "mundane" then
-          dry = dry + 1
+          transmuteHeld(pawn, "charged")  -- the REAL blue rod in hand becomes the charged rod item
+        elseif held == nil then
+          -- legacy (pre-item / V-forged) rods judged by rite-ladder state, as before
+          if tier == "electrick" or st == "charged" or st == "uncharged" then
+            rewoken = rewoken + 1
+            charges[id] = nil
+            zaps[id] = ctx.config.get("wand_electric_charges")
+            setState(pawn, "charged", true)
+          elseif tier == "hydration" or st == "hydration" then
+            woken = woken + 1
+            charges[id] = nil
+            zaps[id] = ctx.config.get("wand_electric_charges")
+            setState(pawn, "charged", true)
+          elseif st == "mundane" then
+            dry = dry + 1
+          end
         end
       end
     end
@@ -594,17 +612,35 @@ function F.hydrateWands(center, radius)
     if pl and ctx.uehelp.dist2(pl, center) <= r2 then
       local id = playerIdOf(pawn)
       if id then
+        -- judge the rod IN HAND (see chargeWands): the held mundane ITEM is quenched into the
+        -- real blue rod in place; a held blue rod refills; electrick rods are beyond water
+        local held = heldItemKind[id]
         local st, tier = wands[id], tiers[id]
-        if tier == "electrick" or st == "charged" or st == "uncharged" then
+        if held == "electric" or held == "charged" then
           beyond = beyond + 1
-        elseif st == "hydration" or tier == "hydration" then
+        elseif held == "hydration" then
           refilled = refilled + 1
           charges[id] = max
-          if st == "hydration" then setState(pawn, "hydration", true) end
-        elseif st == "mundane" then
+          setState(pawn, "hydration", true)
+          transmuteHeld(pawn, "hydration")   -- hydration->hydration = in-place FULL bar rewrite
+        elseif held == "mundane" then
           quenched = quenched + 1
           charges[id] = max
           setState(pawn, "hydration", true)
+          transmuteHeld(pawn, "hydration")   -- the rod itself turns river-blue (first rung)
+        elseif held == nil then
+          -- legacy (pre-item / V-forged) rods judged by rite-ladder state, as before
+          if tier == "electrick" or st == "charged" or st == "uncharged" then
+            beyond = beyond + 1
+          elseif st == "hydration" or tier == "hydration" then
+            refilled = refilled + 1
+            charges[id] = max
+            if st == "hydration" then setState(pawn, "hydration", true) end
+          elseif st == "mundane" then
+            quenched = quenched + 1
+            charges[id] = max
+            setState(pawn, "hydration", true)
+          end
         end
       end
     end
@@ -1051,19 +1087,12 @@ local function equippedWandKind(pawn)
   return nil
 end
 
--- The rite-ladder overlay on a HELD item: the cooked item can't change when a rite imbues it, so
--- the blank (mundane) rod renders/behaves at the player's EARNED rung -- blue once quenched,
--- gold once the fire has been through it. The dedicated hydration/electric items keep their own
--- nature regardless of tier.
+-- Each rod carries its OWN nature: the rites transmute the real item in place
+-- (transmuteHeld), so a held item's kind IS its state. The old pre-item "earned rung"
+-- overlay here dressed a held MUNDANE rod at the player's tier -- switching from an
+-- electrick rod to the mundane one made the mundane rod cast 3 bolts (live bug
+-- 2026-07-22: "only electric wands should be turned into charged ones").
 local function effectiveState(id, kind)
-  if kind == "mundane" then
-    local t = tiers[id]
-    if t == "hydration" then return "hydration", "Hydration" end
-    if t == "electrick" then
-      local st = (wands[id] == "charged") and "charged" or "uncharged"
-      return st, (st == "charged") and "Charged Electrick" or "Electrick"
-    end
-  end
   return KIND_STATE[kind], KIND_LABEL[kind]
 end
 
@@ -1201,9 +1230,11 @@ transmuteHeld = function(pawn, toKind)
   local id = playerIdOf(pawn)
   if not id then return end
   local held = heldItemKind[id]
-  -- electric<->charged transmute, or the sheep rite's hydration->charged
+  -- electric<->charged transmute, the sheep rite's hydration->charged, the chicken rite's
+  -- mundane->hydration (first rung), or a hydration->hydration bar rewrite (rite refill)
   local legal = ((held == "electric" or held == "charged") and held ~= toKind)
              or (held == "hydration" and (toKind == "hydration" or toKind == "charged"))
+             or (held == "mundane" and toKind == "hydration")
   if not legal then return end
   local rows = ctx.map.wand.itemRows or {}
   if not (rows[toKind] and ctx.items) then return end
@@ -1391,12 +1422,17 @@ function F.init(c)
   -- refills it to wand_electric_charges bolts and the item turns back into the charged rod --
   -- except the caster's own bolt (no self-recharge loop). "Holding" is the drawn flag; remote
   -- players' flag is unknown host-side (nil), which counts as holding -- the generous reading.
+  -- The HELD ITEM must actually be the spent Electrick rod (equippedWandKind, read fresh off
+  -- the pawn): wands[id] is PER-PLAYER state, so a player who owns a spent rod but is holding
+  -- their MUNDANE one passed the state check and transmuteHeld rewrote the wrong rod in hand
+  -- (live 2026-07-22 -- "mundane wands get charged by lightning"). Only the spent rod drinks.
   ctx.bus.on("lightning.strike", ctx.log.guard("wand.recharge", function(e)
     if not (ctx.net.isHost() and e and e.location) then return end
     local r2 = ctx.config.get("wand_recharge_radius") ^ 2
     for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
       local id = playerIdOf(pawn)
-      if id and wands[id] == "uncharged" and id ~= e.castBy and drawn[id] ~= false then
+      if id and wands[id] == "uncharged" and id ~= e.castBy and drawn[id] ~= false
+          and equippedWandKind(pawn) == "electric" then
         local pl = ctx.identity.locationOf(pawn)
         if pl and ctx.uehelp.dist2(pl, e.location) <= r2 then
           zaps[id] = ctx.config.get("wand_electric_charges")

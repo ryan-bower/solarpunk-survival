@@ -129,8 +129,9 @@ M.defaults = {
 
   -- dark-arts ritual
   ritual_radius       = 2000.0,  -- cm (20 m) pentagram/sheep/wand radius
-  ritual_corner_radius = 250.0,  -- cm; each of the five corner offerings must rest this close to
-                                 -- one of the pentagram's candles
+  ritual_corner_radius = 500.0,  -- cm; each of the five corner offerings must rest this close to
+                                 -- one of the pentagram's candles (2.5m read as "by the candle
+                                 -- and still missed" live 2026-07-22 -- 5m is forgiving of throws)
   ritual_fences       = 15,      -- fence pieces required
   ritual_candles      = 5,       -- LIT candles required
   ritual_check_interval = 8.0,   -- seconds between condition checks during a storm

@@ -67,6 +67,20 @@ local function riteOfferingMap(rite)
   return (ctx.map.ritual and ctx.map.ritual[rite.offeringsKey]) or {}
 end
 
+-- A mapped offering is one class name or a LIST of acceptable ones (clay drops as its
+-- GrabItem form, not the _Item actor). Normalize to a list.
+local function offeringClasses(cn)
+  if type(cn) == "table" then return cn end
+  return { cn }
+end
+
+local function matchesKind(cls, cn)
+  for _, want in ipairs(offeringClasses(cn)) do
+    if cls == want then return true end
+  end
+  return false
+end
+
 local function onGameThread(fn)
   if ExecuteInGameThread then
     if pcall(ExecuteInGameThread, fn) then return end
@@ -97,7 +111,9 @@ local function scanWorld()
   local wanted = {}   -- item-actor class name -> true (union of BOTH rites' corner classes;
                       -- riteCorners re-matches per rite, so one class may serve either rite)
   for _, rite in ipairs(RITES) do
-    for _, cn in pairs(riteOfferingMap(rite)) do wanted[cn] = true end
+    for _, cn in pairs(riteOfferingMap(rite)) do
+      for _, cls in ipairs(offeringClasses(cn)) do wanted[cls] = true end
+    end
   end
   local fences, candles, offerings = {}, {}, {}
   for _, a in ipairs(ctx.uehelp.findAll("Actor")) do
@@ -154,7 +170,7 @@ local function riteCorners(rite, sl, circle, offerings)
   local chosen, used = {}, {}
   for kind, cn in pairs(classFor) do
     for _, o in ipairs(offerings) do
-      if o.cls == cn and not used[o.actor] and ctx.uehelp.isValid(o.actor) then
+      if matchesKind(o.cls, cn) and not used[o.actor] and ctx.uehelp.isValid(o.actor) then
         local ol = ctx.identity.locationOf(o.actor)
         if ol and ctx.uehelp.dist2(ol, sl) <= r2 and byACandle(ol, circle, cr2) then
           chosen[kind] = o.actor

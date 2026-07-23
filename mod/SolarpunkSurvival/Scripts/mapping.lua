@@ -143,15 +143,18 @@ M.profiles = {
       -- TryAddItemWithLeftoverSpawn -> SpawnLeftoverItem), verified against the legacy
       -- ItemActors dir. "Water clear of impurities" = the BOILED carafe's world actor;
       -- dirty water (BP_CarafeDirtWater_Item) does not count.
-      -- Per-rite corner offerings (kind -> dropped item-actor class; one of each by the candles).
-      -- No honeycomb item exists in DB_Items, so "comb of the honeybee" is the Honey item; the
-      -- boiled carafe IS the game's purified tier ("Water Bottle"); no bandage exists, so the
-      -- wound-dressing is Cloth. Verified against db_items_src.json 2026-07-22.
+      -- Per-rite corner offerings (kind -> dropped item-actor class, or a LIST of acceptable
+      -- classes; one of each kind by the candles). No honeycomb item exists in DB_Items, so
+      -- "comb of the honeybee" is the Honey item; the boiled carafe IS the game's purified tier
+      -- ("Water Bottle"); no bandage exists, so the wound-dressing is Cloth. Verified against
+      -- db_items_src.json 2026-07-22.
       hydrationOfferings = {
         water = "BP_CarafeDrinkableWater_Item_C",  -- water clear of impurities
         honey = "BP_Honey_Item_C",                 -- comb of the honeybee
         leaf  = "BP_Leaf_Item_C",                  -- leaf of the trees
-        clay  = "BP_Clay_Item_C",                  -- clay of the earth
+        -- clay dropped from inventory spawns the GRABITEM form, not the _Item actor (live
+        -- census at the pentagram 2026-07-22; Stick/Stone share this dual-class pattern)
+        clay  = { "BP_Clay_Item_C", "BP_Clay_GrabItem_C" },  -- clay of the earth
         berry = "BP_Raspberry_Item_C",             -- a berry nourished by the sun
       },
       electrickOfferings = {
