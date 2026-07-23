@@ -29,37 +29,27 @@ local gateHooked = false
 
 local function fmap() return ctx.map.foundation or {} end
 
--- The build system driving this preview: normally the local player's only BC_BuildSystem, but
--- match on its BuildingPreview ref so a listen-server never reads another player's snap state.
-local function buildSystemFor(preview)
-  local m = fmap()
-  local all = FindAllOf(m.buildSystemClass or "BC_BuildSystem_C") or {}
-  local fallback
-  for _, bs in ipairs(all) do
-    local valid = false
-    pcall(function() valid = bs:IsValid() end)
-    if valid then
-      fallback = fallback or bs
-      local match = false
-      pcall(function()
-        match = ctx.uehelp.sameObject(bs[m.previewProp or "BuildingPreview"], preview)
-      end)
-      if match then return bs end
-    end
-  end
-  return fallback
-end
+-- Snap state, sampled in the gate hook and read as a plain Lua boolean in the rule hook.
+--
+-- It used to be resolved inside the rule hook: FindAllOf(BC_BuildSystem_C) + IsValid + a
+-- GetFullName comparison, at preview-update rate, from a hook thread. That is the exact pattern
+-- that produced "Abort signal received" -- a scan is free to hand back an object that is
+-- mid-destruction (leaving build mode, a placement completing, a level change), and a native
+-- access violation there cannot be caught by pcall. Hook bodies get plain Lua state plus at most
+-- one param get/set.
+--
+-- The gate (ComplyFunctionalBuildRules?) is the build system's OWN method and runs immediately
+-- before the preview's rule override, so the engine hands us the driving instance -- alive by
+-- construction, no scan, and MP-correct without the BuildingPreview match (each machine only
+-- ever sees its own).
+local snapNow = false
+local snapAt  = -1e9   -- os.clock() of the sample; a rule check with no fresh gate is not trusted
+local SNAP_TTL = 0.5
 
-local function onRuleChecked(Context, canBuild)
+local function onRuleChecked(_, canBuild)
   if not ctx.config.get("foundation_snap_ignore_ground") then return end
-  local preview
-  pcall(function() preview = Context:get() end)
-  if not preview then return end
-  local bs = buildSystemFor(preview)
-  if not bs then return end
-  local snapping = false
-  pcall(function() snapping = bs[fmap().snapProp or "IsSnapping"] == true end)
-  if snapping then pcall(function() canBuild:set(true) end) end
+  if not snapNow or (os.clock() - snapAt) > SNAP_TTL then return end
+  pcall(function() canBuild:set(true) end)
 end
 
 local function armHooks()
@@ -92,7 +82,16 @@ local function armGate()
   if gateHooked then return end
   local m = fmap()
   local path = (m.buildSystemPath or "") .. ":" .. (m.gateFn or "ComplyFunctionalBuildRules?")
-  gateHooked = pcall(RegisterHook, path, ctx.log.guard("foundation.gate", function()
+  gateHooked = pcall(RegisterHook, path, ctx.log.guard("foundation.gate", function(Context)
+    -- Sample IsSnapping off the instance the engine is calling right now (see snapNow above):
+    -- one property read on a guaranteed-live object, no scan.
+    local bs
+    pcall(function() bs = Context:get() end)
+    if bs then
+      local s = false
+      pcall(function() s = bs[fmap().snapProp or "IsSnapping"] == true end)
+      snapNow, snapAt = s, os.clock()
+    end
     if armedCount >= #(fmap().previewPaths or {}) then return end
     if not pcall(ExecuteWithDelay, 50, armHooks) then armHooks() end
   end))

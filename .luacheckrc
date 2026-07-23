@@ -13,14 +13,21 @@ read_globals = {
   "RegisterConsoleCommandHandler",
   "RegisterCustomEvent",
   "LoopAsync",
-  "ExecuteWithDelay",
-  "ExecuteInGameThread",
   "ExecuteAsync",
   "FindFirstOf",
   "FindAllOf",
+  "FindObject",
   "StaticFindObject",
+  "LoadAsset",
   "Key",
   "ImGui",
+}
+
+-- Written, not just read: core/scheduler.lua deliberately SHADOWS these two with its own
+-- queue-backed dispatcher (see the module header -- hook-thread function refs abort the process).
+globals = {
+  "ExecuteWithDelay",
+  "ExecuteInGameThread",
 }
 
 include_files = { "mod/SolarpunkSurvival/Scripts/**/*.lua" }

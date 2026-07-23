@@ -7,7 +7,6 @@
 local F = {}
 local ctx
 local stationClass = nil   -- exact class name, resolved from candidates or a one-off scan
-local toppers = {}         -- station id -> copper actor (cosmetic)
 
 local function resolveStationClass()
   if stationClass then return stationClass end
@@ -40,29 +39,17 @@ local function stations()
   return ctx.uehelp.findAll(cls)
 end
 
--- Cosmetic copper topper: stand the copper item vertically at the pole top. Purely best-effort.
-local function dressStation(st)
-  if not ctx.config.get("rod_copper_topper") then return end
-  if not ctx.net.isHost() then return end
-  -- Never touch a placement preview or an item actor: attach on a preview is a native crash.
-  local cn = ctx.uehelp.className(st)
-  if not cn or cn:find("Preview", 1, true) or cn:find("_Item", 1, true) then return end
-  local id = ctx.identity.idOf(st)
-  if not id or (toppers[id] and ctx.uehelp.isValid(toppers[id])) then return end
-  local row = ctx.map.rod and ctx.map.rod.copperItemRow
-  local cls = row and ctx.items.classFor(row)
-  local sl = cls and ctx.identity.locationOf(st)
-  if not sl then return end
-  local pc = ctx.uehelp.playerController()
-  local copper = pc and ctx.uehelp.spawnActorAt(pc, cls, { X = sl.X, Y = sl.Y, Z = sl.Z + 260 })
-  if not copper then return end
-  pcall(function()
-    copper:K2_AttachToActor(st, "None", 1, 1, 1, false)   -- keep-world attach to the pole
-    copper:K2_SetActorRotation({ Pitch = 90, Yaw = 0, Roll = 0 }, false)
-    copper:SetActorEnableCollision(false)
-  end)
-  toppers[id] = copper
-end
+-- REMOVED (2026-07-23 code review): the cosmetic copper topper.
+--
+-- It spawned a bare BP_Copper_Item_C as a prop and then K2_AttachToActor'd it onto the station --
+-- both members of the attach/spawn family this project has already been killed by twice (the
+-- component rig on the pawn, the preview-ghost attach). A native access violation is not
+-- catchable by pcall, and since the natural-storm tap now emits weather.changed on the game's OWN
+-- first bolt, this ran with no player input: build a Weather Station, wait for weather, crash.
+--
+-- The rod's actual job -- grounding every strike within lightning_rod_range and charging the
+-- battery under it -- never needed the prop. If the look matters, it belongs in the content pak
+-- as a cooked mesh on the buildable, not in a runtime attach.
 
 -- Return rodActor, groundLoc for a strike aimed at `loc`, or nil (nearest station wins).
 function F.intercept(loc)
@@ -122,12 +109,6 @@ function F.init(c)
   ctx = c
   ctx.services.rodIntercept = function(loc) return F.intercept(loc) end
   ctx.bus.on("strike.rod", ctx.log.guard("rod.strike", function(e) F.onStrikeRod(e) end))
-  -- Dress stations when a storm starts (cheap moment to look for new ones).
-  ctx.bus.on("weather.changed", ctx.log.guard("rod.dress", function(e)
-    if e and e.storm then
-      for _, st in ipairs(stations()) do dressStation(st) end
-    end
-  end))
   ctx.log.info("lightning_rod: Weather Stations ground all strikes within 25 m (weather-tech unlock)")
   return true
 end

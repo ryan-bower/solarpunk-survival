@@ -23,8 +23,13 @@ M.defaults = {
                                  -- player damage: native bolts already carry the game's damage)
   lightning_damage_guard = true, -- ground native bolt damage (vanilla splash reached ~10m); every
                                  -- bolt hurts through OUR radius-checked path at the impact frame
-  lightning_guard_window = 4.0,  -- seconds after any bolt spawns during which non-mod damage is
-                                 -- treated as lightning splash and grounded to 0
+  lightning_guard_window = 2.5,  -- seconds after a bolt actually spawns during which non-mod
+                                 -- damage is treated as lightning splash and grounded to 0. The
+                                 -- hook cannot see WHO is dealing the damage, so every second
+                                 -- this stays open is a second of fall damage / animal bites /
+                                 -- starvation being nullified too. The native splash rides the
+                                 -- bolt's own timeline (NewTrack_2 at +1.97s), so keep this just
+                                 -- past that -- 4.0 covered up to two thirds of a storm.
   natural_storm_timeout  = 180.0, -- seconds without a native bolt before a game-weather storm is
                                   -- declared over (natural storms have no stop signal to hook)
 
@@ -153,7 +158,10 @@ M.defaults = {
   ritual_fences       = 15,      -- fence pieces required
   ritual_candles      = 5,       -- LIT candles required
   ritual_check_interval = 8.0,   -- seconds between condition checks during a storm
-  rod_copper_topper   = true,    -- cosmetic copper item attached atop each lightning rod
+  rod_copper_topper   = false,   -- retired: the cosmetic copper topper spawned + attached an item
+                                 -- actor at runtime, which is the native-crash family (see
+                                 -- features/lightning_rod.lua). Kept as a known key so an old
+                                 -- config.json with it set does not warn; nothing reads it.
 
   -- building
   foundation_snap_ignore_ground = true, -- snapped-to-a-buildable foundations skip the game's

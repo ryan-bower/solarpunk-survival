@@ -22,9 +22,12 @@ local function after(seconds, fn)
   if not pcall(ExecuteWithDelay, ms, guarded) then guarded() end
 end
 
+-- MUST be the controller of the player at THIS machine: everything here is client-local FX
+-- (camera fade, stun, T-pose). FindFirstOf on a listen server can hand back a remote client's
+-- controller, which would whiteout and freeze an untouched teammate while the victim sees nothing.
 local function localController()
   local pl = ctx.map.player
-  return (pl and ctx.uehelp.findFirst(pl.controllerClass)) or ctx.uehelp.playerController()
+  return ctx.uehelp.localController(pl and pl.controllerClass) or ctx.uehelp.playerController()
 end
 
 -- Resolve a hook path off a live instance (RegisterHook rejects short Class:Fn paths).

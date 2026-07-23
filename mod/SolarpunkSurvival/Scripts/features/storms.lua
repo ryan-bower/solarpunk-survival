@@ -22,6 +22,8 @@ local modBolts    = {}      -- FINAL FNames of bolt actors WE spawned (the nativ
 local modBoltLocs = {}      -- { {loc,t} } of recent mod spawns -- the tap's proximity fallback
 local selfDamage   = false  -- true while OUR damageController call is on the stack
 local lastBoltSeen = -1e9   -- os.clock() when a bolt actor last appeared (ours or the game's)
+local lastNativeBolt = -1e9 -- os.clock() of the last bolt the GAME spawned (never one of ours) --
+                            -- the only honest evidence that its weather is still storming
 local naturalStorm = false  -- a GAME-weather storm detected via its own bolts (no H press)
 
 -- "Is lightning weather happening?" -- ours or the game's own.
@@ -45,10 +47,13 @@ local function weatherMgr()
   return ctx.uehelp.findFirst(ctx.map.weather and ctx.map.weather.managerClass)
 end
 
--- The LOCAL player's controller (has AddHealth / CurPlayerHealth / Respawn).
+-- The LOCAL player's controller (has AddHealth / CurPlayerHealth / Respawn). On a listen server
+-- the host's object array holds every client's controller too, so this must ask the engine which
+-- one is local (uehelp.localController) -- picking the first would centre ambient bolts, the
+-- unmapped-build damage fallback and the world context on a random teammate.
 local function localController()
   local pl = ctx.map.player
-  return (pl and ctx.uehelp.findFirst(pl.controllerClass)) or ctx.uehelp.playerController()
+  return ctx.uehelp.localController(pl and pl.controllerClass) or ctx.uehelp.playerController()
 end
 
 -- The LOCAL player's pawn, via the local controller (co-op has many pawns; this picks ours).
@@ -76,9 +81,13 @@ local function spawnBoltAt(loc)
   if not (w and w.boltActorClass) then return end
   local cls = ctx.uehelp.classByName(w.boltActorClass, w.boltActorPath)
   local pc  = localController()
-  lastBoltSeen = os.clock()  -- open the damage-guard window BEFORE BeginPlay can deal native damage
+  -- Open the damage-guard window BEFORE BeginPlay can deal native damage -- but put it back if
+  -- no bolt actually spawned: a failed spawn used to hold every other damage source at zero.
+  local guardWas = lastBoltSeen
+  lastBoltSeen = os.clock()
   local a   = cls and pc and ctx.uehelp.spawnActorAt(pc, cls, loc)
-  if a then
+  if not a then lastBoltSeen = guardWas; return nil end
+  do
     -- register by FINAL FName (spawnActorAt finished the spawn, so the name is settled) --
     -- the old location-grid id drifted between spawn and the tap's +delay re-read (the bolt
     -- repositions), so our own bolts read as NATURAL strikes (live 2026-07-22)
@@ -166,7 +175,11 @@ function F.stopStorm()
     ctx.uehelp.set(mgr, w.windIntensityProp, calm)
     if w.windAudioFn then ctx.uehelp.call(mgr, w.windAudioFn, calm) end
   end
-  if stormActive then
+  -- Also stand the natural storm down: InstantSunny just cleared the sky, and without this
+  -- `stormy()` stayed true off the latched flag, so sps_storm_off could not stop the bolts.
+  local wasNatural = naturalStorm
+  naturalStorm = false
+  if stormActive or wasNatural then
     stormActive = false
     strikeToken = strikeToken + 1  -- invalidate every pending strike
     modBolts, modBoltLocs = {}, {} -- leak backstop (entries are normally consumed/expired)
@@ -176,7 +189,8 @@ function F.stopStorm()
 end
 
 function F.toggleStorm()
-  if stormActive then F.stopStorm() else F.startStorm() end
+  -- stormy(), not stormActive: the key must also be able to send a NATURAL storm home.
+  if stormy() then F.stopStorm() else F.startStorm() end
 end
 
 --------------------------------------------------------------------- scheduler
@@ -304,7 +318,14 @@ end
 function F.impact(loc, rod)
   if not ctx.net.isHost() then return end
   ctx.bus.emit("lightning.strike", { location = loc })
-  if rod then ctx.bus.emit("strike.rod", { actor = rod, location = loc }) end
+  if rod then
+    -- The rod EARNED this bolt by standing next to the player -- so the one place a player is
+    -- guaranteed to be is inside strike_radius of it. Damaging them here made the protective
+    -- buildable the most reliable way to die.
+    ctx.bus.emit("strike.rod", { actor = rod, location = loc })
+    ctx.log.info("...bolt landed on the rod -- grounded, no one hurt")
+    return
+  end
   local hits = F.damagePawnsAt(loc)
   local pawn = localPawn()
   local cur  = pawn and locOf(pawn)
@@ -333,7 +354,9 @@ function F.damagePawnsAt(loc)
       pcall(function() pc = pawn.Controller end)
       if ctx.uehelp.isValid(pc) then
         hits = hits + 1
-        ctx.bus.emit("strike.player", { actor = pawn, location = loc })
+        -- `id` is what player_effects.onStrikePlayer keys its fallback damage/death path on --
+        -- without it that whole backstop silently never runs on an unmapped build.
+        ctx.bus.emit("strike.player", { actor = pawn, id = ctx.identity.idOf(pawn), location = loc })
         F.damageController(pc)
       end
     end
@@ -392,7 +415,10 @@ end
 function F.naturalWatchdog()
   pcall(ExecuteWithDelay, 60000, ctx.log.guard("storm.natural", function()
     if not naturalStorm then return end
-    if os.clock() - lastBoltSeen > ctx.config.get("natural_storm_timeout") then
+    -- MUST be lastNativeBolt, not lastBoltSeen: the ambient loop this storm started spawns a bolt
+    -- every 6-14 s, so timing off "any bolt" latched naturalStorm on forever and kept dropping
+    -- damaging lightning under a clear sky for the rest of the session.
+    if os.clock() - lastNativeBolt > ctx.config.get("natural_storm_timeout") then
       naturalStorm = false
       if not stormActive then
         onGameThread(function()
@@ -544,10 +570,17 @@ function F.onBoltSpawned(bolt)
           return  -- ours (entry kept: one spawn can echo more than one actor; time expires it)
         end
       end
+      -- Past every ours-check: this bolt is genuinely the game's. It is the ONLY thing that may
+      -- refresh the natural-storm watchdog (our own ambient bolts would latch it on forever).
+      lastNativeBolt = os.clock()
       -- a bolt we did not spawn, outside our storm = the GAME's weather is storming. Arm the
       -- machinery (ritual chain) exactly as if the storm key had been pressed.
       if not stormy() then
         naturalStorm = true
+        -- The guard is what grounds this bolt family's ~10 m native splash. F.init runs at the
+        -- menu where no controller exists, so without this the natural path ran unguarded:
+        -- vanilla splash AND our radius damage on the same bolt.
+        F.hookDamageGuard()
         ctx.bus.emit("weather.changed", { storm = true, natural = true })
         ctx.log.info("*** a natural storm rages -- the dark arts are listening ***")
         F.naturalWatchdog()

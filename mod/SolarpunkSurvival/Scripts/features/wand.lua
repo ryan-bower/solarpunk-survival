@@ -152,7 +152,9 @@ local function playerIdOf(pawn)
 end
 
 local function localPlayerPawn()
-  local pc = ctx.uehelp.findFirst(ctx.map.player.controllerClass)
+  -- localController, not findFirst: on a listen server the host's object array holds every
+  -- client's controller, and the wand rig belongs to the player at THIS machine.
+  local pc = ctx.uehelp.localController(ctx.map.player.controllerClass)
   local pawn
   pcall(function() pawn = pc and pc:K2_GetPawn() end)
   if ctx.uehelp.isValid(pawn) then return pawn end
@@ -465,6 +467,13 @@ local function refreshRig(pawn)
     if not r then
       tearRig(id)
       r = { pawn = pawn, tips = {} }
+    elseif not sameObject(r.pawn, pawn) then
+      -- Respawn: playerIdOf keys off the controller's UniquePlayerID, so `id` survives death and
+      -- the record does too -- still anchored to the CORPSE. Left alone, `r.stashed` carried onto
+      -- the new pawn (so its real tool was never parked and left click both swung and cast), and
+      -- tearRig's isValid(r.pawn) tested the dead pawn, so nothing was ever restored.
+      r.pawn = pawn
+      r.stashed, r.handItem, r.food, r.refill = nil, nil, nil, nil
     end
     buildRig(pawn, r)
     if not r.mode then
@@ -1159,7 +1168,10 @@ local function onHotbarChanged(pawn)
         -- granted/looted item reads "0 measures" and the drink/wade refills stay tier-locked.
         hydroKnown[id] = true
         tiers[id] = tiers[id] or "hydration"
-        charges[id] = charges[id] or ctx.config.get("wand_hydration_max")
+        -- `charges[id] or max` skipped the ONE case this guard exists for: 0 is truthy in Lua,
+        -- so a player who poured their last rod dry and then took up a fresh full blue rod kept
+        -- 0 measures and got "the blue rod is DRY". Same shape the charged branch already fixed.
+        if (charges[id] or 0) <= 0 then charges[id] = ctx.config.get("wand_hydration_max") end
         -- a refill that happened while the carafe was in hand couldn't reset the rod's bar;
         -- settle the debt now that the rod is up (in-place savedata rewrite, never a regrant)
         local per = ctx.config.get("wand_pour_amount")
@@ -1275,6 +1287,7 @@ transmuteHeld = function(pawn, toKind)
   -- bar rewrite (rite refill). A rod once turned NEVER changes type again -- the old
   -- hydration->charged rung-climb is gone (user rule 2026-07-22).
   local legal = ((held == "electric" or held == "charged") and held ~= toKind)
+             or (held == "charged" and toKind == "charged")     -- rite refill of a part-spent rod
              or (held == "hydration" and toKind == "hydration")
              or (held == "mundane" and (toKind == "hydration" or toKind == "charged"))
   if not legal then return end

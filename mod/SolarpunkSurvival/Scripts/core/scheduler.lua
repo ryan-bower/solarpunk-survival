@@ -22,7 +22,8 @@
 local M = {}
 
 local TICK_MS = 50
-local queue = {}   -- array of { due = os.clock() seconds, fn = function }
+local queue = {}   -- array of { due = os.clock() seconds, fn = function }; drained slots hold false
+local deadSlots = 0
 
 function M.init(log)
   local realLoop = LoopAsync
@@ -45,17 +46,34 @@ function M.init(log)
     -- Lua tables + clock ONLY on this thread; UObjects are game-thread only.
     if #queue > 0 then
       local now = os.clock()
-      local due, keep
-      for i = 1, #queue do
+      local due
+      -- NEVER rebuild `queue` from a snapshot: a hook thread appends with `queue[#queue + 1]`
+      -- while this walk runs, and reassigning the table threw those actions away silently.
+      -- Instead mark drained slots `false` (a value, so the array stays dense and `#` stays
+      -- correct for appenders) and compact only on a tick where nothing was appended.
+      local n = #queue
+      for i = 1, n do
         local e = queue[i]
-        if e.due <= now then
+        if e and e.due <= now then
           due = due or {}; due[#due + 1] = e.fn
-        else
-          keep = keep or {}; keep[#keep + 1] = e
+          queue[i] = false
         end
       end
       if due then
-        queue = keep or {}
+        -- Compact on a quiet tick. If appends keep landing mid-walk we skip it and try again
+        -- next tick; `deadSlots` is the backstop so a busy hook storm cannot grow the array
+        -- without bound (then we compact the whole live table, appends included).
+        local appended = #queue - n
+        deadSlots = deadSlots + #due
+        if appended == 0 or deadSlots > 256 then
+          local w, last = 0, #queue
+          for i = 1, last do
+            local e = queue[i]
+            if e then w = w + 1; queue[w] = e end
+          end
+          for i = last, w + 1, -1 do queue[i] = nil end
+          deadSlots = 0
+        end
         pcall(realEIGT, function()
           for i = 1, #due do
             local ok, err = pcall(due[i])

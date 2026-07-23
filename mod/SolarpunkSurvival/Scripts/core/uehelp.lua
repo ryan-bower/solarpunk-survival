@@ -24,9 +24,35 @@ function M.findAll(className)
   return {}
 end
 
+-- THE controller of the player sitting at THIS machine.
+--
+-- FindFirstOf is not that: on a listen server every connected client's controller lives in the
+-- host's object array too, and the engine hands back whichever it lists first. Anything keyed off
+-- "the local player" (ambient bolt centre, camera fades, stuns, the wand rig, the codex reader)
+-- must ask the engine which one is actually local -- APlayerController::IsLocalPlayerController.
+-- Falls back to the first controller found when that call is unavailable (single-player is
+-- unaffected either way: there is exactly one).
+function M.localController(className)
+  local cls = className or "PlayerController"
+  local list = M.findAll(cls)
+  if #list <= 1 then
+    if list[1] and M.isValid(list[1]) then return list[1] end
+    return M.findFirst(cls) or (className and M.findFirst("PlayerController")) or nil
+  end
+  for _, pc in ipairs(list) do
+    if M.isValid(pc) then
+      local ok, isLocal = pcall(function() return pc:IsLocalPlayerController() end)
+      if ok and isLocal == true then return pc end
+    end
+  end
+  for _, pc in ipairs(list) do
+    if M.isValid(pc) then return pc end
+  end
+  return nil
+end
+
 function M.playerController()
-  -- FindFirstOf is a reasonable default; refine to the *local* PC during RE if needed.
-  return M.findFirst("PlayerController")
+  return M.localController("PlayerController")
 end
 
 function M.localPawn()

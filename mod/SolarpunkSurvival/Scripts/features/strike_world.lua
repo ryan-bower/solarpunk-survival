@@ -22,13 +22,17 @@ local function classifyName(cls)
     end
     return false
   end
+  -- Exclusions FIRST -- "Preview" lives in machine.excludeHints, and a placement-preview ghost
+  -- matches "Battery"/"Windmill"/"Furnace" just as well as the real thing. Testing the hints
+  -- first meant a bolt landing next to a player in build mode ran property writes and BP calls
+  -- on a half-constructed preview actor (every sibling scan in the mod filters Preview first).
+  if hasAny(m.machine and m.machine.excludeHints) then return nil end
   if m.tree and m.tree.classPrefix and cls:sub(1, #m.tree.classPrefix) == m.tree.classPrefix then
     return "tree"
   end
   if hasAny(m.battery and m.battery.classHints) then return "battery" end
   if hasAny(m.machine and m.machine.generatorHints) then return "generator" end
   if hasAny(m.furnace and m.furnace.classHints) then return "furnace" end
-  if hasAny(m.machine and m.machine.excludeHints) then return nil end
   for _, suf in ipairs((m.machine and m.machine.techSuffixes) or {}) do
     if cls:sub(-#suf) == suf then return "tech" end
   end

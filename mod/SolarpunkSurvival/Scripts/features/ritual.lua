@@ -278,6 +278,19 @@ local function checkChain(tok)
         -- the sacrifice itself fires on the "lightning.strike" IMPACT event (see init), so the
         -- offering dies exactly on the bolt's big strike frame -- no parallel timer to race it.
         ctx.services.strikeAt(loc, "ritual")
+        -- ...and since only a bolt AT the circle may resolve the latch, this is what releases it
+        -- when our bolt never arrives there (a lightning rod grounded it, the storm ended
+        -- mid-flight). Without it `striking` would pin the chain and the rite could never retry.
+        local mine = tok
+        local wait = math.floor((ctx.config.get("telegraph_lead")
+          + ctx.config.get("bolt_impact_delay") + 3.0) * 1000)
+        pcall(ExecuteWithDelay, wait, ctx.log.guard("ritual.latch", function()
+          if striking and token == mine then
+            striking, pendingRite, pendingAnimal, pendingLoc = false, nil, nil, nil
+            pendingOfferings, pendingCandles = nil, nil
+            ctx.log.info("...the bolt never reached the circle -- the rite holds (a rod nearby?)")
+          end
+        end))
       end
     end
     checkChain(tok)
@@ -306,11 +319,12 @@ function F.init(c)
   -- grounding the rite) releases the latch so the chain simply tries again.
   ctx.bus.on("lightning.strike", ctx.log.guard("ritual.impact", function(e)
     if not (striking and pendingLoc and e and e.location) then return end
-    if ctx.uehelp.dist2(e.location, pendingLoc) <= 400 * 400 then
-      performSacrifice(pendingRite, pendingAnimal, pendingLoc, pendingOfferings, pendingCandles)
-    else
-      ctx.log.info("...the bolt was drawn away from the circle -- the rite holds (a rod nearby?)")
-    end
+    -- ONLY our own bolt may resolve the latch. Ambient/native/cast bolts land constantly during
+    -- the ~6 s the rite's bolt is in flight, and clearing the latch on those aborted the rite
+    -- about half the time -- the pentagram bolt was seen landing on the animal and nothing
+    -- happened. A bolt elsewhere is simply not this rite's bolt: leave the latch armed.
+    if ctx.uehelp.dist2(e.location, pendingLoc) > 400 * 400 then return end
+    performSacrifice(pendingRite, pendingAnimal, pendingLoc, pendingOfferings, pendingCandles)
     striking, pendingRite, pendingAnimal, pendingLoc = false, nil, nil, nil
     pendingOfferings, pendingCandles = nil, nil
   end))
