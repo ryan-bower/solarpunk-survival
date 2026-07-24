@@ -25,6 +25,8 @@ local lastBoltSeen = -1e9   -- os.clock() when a bolt actor last appeared (ours 
 local lastNativeBolt = -1e9 -- os.clock() of the last bolt the GAME spawned (never one of ours) --
                             -- the only honest evidence that its weather is still storming
 local naturalStorm = false  -- a GAME-weather storm detected via its own bolts (no H press)
+local calmUntil    = -1e9   -- os.clock() horizon: a manual stopStorm suppresses natural-storm
+                            -- (re)latching until here, so residual/in-flight bolts can't undo it
 
 -- "Is lightning weather happening?" -- ours or the game's own.
 local function stormy() return stormActive or naturalStorm end
@@ -45,6 +47,20 @@ end
 
 local function weatherMgr()
   return ctx.uehelp.findFirst(ctx.map.weather and ctx.map.weather.managerClass)
+end
+
+-- Daylight is the reprieve: the Unlit burn away in it (evil_animals) and, to match, storms do not
+-- gather or hold in it either. Reads IsDay on the same BP_DayNightCycle_C that drives the weather;
+-- fail-safe -- an unreadable flag returns false (never wrongly calls a raging night "day").
+local function isDay()
+  local w = ctx.map.weather
+  local mgr = weatherMgr()
+  if not (w and mgr) then return false end
+  local ok, v = ctx.uehelp.get(mgr, w.isDayProp)
+  if ok and type(v) == "boolean" then return v end
+  local ok2, n = ctx.uehelp.get(mgr, w.isNightProp)
+  if ok2 and type(n) == "boolean" then return not n end
+  return false
 end
 
 -- The LOCAL player's controller (has AddHealth / CurPlayerHealth / Respawn). On a listen server
@@ -129,6 +145,7 @@ end
 --------------------------------------------------------------------- storm control
 function F.startStorm()
   if not ctx.net.isHost() then ctx.log.warn("storm: only the host can start a storm"); return end
+  if isDay() then ctx.log.info("storm: the sky stays bright -- storms only gather after dark"); return end
   local mgr = weatherMgr()
   if not mgr then ctx.log.warn("storm: weather manager (" ..
       tostring(ctx.map.weather and ctx.map.weather.managerClass) .. ") not found in world"); return end
@@ -182,6 +199,10 @@ function F.stopStorm()
   if stormActive or wasNatural then
     stormActive = false
     strikeToken = strikeToken + 1  -- invalidate every pending strike
+    -- A deliberate calm must STAY calm: an ambient bolt still in flight loses its modBolts tag on
+    -- the clear below, so its detector would misread it as a natural GAME bolt, relatch the storm,
+    -- and restart the ambient loop (the "storm that never ended"). Bar that relatch for a few sec.
+    calmUntil = os.clock() + 8
     modBolts, modBoltLocs = {}, {} -- leak backstop (entries are normally consumed/expired)
     ctx.bus.emit("weather.changed", { storm = false, severity = 0 })
     ctx.log.info("storm stopped — skies clear")
@@ -200,6 +221,7 @@ function F.scheduleNextStrike(token)
   local rate = math.max(0.05, severity * cfg.get("lightning_chance"))
   local interval = cfg.get("strike_interval") / rate
   afterIfActive(interval, token, function()
+    if isDay() then F.stopStorm(); return end  -- dawn broke mid-storm: calm it (no daytime lightning)
     F.fireBurst(token)
     F.scheduleNextStrike(token)
   end)
@@ -242,6 +264,7 @@ function F.scheduleAmbient(token)
   local guarded = ctx.log.guard("storm.ambient", function()
     onGameThread(function()
       if token ~= ambientToken or not stormy() then ambientLive = false; return end
+      if isDay() then ambientLive = false; F.stopStorm(); return end  -- dawn: send the storm home
       F.ambientBolt()
       F.scheduleAmbient(token)
     end)
@@ -616,8 +639,9 @@ function F.onBoltSpawned(bolt)
       -- refresh the natural-storm watchdog (our own ambient bolts would latch it on forever).
       lastNativeBolt = os.clock()
       -- a bolt we did not spawn, outside our storm = the GAME's weather is storming. Arm the
-      -- machinery (ritual chain) exactly as if the storm key had been pressed.
-      if not stormy() then
+      -- machinery (ritual chain) exactly as if the storm key had been pressed. But NOT within the
+      -- calm window after a manual stop -- else a residual in-flight bolt re-arms what we just ended.
+      if not stormy() and os.clock() >= calmUntil and not isDay() then
         naturalStorm = true
         -- The guard is what grounds this bolt family's ~10 m native splash. F.init runs at the
         -- menu where no controller exists, so without this the natural path ran unguarded:

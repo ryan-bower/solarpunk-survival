@@ -11,7 +11,7 @@ local M = {}
 -- Every symbol the mod can use, grouped by section. This schema drives the
 -- startup "what's still missing" report; keep it in sync with the profiles below.
 M.schema = {
-  weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn" },
+  weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn", "isDayProp", "isNightProp" },
   player   = { "controllerClass", "curHealthProp", "maxHealthProp", "addHealthFn", "reduceHealthFn", "dieFn", "respawnFn", "pingFn", "curThirstProp", "maxThirstProp", "addThirstFn", "clientAddThirstFn" },
   pawn     = { "class", "healthProp", "isShelteredFn", "worldLocationFn", "respawnFn", "dropInventoryFn", "playerIdProp" },
   build    = { "pieceClass", "stableIdProp", "demolishFn", "demolishRefund" },
@@ -31,10 +31,11 @@ M.schema = {
   items    = { "classFmt", "assetDir" },
   tree     = { "classPrefix", "fellFn", "growMeshesProp", "fakeMeshProp" },
   animal   = { "sheepClass", "chickenClass", "pigClass", "masterClass", "classPaths",
-               "nameProp", "montageSetFn", "montageSleepValue", "moveCompProp",
+               "nameProp", "montageSetFn", "montageSleepValue", "montageWalkValue",
+               "montageStandValue", "moveCompProp",
                "maxWalkSpeedProp", "brainProp", "stopLogicFn", "stopLogicFns", "isOwnedFn",
                "moveToActorFn", "moveToLocationFn", "stopMovementFn", "audioCompProp",
-               "soundDir", "soundsChicken", "soundsSheep", "screamChicken" },
+               "soundDir", "soundsChicken", "soundsSheep", "screamChicken", "spawnLights" },
   ritual   = { "bookItemRow", "hydrationOfferings", "electrickOfferings",
                "candleBurningProp", "candleBurnRepFn" },
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
@@ -88,6 +89,8 @@ M.profiles = {
     -- are keybind-driven for now rather than polled — currentProp/severityProp intentionally nil.
     weather = {
       managerClass    = "BP_DayNightCycle_C",
+      isDayProp       = "IsDay",                -- bool on the cycle manager -- daylight culls the Unlit
+      isNightProp     = "IsNighttime",          -- inverse fallback if IsDay is renamed on a build
       startStormFn    = "InstantThunderstorm",  -- instantly begins a thunderstorm
       stopStormFn     = "InstantSunny",         -- clears it
       thunderFn       = "PlayThunder",          -- audible/sky-flash thunder cue (NOT a located bolt)
@@ -171,6 +174,8 @@ M.profiles = {
       montageSleepValue = 3,                  -- EAnimalMontage: 0 Consume, 1 Walk, 2 Stand,
                                               -- 3 SLEEP (the lie-down), 4 Pick -- cooked byte
                                               -- order; verify live once (docs/RE-ANIMALS.md)
+      montageWalkValue  = 1,                  -- held while a living Unlit is moving (keeps it upright)
+      montageStandValue = 2,                  -- held while it stands (stun/idle) -- NEVER lies down alive
       audioCompProp     = "S_Chicken_NoLicense", -- the per-animal AudioComponent (master template
                                                  -- name; SetPitchMultiplier = client-local pitch)
       soundDir      = "/Game/Audio/SFX/Animals/",
@@ -179,6 +184,18 @@ M.profiles = {
       soundsSheep   = { "S_Sheep_1", "S_Sheep_2", "S_Sheep_3", "S_Sheep_4", "S_Sheep_5",
                         "S_Sheep_6" },
       screamChicken = "S_Chicken_Scream",     -- the aggro cry
+      -- Lit/powered light placeables that forbid an Unlit spawn nearby. prop = the on/lit flag on
+      -- that class (Burning for fire, IsOn for electric -- verified via offline BP dump); radiusKey
+      -- picks the block distance. "Standing lamp" and "wireless light" both fall in the big group.
+      spawnLights = {
+        { cls = "BP_Torch_Standing_Placeable_C",      prop = "Burning", radiusKey = "evil_light_block_big" },
+        { cls = "BP_Torch_Wall_Placeable_C",          prop = "Burning", radiusKey = "evil_light_block_big" },
+        { cls = "BP_Lamp_Wireless_Placeable_C",        prop = "IsOn",    radiusKey = "evil_light_block_big" },
+        { cls = "BP_ElecttronicLight_01_Placeable_C",  prop = "IsOn",    radiusKey = "evil_light_block_big" },
+        { cls = "BP_Candle_Plate_Buildable_C",         prop = "Burning", radiusKey = "evil_light_block_small" },
+        { cls = "BP_Deco_Candle_Outdor_Buildable_C",   prop = "Burning", radiusKey = "evil_light_block_small" },
+        { cls = "BP_BedsideLamp_Wireless_Placeable_C", prop = "IsOn",    radiusKey = "evil_light_block_small" },
+      },
     },
     -- The wand is NOT an inventory item: it is a mod-managed tool (see features/wand.lua).
     -- A truly new inventory item ID requires a cooked content pak (docs/MILESTONE-2.md).

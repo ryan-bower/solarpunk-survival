@@ -108,6 +108,21 @@ slot** (`M_Sheep` / `M_Chicken` in `/Game/Art/Animations/<species>/`).
 Eye-only material work is impossible without authoring a new mesh/material —
 runtime looks are whole-body `SetMaterial(0, ...)` swaps.
 
+**A RED body is engine-blocked (proven, not guessed).** A skeletal mesh renders
+any material lacking the compiled `bUsedWithSkeletalMesh` flag as the black
+engine Default Material — the flag bakes a skeletal shader permutation offline
+and cannot be set at runtime in a shipping build. Cooked-asset dumps
+(`wandsmith tojson`) of every red/fire/energy candidate — `M_Preview_Red`
+(also translucent), `M_Plant_Tomato`, `M_Campfire`, `M_CandleFlame`,
+`M_Fire_VFX`, `M_Energy_On`, `M_Watertrough_Energy`, … — show **none** carry the
+flag, so each renders black on the sheep/chicken. `M_Sheep` *does* carry it (it
+renders) but the cooked material exposes **no** scalar/vector parameter, so a
+runtime `MID` can't tint it either. Net: `SetMaterial(0, <red>)` on an animal is
+always black. The menace-red is therefore delivered as a **spawned movable red
+`PointLight` that trails each living Unlit** (light colour *is* runtime-settable),
+not as body colour — see `evil_glow_*` in `core/config.lua` and `spawnGlow` in
+`features/evil_animals.lua`.
+
 ## Husbandry layer (context)
 
 Items/buildables (DB_Items / DB_Buildables): `AnimalFeed` →

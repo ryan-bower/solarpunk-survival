@@ -63,10 +63,12 @@ end
 local SPECIES = {
   chicken = { classKey = "chickenClass", riteKey = "hydration", flag = "evil_chicken",
               hpKey = "evil_hp_chicken", biteKey = "evil_bite_chicken",
-              soundsKey = "soundsChicken", flavors = { "Bird", "Hen", "Pullet", "Cockerel" } },
+              scaleKey = "evil_scale_chicken", atkSpeedKey = "evil_atkspeed_chicken",
+              soundsKey = "soundsChicken", displayName = "Chicken" },
   sheep   = { classKey = "sheepClass", riteKey = "electrick", flag = "evil_sheep",
-              hpKey = "evil_hp_sheep", biteKey = "evil_bite_sheep",
-              soundsKey = "soundsSheep", flavors = { "Ewe", "Ram", "Lamb", "Wether" } },
+              hpKey = "evil_hp_sheep", biteKey = "evil_bite_sheep", rams = true,
+              scaleKey = "evil_scale_sheep", atkSpeedKey = "evil_atkspeed_sheep",
+              soundsKey = "soundsSheep", displayName = "Sheep" },
 }
 
 local unlocked   = { chicken = false, sheep = false }
@@ -108,6 +110,14 @@ end
 local function anyUnlocked()
   for k in pairs(SPECIES) do if unlocked[k] then return true end end
   return false
+end
+
+-- Seconds between one Unlit's attacks. Sheep ram: a long fixed recovery (they stand after each
+-- ram); others use the base interval scaled by their atk-speed multiplier. Host bite cadence and
+-- the client attack-cry cadence both read this so the sound lands with the bite.
+local function attackGap(sp)
+  if sp.rams then return ctx.config.get("evil_ram_recover") end
+  return ctx.config.get("evil_bite_interval") / math.max(0.05, ctx.config.get(sp.atkSpeedKey))
 end
 
 --------------------------------------------------------------------- name beacon
@@ -176,12 +186,89 @@ local function isTrackedEvil(a)
   return false
 end
 
+-- Daylight is lethal to the Unlit. Read the day/night manager's IsDay flag (BP_DayNightCycle_C);
+-- fail-safe -- if it can't be read (unmapped/renamed on this build) it returns false, so nothing is
+-- ever wrongly culled. The manager is cached and re-fetched only when the handle goes invalid.
+local dayMgr
+local function isDaytime()
+  local w = ctx.map.weather
+  if not (w and w.isDayProp) then return false end
+  if not ctx.uehelp.isValid(dayMgr) then dayMgr = ctx.uehelp.findFirst(w.managerClass) end
+  if not ctx.uehelp.isValid(dayMgr) then return false end
+  local ok, v = ctx.uehelp.get(dayMgr, w.isDayProp)
+  if ok and type(v) == "boolean" then return v end
+  if w.isNightProp then
+    local ok2, n = ctx.uehelp.get(dayMgr, w.isNightProp)
+    if ok2 and type(n) == "boolean" then return not n end
+  end
+  return false
+end
+
 --------------------------------------------------------------------- host: spawning
+-- Active light sources push back the dark: a lit torch/candle or a powered lamp/wireless light
+-- forbids a spawn within its radius (evil_light_block_big 20 m / _small 10 m). Only lights that are
+-- actually ON count -- each class's own flag is read (Burning for fire, IsOn for electric).
+local function litLights()
+  local out = {}
+  local specs = ctx.map.animal and ctx.map.animal.spawnLights
+  if not specs then return out end
+  for _, s in ipairs(specs) do
+    local r = ctx.config.get(s.radiusKey)
+    if r and r > 0 then
+      local r2 = r * r
+      for _, a in ipairs(ctx.uehelp.findAll(s.cls)) do
+        if ctx.uehelp.isValid(a) then
+          local on = true
+          if s.prop then local ok, v = ctx.uehelp.get(a, s.prop); on = ok and v == true end
+          if on then
+            local loc = ctx.identity.locationOf(a)
+            if loc then out[#out + 1] = { loc = loc, r2 = r2 } end
+          end
+        end
+      end
+    end
+  end
+  return out
+end
+
+local function nearLitLight(loc, lights)
+  for _, l in ipairs(lights) do
+    local dx, dy = loc.X - l.loc.X, loc.Y - l.loc.Y
+    if dx * dx + dy * dy <= l.r2 then return true end
+  end
+  return false
+end
+
 -- Open-ground check: a down-trace from above the ring point. The hit's owning actor classifies
 -- the surface -- player-built pieces and water are rejected; the landscape itself usually
 -- resolves to no BP class at all, which is exactly the "bare earth" we want.
 local REJECT_HINTS = { "Water", "Buildable", "Placeable", "Preview", "Foundation", "Build",
                        "Floor", "Roof", "Wall", "Fence", "Bridge" }
+
+-- Resolve the OWNING actor's class from an FHitResult, trying every field UE has stored it in
+-- across versions -- FHitResult.Actor (UE4/early-5), HitObjectHandle (later 5), then the hit
+-- component's owner. Reading only Component:GetOwner() proved fragile (it came back nil for a
+-- greenhouse roof, so the built piece was mistaken for bare ground and an Unlit spawned on top).
+local function hitOwnerClass(hit)
+  local cls
+  local function take(o) if ctx.uehelp.isValid(o) then local n = ctx.uehelp.className(o); if n and n ~= "" then cls = n end end end
+  pcall(function() take(hit.Actor) end)
+  if cls then return cls end
+  pcall(function()
+    local h = hit.HitObjectHandle
+    if h then
+      local act; pcall(function() act = h:GetManagingActor() end)
+      if not ctx.uehelp.isValid(act) then pcall(function() act = h.Actor end) end
+      take(act)
+    end
+  end)
+  if cls then return cls end
+  pcall(function()
+    local comp = hit.Component
+    if comp then local owner; pcall(function() owner = comp:GetOwner() end); take(owner) end
+  end)
+  return cls
+end
 
 local function groundPoint(pc, x, y, zref)
   local ksl = StaticFindObject and StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
@@ -195,15 +282,15 @@ local function groundPoint(pc, x, y, zref)
     if ksl:LineTraceSingle(pc, a, b, 0, false, {}, 0, hit, true, red, green, 0.0) then
       local v = ctx.uehelp.vec(hit.ImpactPoint)
       if v then hitLoc = v end
-      local comp; pcall(function() comp = hit.Component end)
-      if comp then
-        local owner; pcall(function() owner = comp:GetOwner() end)
-        if owner then hitCls = ctx.uehelp.className(owner) end
-      end
+      hitCls = hitOwnerClass(hit)
     end
   end)
   if not hitLoc then return nil end
   if hitCls then
+    -- Every player buildable / placeable / deco / prop is a BP_ actor; the landscape and terrain
+    -- resolve to engine classes (Landscape, etc.). So reject ANY BP_-owned surface outright -- that
+    -- is the robust catch for the greenhouse (BP_Fence_Greenhouse_Buildable_C) and its kin.
+    if hitCls:sub(1, 3) == "BP_" then return nil end
     for _, h in ipairs(REJECT_HINTS) do
       if hitCls:find(h, 1, true) then return nil end
     end
@@ -226,28 +313,36 @@ local function trySpawnOne(pc, pawns)
   pawns = pawns or playerPawns()
   local pool = {}
   for k in pairs(SPECIES) do if unlocked[k] then pool[#pool + 1] = k end end
-  if #pool == 0 then return end
+  if #pool == 0 then return false end
   local spKey = pool[math.random(#pool)]
   local clsName = speciesClass(spKey)
   local paths = ctx.map.animal.classPaths or {}
   local cls = ctx.uehelp.classByName(clsName, paths[clsName])
-  if not cls then ctx.log.debug("evil: class " .. tostring(clsName) .. " unresolved"); return end
-  local loc = pickSpawnSpot(pc, pawns)
-  if not loc then return end  -- bad ground this attempt; the chain simply tries again
+  if not cls then ctx.log.debug("evil: class " .. tostring(clsName) .. " unresolved"); return false end
+  -- Retry the ground pick: one bad spot (water / built / off-map / trace miss) must NOT burn the
+  -- whole spawn interval -- that made spawns feel sparse. Try several ring points before giving up.
+  local lights = litLights()
+  local loc
+  for _ = 1, math.max(1, ctx.config.get("evil_spawn_tries")) do
+    local cand = pickSpawnSpot(pc, pawns)
+    if cand and not nearLitLight(cand, lights) then loc = cand; break end
+  end
+  if not loc then return false end
   local a = ctx.uehelp.spawnActorAt(pc, cls, { X = loc.X, Y = loc.Y, Z = loc.Z + 30 })
-  if not a then return end
+  if not a then return false end
   nextKey = nextKey + 1
   local sp = SPECIES[spKey]
   local rec = {
     key = nextKey, actor = a, species = spKey,
     hp = ctx.config.get(sp.hpKey), hits = 0, mode = "wander",
-    flavor = sp.flavors[(nextKey % #sp.flavors) + 1] .. " " .. tostring(nextKey),
+    flavor = sp.displayName,   -- "Vengeful Chicken" / "Banished Sheep" on the nameplate
     inited = false, initTries = 0, lastBite = 0, nextHop = 0,
   }
   evils[rec.key] = rec
   setName(a, aliveName(rec))  -- the beacon goes up first: even pre-AI, every machine can dress it
   ctx.log.info(string.format("an %s slips out of the rain (%d/%d abroad)",
     aliveName(rec), countAlive(), ctx.config.get("evil_cap_per_player") * math.max(1, #pawns)))
+  return true
 end
 
 -- AI possession happens a beat after spawn; the brain tick keeps trying until the controller
@@ -304,6 +399,15 @@ local function setSpeed(rec, mult)
   if cm then ctx.uehelp.set(cm, ctx.map.animal.maxWalkSpeedProp, rec.baseSpeed * mult) end
 end
 
+-- Hold the animal's rendered pose. After StopLogic the Montage blackboard keeps its last value --
+-- for an animal we hijacked mid-rest that is Sleep (the lie-down), which is why a stalled/stuck
+-- Unlit "lay down". Pin it to Walk (moving) or Stand (frozen) so it only ever lies down on death
+-- (killEvil sets Sleep). Latched: one write per change, no per-tick montage restart/stutter.
+local function setMontage(rec, value)
+  if not value or rec.montage == value then return end
+  if ctx.uehelp.call(rec.actor, ctx.map.animal.montageSetFn, value) then rec.montage = value end
+end
+
 -- Move orders: full K2 arity first; a wrong arity is a SAFE Lua error (UE4SS validates the
 -- param count before touching native), so the single-arg fallback costs nothing.
 local function orderMoveToActor(aic, target)
@@ -347,6 +451,10 @@ local function brainTick()
   local bite2 = cfg.get("evil_bite_radius") ^ 2
   local pawns = playerPawns()
   local now = os.clock()
+  if isDaytime() then  -- daylight is lethal: send every Unlit into its death throes at once
+    for _, rec in pairs(evils) do killEvil(rec, "the daylight burns it away") end
+    return
+  end
   for _, rec in pairs(evils) do
     local a = rec.actor
     if not ctx.uehelp.isValid(a) then
@@ -365,16 +473,29 @@ local function brainTick()
             if d2 < (bestD2 or math.huge) then best, bestD2 = p, d2 end
           end
           local aic; pcall(function() aic = a.Controller end)
-          if best and bestD2 <= lock2 then
+          if now < (rec.stunUntil or 0) then
+            -- staggered by a tool hit, or a sheep recovering from a ram: stand in place, halt once
+            if not rec.stunned then
+              rec.stunned = true
+              if ctx.uehelp.isValid(aic) and ctx.map.animal.stopMovementFn then
+                ctx.uehelp.call(aic, ctx.map.animal.stopMovementFn)
+              end
+            end
+            setMontage(rec, ctx.map.animal.montageStandValue)  -- frozen, but upright -- never asleep
+          elseif best and bestD2 <= lock2 then
+            rec.stunned = false
             if rec.mode ~= "chase" then
               rec.mode = "chase"
               ctx.log.debug("evil: " .. rec.flavor .. " locks on")
             end
             setSpeed(rec, cfg.get("evil_chase_mult"))
+            setMontage(rec, ctx.map.animal.montageWalkValue)
             if ctx.uehelp.isValid(aic) then orderMoveToActor(aic, best) end
           else
+            rec.stunned = false
             rec.mode = "wander"
             setSpeed(rec, cfg.get("evil_wander_mult"))
+            setMontage(rec, ctx.map.animal.montageWalkValue)
             if now >= (rec.nextHop or 0) and ctx.uehelp.isValid(aic) then
               local hop = cfg.get("evil_wander_hop")
               local ang = math.random() * 2 * math.pi
@@ -383,21 +504,39 @@ local function brainTick()
               rec.nextHop = now + 2.0 + math.random() * 3.0
             end
           end
-          -- the bite: everyone inside the circle, on the animal's own cooldown
-          if now - (rec.lastBite or 0) >= cfg.get("evil_bite_interval") then
+          -- the bite: everyone inside the circle, on the animal's own cooldown (attackGap: sheep use
+          -- a long ram-recovery, others the atk-speed-scaled interval). A sheep RAMS -- it flings
+          -- each bitten player up and back (an auto-jump), then stands frozen for the recovery.
+          local sp = SPECIES[rec.species]
+          if now < (rec.stunUntil or 0) then
+            -- mid-recovery: no bite
+          elseif now - (rec.lastBite or 0) >= attackGap(sp) then
             local bit = false
             for _, p in ipairs(pawns) do
               local pl = ctx.identity.locationOf(p)
               if pl and ctx.uehelp.dist2(al, pl) <= bite2 then
                 local pc; pcall(function() pc = p.Controller end)
                 if ctx.uehelp.isValid(pc) and ctx.services.damagePlayerBy then
-                  ctx.services.damagePlayerBy(pc, cfg.get(SPECIES[rec.species].biteKey),
+                  ctx.services.damagePlayerBy(pc, cfg.get(sp.biteKey),
                     "the " .. aliveName(rec) .. " savages you")
                   bit = true
+                  if sp.rams then  -- ram: fling the player up and back
+                    local dx, dy = pl.X - al.X, pl.Y - al.Y
+                    local len = math.sqrt(dx * dx + dy * dy)
+                    local back = cfg.get("evil_ram_launch_back")
+                    local vx = (len > 1 and dx / len or 0) * back
+                    local vy = (len > 1 and dy / len or 0) * back
+                    pcall(function()
+                      p:LaunchCharacter({ X = vx, Y = vy, Z = cfg.get("evil_ram_launch_z") }, false, true)
+                    end)
+                  end
                 end
               end
             end
-            if bit then rec.lastBite = now end
+            if bit then
+              rec.lastBite = now
+              if sp.rams then rec.stunUntil = now + cfg.get("evil_ram_recover") end  -- stand after ramming
+            end
           end
         end
       end
@@ -416,12 +555,17 @@ end
 local function spawnChain(tok)
   if not stormOn or tok ~= token then return end
   afterIfStorm(ctx.config.get("evil_spawn_interval"), tok, function()
-    if ctx.net.isHost() and ctx.config.get("evil_animals") and anyUnlocked() then
+    if ctx.net.isHost() and ctx.config.get("evil_animals") and anyUnlocked() and not isDaytime() then
       local pawns = playerPawns()  -- scanned ONCE per attempt; threaded into the cap + spawn spot
       local cap = ctx.config.get("evil_cap_per_player") * math.max(1, #pawns)
-      if countAlive() < cap then
-        local pc = ctx.uehelp.localController(ctx.map.player.controllerClass)
-        if pc then trySpawnOne(pc, pawns) end
+      local pc = ctx.uehelp.localController(ctx.map.player.controllerClass)
+      if pc then
+        -- a small burst per tick (each with its own ground-pick retries) so the world fills at a
+        -- felt rate instead of at most one per interval; stop early at the cap or on a dry tick.
+        for _ = 1, math.max(1, ctx.config.get("evil_spawn_per_tick")) do
+          if countAlive() >= cap then break end
+          if not trySpawnOne(pc, pawns) then break end
+        end
       end
     end
     spawnChain(tok)
@@ -575,6 +719,9 @@ local function onSwing(pawn)
   if not best then return end
   best.hp = best.hp - dmg
   best.hits = (best.hits or 0) + 1
+  -- a landed hit staggers it: stand frozen for evil_hit_stun (max() so it can't shorten a longer
+  -- ram-recovery already ticking on a sheep). brainTick reads stunUntil and halts movement.
+  best.stunUntil = math.max(best.stunUntil or 0, os.clock() + ctx.config.get("evil_hit_stun"))
   setName(best.actor, aliveName(best))  -- tally change = the replicated blink signal
   -- floor dmg for the log: a fractional config override + "%d" throws "no integer representation"
   -- (Lua 5.3+), and log.guard would swallow it BEFORE the kill check below -- unkillable Unlit.
@@ -697,9 +844,82 @@ local function blink(a, d)
     if not ctx.uehelp.isValid(a) then return end
     local m2; pcall(function() m2 = a.Mesh end)
     if not m2 then return end
-    local back = materialByName(ctx.config.get("evil_mat_body")) or d.origMat
+    local back = (d.dead and materialByName(ctx.config.get("evil_mat_dead")))
+      or materialByName(ctx.config.get("evil_mat_body")) or d.origMat
     if back then pcall(function() m2:SetMaterial(0, back) end) end
   end)
+end
+
+-- Red aura: a spawned MOVABLE PointLight that trails each living Unlit animal. A red BODY is
+-- impossible (skeletal meshes render any material lacking the compiled bUsedWithSkeletalMesh flag
+-- as black, and no red/fire material in the game carries it -- proven via the cooked M_* dumps), so
+-- the menace-red is LIGHT, not fur. Per-machine local FX: a plain engine PointLight actor does not
+-- replicate, so every machine spawns its own and no client double-lights. Tracked in the dress
+-- record; destroyed when the animal falls, vanishes, or the storm clears.
+local pointLightClass
+local function lightClass()
+  if ctx.uehelp.isValid(pointLightClass) then return pointLightClass end
+  pointLightClass = nil
+  if not StaticFindObject then return nil end
+  local c; pcall(function() c = StaticFindObject("/Script/Engine.PointLight") end)
+  if ctx.uehelp.isValid(c) then pointLightClass = c end
+  return pointLightClass
+end
+
+local function lightCompOf(a)
+  local comp
+  pcall(function() comp = a.PointLightComponent end)
+  if not comp then pcall(function() comp = a.LightComponent end) end
+  return comp
+end
+
+local function spawnGlow(pc, a, loc)
+  if not loc then return nil end
+  local cls = lightClass()
+  if not cls then return nil end
+  local light = ctx.uehelp.spawnActorAt(pc, cls, loc)
+  if not ctx.uehelp.isValid(light) then return nil end
+  local comp = lightCompOf(light)
+  if comp then
+    local cfg = ctx.config
+    -- spawned lights default to Stationary (can't move at runtime) -- make it Movable so it trails
+    pcall(function() comp:SetMobility(2) end)  -- EComponentMobility::Movable
+    local col = { R = cfg.get("evil_glow_r"), G = cfg.get("evil_glow_g"),
+                  B = cfg.get("evil_glow_b"), A = 1.0 }
+    if not pcall(function() comp:SetLightColor(col, false) end) then
+      pcall(function() comp:SetLightColor(col) end)
+    end
+    pcall(function() comp:SetIntensity(cfg.get("evil_glow_intensity")) end)
+    pcall(function() comp:SetAttenuationRadius(cfg.get("evil_glow_radius")) end)
+    pcall(function() comp:SetCastShadows(false) end)  -- an aura, not a scene light -- keep it cheap
+  end
+  return light
+end
+
+local function moveGlow(light, loc)
+  if not (ctx.uehelp.isValid(light) and loc) then return end
+  local at = { X = loc.X, Y = loc.Y, Z = loc.Z + 40 }  -- lift to body-centre so the pool wraps it
+  if ctx.uehelp.call(light, "K2_SetActorLocation", at, false, {}, false) then return end
+  if ctx.uehelp.call(light, "K2_SetActorLocation", at, true) then return end
+  ctx.uehelp.call(light, "SetActorLocation", at)
+end
+
+local function killGlow(d)
+  if not (d and d.light) then return end
+  local l = d.light; d.light = nil
+  if ctx.uehelp.isValid(l) then pcall(function() l:K2_DestroyActor() end) end
+end
+
+-- Fast light-follow: trail each already-spawned aura to its animal's CURRENT location. Decoupled
+-- from the heavier fxPass (findAll/material/sound) so it can run at ~10 Hz for a smooth follow with
+-- almost no cost -- it walks only the tracked records, no scans. Per-machine + local (the lights
+-- never replicate), so this stays free no matter how many players are in the lobby.
+local function glowFollow()
+  for _, d in pairs(dressed) do
+    if d.light and not d.dead and ctx.uehelp.isValid(d.light) and ctx.uehelp.isValid(d.actor) then
+      moveGlow(d.light, ctx.identity.locationOf(d.actor))
+    end
+  end
 end
 
 local function fxPass()
@@ -722,6 +942,7 @@ local function fxPass()
             local d = dressed[fn]
             if not d then d = { hits = hits }; dressed[fn] = d end
             d.seen = seenPass
+            d.actor = a  -- fresh handle so glowFollow() can trail the aura without a findAll
             if not d.mat then dressBody(a, d) end
             if not d.pitch then
               local comp; pcall(function() comp = a[ctx.map.animal.audioCompProp] end)
@@ -731,13 +952,35 @@ local function fxPass()
                 end
               end
             end
+            -- size: loom at the species' scale (visual; every machine sets its own). Latch once.
+            if not d.scaled then
+              local scale = cfg.get(sp.scaleKey)
+              if scale and scale ~= 1.0 then
+                local v = { X = scale, Y = scale, Z = scale }
+                local okc = ctx.uehelp.call(a, "SetActorScale3D", v)
+                if not okc then
+                  local root; pcall(function() root = a.RootComponent end)
+                  if root then okc = ctx.uehelp.call(root, "SetWorldScale3D", v) end
+                end
+                if okc then d.scaled = true end
+              else
+                d.scaled = true  -- 1x: nothing to do, don't retry every pass
+              end
+            end
             if state == "alive" then
               -- blink on ANY tally change, not just an increase: the name encodes hits mod 4, so
               -- the 4th landed hit wraps 3 -> 0 and a `>` test would skip its flash.
               if hits ~= (d.hits or 0) then blink(a, d) end
               d.hits = hits
-              -- chatter: its own calls, pitched down; frantic once it hunts the LOCAL player
               local al = ctx.identity.locationOf(a)
+              -- red aura: spawn once, then trail the body every pass (live toggle-off destroys it)
+              if cfg.get("evil_glow") then
+                if not ctx.uehelp.isValid(d.light) then d.light = spawnGlow(pc, a, al) end
+                moveGlow(d.light, al)
+              elseif d.light then
+                killGlow(d)
+              end
+              -- chatter: its own calls, pitched down; frantic once it hunts the LOCAL player
               if al and myLoc then
                 local hunting = ctx.uehelp.dist2(al, myLoc) <= lock2
                 local gap = hunting and cfg.get("evil_chatter_chase") or cfg.get("evil_chatter_wander")
@@ -751,9 +994,29 @@ local function fxPass()
                   end
                   cryAt(pc, soundByName(pick), al, 1.0, cfg.get("evil_sound_pitch"))
                 end
+                -- attack cry: while actually biting the LOCAL player (within bite range), sound off
+                -- on every bite -- its own voice, pitched down (sheep bite slower via atkSpeedKey).
+                if ctx.uehelp.dist2(al, myLoc) <= cfg.get("evil_bite_radius") ^ 2 then
+                  local abite = attackGap(sp)
+                  if now - (d.lastAtk or 0) >= abite then
+                    d.lastAtk = now
+                    local anames = ctx.map.animal[sp.soundsKey] or {}
+                    cryAt(pc, soundByName(anames[math.random(math.max(1, #anames))]), al, 1.0,
+                      cfg.get("evil_sound_pitch"))
+                  end
+                end
               end
-            elseif state == "dead" and not d.dead then
-              d.dead = true  -- fallen: no more chatter; the body keeps its corrupted coat
+            elseif state == "dead" then
+              killGlow(d)  -- the red aura dies with the animal; the fallen carry no light
+              -- fallen: swap to the death tint (black) and fall silent. Don't latch d.dead until
+              -- the swap actually takes -- the material may not be resident on the first pass.
+              if not d.dead then
+                local deadMat = materialByName(cfg.get("evil_mat_dead"))
+                local mesh; pcall(function() mesh = a.Mesh end)
+                if deadMat and mesh and pcall(function() mesh:SetMaterial(0, deadMat) end) then
+                  d.dead = true
+                end
+              end
             end
           end
         end
@@ -762,8 +1025,14 @@ local function fxPass()
   end
   -- forget dress records whose actors vanished (destroy replicated in)
   for fn, d in pairs(dressed) do
-    if d.seen ~= seenPass then dressed[fn] = nil end
+    if d.seen ~= seenPass then killGlow(d); dressed[fn] = nil end
   end
+end
+
+-- The fx chain stops calling fxPass the instant the storm window closes, so its own
+-- vanish-cleanup can't reap the last lights. Sweep every glow (and dress record) here instead.
+local function teardownFx()
+  for fn, d in pairs(dressed) do killGlow(d); dressed[fn] = nil end
 end
 
 local function fxWindowOpen()
@@ -771,12 +1040,23 @@ local function fxWindowOpen()
 end
 
 local function fxChain(tok)
-  if tok ~= fxToken or not fxWindowOpen() then fxLive = false; return end
+  if tok ~= fxToken or not fxWindowOpen() then fxLive = false; teardownFx(); return end
   after(ctx.config.get("evil_fx_interval"), function()
     if tok ~= fxToken then return end
-    if not fxWindowOpen() then fxLive = false; return end
+    if not fxWindowOpen() then fxLive = false; teardownFx(); return end
     if ctx.config.get("evil_animals") then fxPass() end
     fxChain(tok)
+  end)
+end
+
+-- Its own fast cadence, sharing fxToken so it dies with the fx window. No teardown here -- fxChain
+-- owns light cleanup; a stray tick after teardownFx just walks an empty table (moveGlow is guarded).
+local function glowChain(tok)
+  if tok ~= fxToken or not fxWindowOpen() then return end
+  after(ctx.config.get("evil_glow_follow"), function()
+    if tok ~= fxToken or not fxWindowOpen() then return end
+    if ctx.config.get("evil_animals") and ctx.config.get("evil_glow") then glowFollow() end
+    glowChain(tok)
   end)
 end
 
@@ -785,6 +1065,7 @@ local function armFx()
   fxLive = true
   fxToken = fxToken + 1
   fxChain(fxToken)
+  glowChain(fxToken)
 end
 
 --------------------------------------------------------------------- events + init

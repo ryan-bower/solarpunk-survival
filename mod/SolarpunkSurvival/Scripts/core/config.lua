@@ -173,33 +173,61 @@ M.defaults = {
   evil_spawn_radius   = 20000.0, -- cm (200 m) farthest an Unlit spawns from a player
   evil_spawn_min      = 3000.0,  -- cm (30 m) nearest (never materialize in someone's face)
   evil_cap_per_player = 10,      -- live Unlit allowed per connected player
-  evil_spawn_interval = 8.0,     -- seconds between spawn attempts while the storm holds
+  evil_spawn_interval = 5.0,     -- seconds between spawn ticks while the storm holds
+  evil_spawn_tries    = 10,      -- ground-pick attempts per spawn: one bad spot (water/built/off-map)
+                                 -- no longer burns the whole interval, so spawns feel steady
+  evil_spawn_per_tick = 2,       -- Unlit spawned per tick (up to the cap) so the world fills faster
   evil_brain_interval = 0.7,     -- seconds between host AI ticks (movement/lock-on/bite checks)
   evil_lockon_radius  = 10000.0, -- cm (100 m); inside this an Unlit locks on and charges
   evil_wander_mult    = 2.0,     -- x the animal's own MaxWalkSpeed while prowling
-  evil_chase_mult     = 4.0,     -- x while locked on
+  evil_chase_mult     = 8.0,     -- x while locked on (2x the old 4x -- "twice as fast coming at you")
   evil_wander_hop     = 1500.0,  -- cm; length of one prowling leg between random move orders
-  evil_bite_radius    = 200.0,   -- cm (2 m); players inside take the bite
+  evil_bite_radius    = 300.0,   -- cm (3 m); players inside take the bite
   evil_bite_interval  = 2.0,     -- seconds between bites per animal
   evil_bite_chicken   = 10.0,    -- HP per Unlit-bird peck        (user: chicken 10, sheep 20)
   evil_bite_sheep     = 20.0,    -- HP per Unlit-lamb bite
-  evil_hp_chicken     = 30.0,    -- Unlit bird hit points
-  evil_hp_sheep       = 50.0,    -- Unlit lamb hit points
+  evil_hp_chicken     = 90.0,    -- Unlit bird hit points (3x)
+  evil_hp_sheep       = 150.0,   -- Unlit lamb hit points (3x)
+  evil_scale_chicken  = 1.0,     -- model size multiplier (visual; applied on every machine)
+  evil_scale_sheep    = 2.0,     -- the Unlit lambs loom at 2x
+  evil_atkspeed_chicken = 1.0,   -- bite-rate multiplier (1.0 = every evil_bite_interval)
+  evil_atkspeed_sheep = 0.7,     -- chicken/general slower factor; sheep use evil_ram_recover instead
+  evil_hit_stun       = 0.5,     -- seconds an Unlit stands frozen after a tool hit lands on it
+  evil_ram_recover    = 1.5,     -- sheep ONLY: stand + attack-cooldown after a ram (its bite gap)
+  evil_ram_launch_z   = 750.0,   -- upward launch on a sheep ram (the auto-jump)
+  evil_ram_launch_back = 250.0,  -- horizontal knockback away from the sheep on a ram
+  evil_light_block_big  = 2000.0,-- cm (20 m): a lit torch / powered lamp / wireless light blocks spawns
+  evil_light_block_small = 1000.0,-- cm (10 m): a lit candle / powered small lamp blocks spawns
   evil_dmg_base       = 20.0,    -- tool damage: base pickaxe/axe/hoe (stone tier)
   evil_dmg_metal      = 30.0,    -- ...Metal rows (iron)
   evil_dmg_diamond    = 40.0,    -- ...Diamond rows
   evil_melee_range    = 350.0,   -- cm; how far a tool swing reaches an Unlit
   evil_death_linger   = 2.5,     -- seconds the fallen body lies (Sleep montage) before vanishing
-  evil_fx_interval    = 1.2,     -- seconds between client-side FX watcher passes
+  evil_fx_interval    = 1.2,     -- seconds between client-side FX watcher passes (discovery/material/sound)
+  evil_glow_follow    = 0.1,     -- seconds between red-aura reposition ticks (10 Hz) -- cheap, local-only
   evil_sound_pitch    = 0.55,    -- pitch multiplier: the animal's own voice, several steps down
   evil_chatter_wander = 7.0,     -- seconds between pitched-down cries while prowling
   evil_chatter_chase  = 2.0,     -- ...while locked on (many noises AT you, per the design)
-  evil_mat_body       = "M_Deco_Fireplace_Burned", -- whole-body corrupted look (one-slot meshes --
-                                                   -- see docs/RE-ANIMALS.md; swap live via sps set)
-  evil_mat_blink      = "M_Preview_Red",           -- the hit flash (the build system's own red)
-  evil_blink_seconds  = 0.18,    -- how long the red flash holds
-  evil_prefix_alive   = "Unlit ",  -- replicated-Name marker for a living Unlit (the MP beacon)
-  evil_prefix_dead    = "Fallen ", -- ...and for one playing its death
+  evil_mat_body       = "M_Plant_Tomato",          -- living Unlit body swap. A RED body is engine-blocked:
+                                                   -- skeletal meshes render any material without a compiled
+                                                   -- bUsedWithSkeletalMesh flag as the black Default Material,
+                                                   -- and NO red/fire/energy material in the game carries it
+                                                   -- (proven via cooked M_* dumps -- see RE-ANIMALS). So this
+                                                   -- reads as a solid BLACK silhouette; the menace-red is the
+                                                   -- point-light aura below, not the fur.
+  evil_mat_dead       = "M_Deco_Fireplace_Burned", -- the fallen: charred black once it dies
+  evil_mat_blink      = "M_Deco_Bench_White",      -- the hit flash: an opaque white, contrasts the dark body
+  evil_blink_seconds  = 0.18,    -- how long the hit flash holds
+  -- Red aura: a spawned movable PointLight that trails each LIVING Unlit (the achievable "glow" -- body
+  -- red is impossible, above). Per-machine local FX; the light is destroyed when the animal falls/vanishes.
+  evil_glow           = true,    -- master toggle for the red aura light
+  evil_glow_intensity = 5000.0,  -- PointLight intensity (lumens on this build); tune live via `sps set`
+  evil_glow_radius    = 700.0,   -- cm (~7 m) attenuation radius -- how far the red pool reaches
+  evil_glow_r         = 1.0,     -- aura colour, linear RGB -- default a deep blood red
+  evil_glow_g         = 0.02,
+  evil_glow_b         = 0.0,
+  evil_prefix_alive   = "Vengeful ", -- replicated-Name marker + nameplate for a living evil animal
+  evil_prefix_dead    = "Banished ", -- ...and for one playing its death (the fallen)
   evil_sweep_strays   = false,   -- OFF by default: destroying animals by the spoofable Name marker
                                  -- can wipe a player pet renamed "Unlit ..." via AnimalTag. When on,
                                  -- the sweep still skips owned animals. Host decisions (ritual,

@@ -7,6 +7,7 @@
 local F = {}
 local ctx
 local stationClass = nil   -- exact class name, resolved from candidates or a one-off scan
+local fullScanDone = false  -- the whole-world fallback sweep is genuinely one-shot (see below)
 
 local function resolveStationClass()
   if stationClass then return stationClass end
@@ -18,9 +19,17 @@ local function resolveStationClass()
       return stationClass
     end
   end
-  -- one-off scan: find any live actor whose class name smells like the weather station.
-  -- MUST skip placement previews (attaching to a *PlaceablePreview_C ghost is a native AV crash
+  -- Fallback: sweep every live actor for one whose class name smells like the weather station.
+  -- This MUST be truly one-shot. It reflects GetClass() on EVERY actor in the world, and doing that
+  -- to an actor caught mid-teardown is an uncatchable native abort -- which is exactly what happened
+  -- live on 2026-07-23: with no candidate ever resolving, this ran on every single strike (~90x over
+  -- one storm), and one sweep during the storm's placeable-destruction touched a dying actor and took
+  -- the process down. The cheap candidate fast-path above still picks up a station built later (its
+  -- class blueprint loads and classByName resolves it), so gating the sweep costs no real coverage.
+  -- MUST also skip placement previews (touching a *PlaceablePreview_C ghost is a native AV crash
   -- pcall cannot catch -- happened live 2026-07-21) and the carryable _Item actor.
+  if fullScanDone then return nil end
+  fullScanDone = true
   for _, a in ipairs(ctx.uehelp.findAll("Actor")) do
     local cls = ctx.uehelp.className(a)
     if cls and (cls:find("Weather_Station", 1, true) or cls:find("WeatherStation", 1, true))
