@@ -19,14 +19,16 @@ python tools/run.py
 ```
 
 The script: stops any running instance → fast-syncs the current `mod/` + pak into the game install
-(changed files only; it falls back to the full installer `install.ps1` / `install.sh` when UE4SS
-isn't set up yet, or on `--full`) → launches via `steam://rungameid/1805110` → tails
+(changed files only, dev tools included; it also installs the UE4SS core itself, in Python, when
+it's missing or on `--force`) → launches via `steam://rungameid/1805110` → tails
 `<game>/Binaries/Win64/ue4ss/UE4SS.log` until the mod prints `SolarpunkSurvival vX.Y.Z starting`
 (≤120 s, failing fast if the game process crashes), then echoes the recent mod log lines.
+It never shells out to `install.ps1`/`install.sh` — those are the player installers, which
+exclude the `Scripts/dev` tools.
 
 Useful flags: `--no-install` (relaunch without redeploying — faster when only testing a launch),
-`--full` (run the complete installer instead of the fast sync), `--wait N`, `--game-dir <path>`
-if auto-detection misses the install (the detected dir is cached in `tools/.gamedir`).
+`--force` (reinstall the UE4SS core), `--wait N`, `--game-dir <path>` if auto-detection misses
+the install (the detected dir is cached in `tools/.gamedir`).
 
 ## What "success" looks like
 

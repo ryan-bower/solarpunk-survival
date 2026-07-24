@@ -22,7 +22,7 @@ You need three things first:
 |---|---|
 | **Windows** or **Linux / Steam Deck** + **Solarpunk** on Steam | tested against build `24038177`. Linux / Steam Deck run through Proton — use [`install.sh`](#linux--steam-deck-proton) instead of the PowerShell script |
 | **[The Solarpunk-patched UE4SS](https://www.nexusmods.com/solarpunk/mods/4)** (`UE4SS-SP-Developer.zip`) | stock UE4SS can't scan this game's engine build. Nexus needs a login, so this is the one file the installer can't fetch for you — just leave it in your **Downloads** folder |
-| This mod — the **release zip**, or a clone of this repo | a clone has no content pak (game-derived data isn't committed); [build it](#building-the-content-pak) or use the release zip |
+| This mod — the **release zip**, or a clone of this repo | a clone has no content pak (game-derived data isn't committed); use the release zip, or build it yourself ([`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)) |
 
 Then, with the game closed:
 
@@ -31,9 +31,6 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 Launch Solarpunk. `Binaries\Win64\ue4ss\UE4SS.log` logs `SolarpunkSurvival v0.1.0 starting`.
-
-**Redeploy + relaunch in one step** (after editing the mod): `python tools/run.py` (Windows and
-Linux) — it fast-syncs the changed files, launches the game, and waits for that startup line.
 
 <details>
 <summary>Options</summary>
@@ -90,10 +87,9 @@ Manual steps, troubleshooting and what goes where: [`docs/INSTALL.md`](docs/INST
 | **V** | draw / stow the wand |
 | **left click** (wand drawn) | cast — a bolt where you look, or a pour / a drink for a teammate |
 | **F7** | in-game config panel |
-| **F8** | write an RE dump (`sps_dump`) — dev tool, safe to ignore |
 
 Other console commands: `sps_wand` (state, `forge`/`soak`/`charge`/`give`), `sps_codex`,
-`sps_repair`, `sps_find <text>`, `sps_ritual_test`.
+`sps_repair`.
 
 The two rites — the chicken's for water, the lamb's for fire — are written up in
 [`docs/DARK-ARTS.md`](docs/DARK-ARTS.md), and in-game in the **Tempest Codex** (a craftable book;
@@ -114,30 +110,14 @@ research *The Dark Arts*, then craft the codex and a Mundane Wand at the bench).
 | **Tempest Codex** | a real craftable, placeable, readable in-game book — five sections of lore, cooked into the content pak. |
 
 Design and roadmap: [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/MILESTONE-2.md`](docs/MILESTONE-2.md).
-
-## Building the content pak
-
-Only needed if you're working from a clone. The pak is cooked offline — no Unreal Editor — by
-round-tripping the game's own assets, so it can't be redistributed in a public repo.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/pakkit/setup.ps1   # one-time: every build dependency
-python tools/pakkit/build_wand_pak.py                             # -> tools/pakkit/out/z_SolarpunkWand_P.*
-powershell -ExecutionPolicy Bypass -File install.ps1              # installs the result into the game
-```
-
-`setup.ps1` fetches Python, the .NET SDK, Lua, retoc and UAssetAPI, builds the `wandsmith` CLI, and
-extracts the game's own assets to work from. The single piece it can't fetch is `Solarpunk.usmap`,
-which is dumped out of the *running* game — that step, and the toolchain's one very sharp gotcha,
-are in [`tools/pakkit/HOWTO.md`](tools/pakkit/HOWTO.md). Unit tests: `lua tests/spec.lua`.
+Working on the mod itself (dev loop, building the content pak, tests): [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Caveats
 
 - **Back up your save.** The mod writes persistent state (and the research migration touches the
   host save).
-- Solarpunk has no mod API, so **a game update can break this mod** until it's re-mapped against a
-  fresh dump — see [`docs/RELEASE-CHECKLIST.md`](docs/RELEASE-CHECKLIST.md) and
-  [`docs/REVERSE-ENGINEERING.md`](docs/REVERSE-ENGINEERING.md).
+- Solarpunk has no mod API, so **a game update can break this mod** until it's re-mapped against
+  a fresh dump.
 
 ## License
 

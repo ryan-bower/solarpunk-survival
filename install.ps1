@@ -221,9 +221,13 @@ if (-not $modSrc) { Fail "Could not find the mod source (Scripts\main.lua) under
 
 New-Item -ItemType Directory -Force -Path $modDst | Out-Null
 Copy-Item (Join-Path $modSrc '*') $modDst -Recurse -Force
-# dev/recapture.lua writes RE dumps here with io.open, which will not create the directory itself.
+# Scripts\dev are developer tools (RE dumper, remote exec channel, ritual dev kit) - players
+# don't get them. This also clears a dev folder left by an older install; main.lua skips
+# missing dev modules silently.
+Remove-Item (Join-Path $modDst 'Scripts\dev') -Recurse -Force -ErrorAction SilentlyContinue
+# wand.lua appends its crash-bisection log here with io.open, which will not create the directory.
 New-Item -ItemType Directory -Force -Path (Join-Path $modDst 'dump') | Out-Null
-Step "copied the mod -> $modDst"
+Step "copied the mod -> $modDst (dev tools excluded)"
 
 # enabled.txt (shipped inside the mod folder) is what actually enables it; the mods.txt line is
 # belt-and-braces for UE4SS builds that only read the list.

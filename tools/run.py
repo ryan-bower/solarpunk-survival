@@ -4,15 +4,17 @@
 The "run the app" entrypoint for the game+mod (Claude's /run uses it via
 .claude/skills/launch-solarpunk). Cross-platform: Windows native, Linux/Steam Deck via Proton.
 
-    python tools/run.py [--no-install] [--full] [--wait N] [--game-dir PATH]
+    python tools/run.py [--no-install] [--force] [--wait N] [--game-dir PATH]
 
 Flow: stop any running instance (a fresh UE4SS injection needs a clean launch, and the locked
 DLL/paks cannot be overwritten while the game runs) -> deploy -> launch via Steam -> tail
 ue4ss/UE4SS.log until the mod logs "SolarpunkSurvival vX.Y.Z starting".
 
-Deploy is a fast dev sync (changed files only, stale files pruned) when UE4SS is already
-installed; the full installer (install.ps1 / install.sh) runs automatically when it is not,
-or on --full. --no-install relaunches without touching the install at all.
+Deploy is a fast dev sync (changed files only, stale files pruned, dev tools included - unlike
+the player installers, which exclude Scripts/dev). Everything runs in this one Python file,
+including putting UE4SS next to the game exe when it is missing (or on --force); the only piece
+it can't fetch is the Solarpunk-patched UE4SS zip (Nexus needs a login) - leave it in Downloads.
+--no-install relaunches without touching the install at all.
 """
 
 import argparse
@@ -142,15 +144,61 @@ def stop_game():
 
 # --- deploy --------------------------------------------------------------------------------
 
-def run_full_installer(game_dir):
-    say("Running the full installer...")
-    if IS_WIN:
-        cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-               "-File", str(REPO / "install.ps1"), "-GameDir", str(game_dir)]
-    else:
-        cmd = ["bash", str(REPO / "install.sh"), "--game-dir", str(game_dir)]
-    if subprocess.run(cmd).returncode:
-        sys.exit("installer failed (see output above)")
+def check_vc_runtime():
+    """UE4SS links against the VC++ 2015-2022 x64 runtime. Warn-only: installing it needs
+    elevation, which is the player installer's business, and a dev machine already has it."""
+    if not IS_WIN:
+        return
+    import winreg
+    for key in (r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64",
+                r"SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                if winreg.QueryValueEx(k, "Installed")[0] == 1:
+                    return
+        except OSError:
+            pass
+    if (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vcruntime140_1.dll").is_file():
+        return
+    say("  ! Visual C++ 2015-2022 x64 runtime not found - UE4SS may fail to load.")
+    say("  ! Install it from https://aka.ms/vs/17/release/vc_redist.x64.exe")
+
+
+def find_ue4ss_zip():
+    """The Solarpunk-patched UE4SS zip: beside the repo first, then where a browser drops it."""
+    home = Path.home()
+    for d in (REPO, home / "Downloads", home / "Desktop"):
+        if d.is_dir():
+            zips = sorted(d.glob("UE4SS*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if zips:
+                return zips[0]
+    return None
+
+
+def install_ue4ss(win64: Path):
+    """Put the Solarpunk-patched UE4SS next to the game exe (stock UE4SS cannot scan this
+    game's UE 5.7.1 build)."""
+    import tempfile
+    import zipfile
+    zip_path = find_ue4ss_zip()
+    if not zip_path:
+        sys.exit("UE4SS is missing and no UE4SS*.zip was found (repo root / Downloads / Desktop).\n"
+                 "Download the Solarpunk-patched UE4SS (stock UE4SS cannot scan this game's build):\n"
+                 "    https://www.nexusmods.com/solarpunk/mods/4   ->  UE4SS-SP-Developer.zip\n"
+                 "(Nexus needs a login, so it cannot be fetched for you.)")
+    check_vc_runtime()
+    with tempfile.TemporaryDirectory(prefix="ue4ss_") as tmp:
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(tmp)
+        dll = next(Path(tmp).rglob("dwmapi.dll"), None)
+        if not dll:
+            sys.exit(f"No dwmapi.dll inside {zip_path} - is that the UE4SS zip?")
+        shutil.copy2(dll, win64 / "dwmapi.dll")
+        shutil.copytree(dll.parent / "ue4ss", win64 / "ue4ss", dirs_exist_ok=True)
+    say(f"  installed UE4SS from {zip_path.name}")
+    if not IS_WIN:
+        say('  ! Proton side: launch option WINEDLLOVERRIDES="dwmapi=n,b" %command% and vcrun2022')
+        say("  ! in the prefix are still needed (docs/INSTALL.md).")
 
 
 def changed(src: Path, dst: Path):
@@ -222,14 +270,12 @@ def ensure_ini(ue4ss: Path):
         say("  UE4SS settings normalized (console windows off, engine pinned to 5.7)")
 
 
-def deploy(game_dir: Path, full: bool):
+def deploy(game_dir: Path, force: bool):
     win64 = game_dir / "Binaries" / "Win64"
     ue4ss = win64 / "ue4ss"
-    if full or not (win64 / "dwmapi.dll").is_file() or not (ue4ss / "Mods").is_dir():
-        run_full_installer(game_dir)
-        return
+    if force or not (win64 / "dwmapi.dll").is_file() or not ue4ss.is_dir():
+        install_ue4ss(win64)
 
-    # fast dev path: UE4SS is in place, just sync our own files
     mod_src = REPO / "mod" / MOD
     if not (mod_src / "Scripts" / "main.lua").is_file():
         sys.exit(f"Could not find the mod source (Scripts/main.lua) under {mod_src}")
@@ -307,8 +353,8 @@ def report(log: Path, ready: bool, elapsed: float, wait_s: int):
         return 0
     say(f"! Did not see \"SolarpunkSurvival vX.Y.Z starting\" within {wait_s}s.")
     say(f"! Check the log at: {log}")
-    say("! If UE4SS did not inject at all, confirm the Solarpunk-patched UE4SS is installed (install --force),")
-    say('! and on Linux the Proton launch option WINEDLLOVERRIDES="dwmapi=n,b" %command% + vcrun2022 (docs/INSTALL.md).')
+    say("! If UE4SS did not inject at all, re-run with --force to reinstall the UE4SS core,")
+    say('! and on Linux confirm the Proton launch option WINEDLLOVERRIDES="dwmapi=n,b" %command% + vcrun2022 (docs/INSTALL.md).')
     if log.is_file():
         say("--- last 20 lines of UE4SS.log ---")
         for l in log.read_text(errors="replace").splitlines()[-20:]:
@@ -319,7 +365,7 @@ def report(log: Path, ready: bool, elapsed: float, wait_s: int):
 def main():
     ap = argparse.ArgumentParser(description="Deploy the mod, launch Solarpunk, confirm it loaded.")
     ap.add_argument("--no-install", action="store_true", help="relaunch without redeploying")
-    ap.add_argument("--full", action="store_true", help="run the full installer instead of the fast dev sync")
+    ap.add_argument("--force", action="store_true", help="reinstall the UE4SS core even if it is already there")
     ap.add_argument("--wait", type=int, default=120, metavar="N", help="seconds to wait for the mod (default 120)")
     ap.add_argument("--game-dir", metavar="PATH", help="skip auto-detection")
     args = ap.parse_args()
@@ -328,7 +374,7 @@ def main():
     say(f"Game:  {game_dir}")
     stop_game()
     if not args.no_install:
-        deploy(game_dir, args.full)
+        deploy(game_dir, args.force)
 
     log = game_dir / "Binaries" / "Win64" / "ue4ss" / "UE4SS.log"
     log.unlink(missing_ok=True)

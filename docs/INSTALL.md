@@ -47,8 +47,9 @@ nothing.
    `SecondsToScanBeforeGivingUp = 120`, and `ConsoleEnabled` / `GuiConsoleEnabled` /
    `GuiConsoleVisible` to `0` (they open extra dev console windows next to the game; everything
    they show also lands in `ue4ss\UE4SS.log` — set them to `1` only if you want them for debugging).
-4. Copy `mod\SolarpunkSurvival\` into `<game>\Binaries\Win64\ue4ss\Mods\`, and create an empty
-   `dump\` folder inside it (the dev dumper writes there and can't create it itself).
+4. Copy `mod\SolarpunkSurvival\` into `<game>\Binaries\Win64\ue4ss\Mods\`, delete its
+   `Scripts\dev\` folder (developer tools — the mod skips them when absent), and create an empty
+   `dump\` folder inside it (the mod writes diagnostics there and can't create it itself).
 5. Copy the pak triple into `<game>\Content\Paks\`, renamed `Solarpunk-Windows_1_P.utoc` / `.ucas` /
    `.pak`.
 

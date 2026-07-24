@@ -54,6 +54,8 @@ local ok, err = pcall(function()
     "features.codex",        -- the Tempest Codex: placed-book interact -> reader UI (content pak)
     "features.foundation",   -- snapped foundations skip the corners-touch-ground rule
     "ui.imgui_panel",
+    -- dev.* are developer tools; the player install (install.ps1/.sh) excludes Scripts/dev
+    -- entirely, and a missing dev module is skipped silently below. tools/run.py deploys them.
     "dev.recapture",
     "dev.remote",
     "dev.ritual_test",
@@ -62,7 +64,10 @@ local ok, err = pcall(function()
   for _, name in ipairs(features) do
     local okf, mod = pcall(require, name)
     if not okf then
-      log.error("failed to load " .. name .. ": " .. tostring(mod))
+      local absentDev = name:sub(1, 4) == "dev." and tostring(mod):find("not found", 1, true)
+      if not absentDev then
+        log.error("failed to load " .. name .. ": " .. tostring(mod))
+      end
     else
       local oki, res = pcall(mod.init, ctx)
       if not oki then log.error(name .. " init error: " .. tostring(res)) end

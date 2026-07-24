@@ -191,9 +191,13 @@ done
 
 mkdir -p "$MOD_DST" || fail "could not create $MOD_DST"
 cp -rf "$MOD_SRC/." "$MOD_DST/" || fail "could not copy the mod into $MOD_DST"
-# dev/recapture.lua writes RE dumps here with io.open, which will not create the directory itself.
+# Scripts/dev are developer tools (RE dumper, remote exec channel, ritual dev kit) - players
+# don't get them. This also clears a dev folder left by an older install; main.lua skips
+# missing dev modules silently.
+rm -rf "$MOD_DST/Scripts/dev"
+# wand.lua appends its crash-bisection log here with io.open, which will not create the directory.
 mkdir -p "$MOD_DST/dump"
-step "copied the mod -> $MOD_DST"
+step "copied the mod -> $MOD_DST (dev tools excluded)"
 
 # enabled.txt (shipped inside the mod folder) is what actually enables it; the mods.txt line is
 # belt-and-braces for UE4SS builds that only read the list.
