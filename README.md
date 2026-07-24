@@ -30,7 +30,7 @@ Then, with the game closed:
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Launch Solarpunk. The UE4SS console window opens and logs `SolarpunkSurvival v0.1.0 starting`.
+Launch Solarpunk. `Binaries\Win64\ue4ss\UE4SS.log` logs `SolarpunkSurvival v0.1.0 starting`.
 
 **Redeploy + relaunch in one step** (after editing the mod): `python tools/run.py` (Windows and
 Linux) — it fast-syncs the changed files, launches the game, and waits for that startup line.

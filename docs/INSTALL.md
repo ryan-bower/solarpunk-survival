@@ -43,8 +43,10 @@ nothing.
 1. Install the [VC++ 2015-2022 x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 2. Unzip the patched UE4SS and copy `dwmapi.dll` and the `ue4ss\` folder into
    `<game>\Binaries\Win64\`.
-3. In `ue4ss\UE4SS-settings.ini` set `ConsoleEnabled`, `GuiConsoleEnabled` and `GuiConsoleVisible`
-   to `1`, `MajorVersion = 5`, `MinorVersion = 7`, `SecondsToScanBeforeGivingUp = 120`.
+3. In `ue4ss\UE4SS-settings.ini` set `MajorVersion = 5`, `MinorVersion = 7`,
+   `SecondsToScanBeforeGivingUp = 120`, and `ConsoleEnabled` / `GuiConsoleEnabled` /
+   `GuiConsoleVisible` to `0` (they open extra dev console windows next to the game; everything
+   they show also lands in `ue4ss\UE4SS.log` — set them to `1` only if you want them for debugging).
 4. Copy `mod\SolarpunkSurvival\` into `<game>\Binaries\Win64\ue4ss\Mods\`, and create an empty
    `dump\` folder inside it (the dev dumper writes there and can't create it itself).
 5. Copy the pak triple into `<game>\Content\Paks\`, renamed `Solarpunk-Windows_1_P.utoc` / `.ucas` /
@@ -108,7 +110,7 @@ the release zip. Reports of what works on Proton / the Deck are welcome.
 
 ## First launch
 
-The UE4SS console window opens with the game and logs:
+UE4SS writes `<game>\Binaries\Win64\ue4ss\UE4SS.log` as the game starts; it should show:
 
 ```
 [SolarpunkSurvival] SolarpunkSurvival v0.1.0 starting
@@ -128,11 +130,11 @@ in co-op the host's values are the ones that count.
 **"Solarpunk is running - quit the game first."** The game holds `dwmapi.dll` and its paks open.
 Quit it (not just to the menu — all the way out) and re-run.
 
-**No UE4SS console window.** Either UE4SS didn't load (`dwmapi.dll` missing from `Binaries\Win64`,
-or the VC++ runtime isn't installed), or the console is off in `UE4SS-settings.ini`. Re-run
-`install.ps1 -Force` to reinstall the core and rewrite the settings.
+**No `ue4ss\UE4SS.log` after a launch.** UE4SS didn't load — `dwmapi.dll` missing from
+`Binaries\Win64`, or the VC++ runtime isn't installed. Re-run `install.ps1 -Force` to reinstall
+the core and rewrite the settings.
 
-**Console opens, but no `SolarpunkSurvival` lines.** The mod folder isn't where UE4SS looks — it
+**The log exists, but no `SolarpunkSurvival` lines.** The mod folder isn't where UE4SS looks — it
 must be `Binaries\Win64\ue4ss\Mods\SolarpunkSurvival\` with `Scripts\main.lua` inside, and it needs
 its `enabled.txt`.
 

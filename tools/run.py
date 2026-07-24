@@ -207,18 +207,19 @@ def ensure_mods_txt(ue4ss: Path):
 
 
 def ensure_ini(ue4ss: Path):
-    """Console on, engine pinned to 5.7, AOB scan budget raised - rewrite only when wrong."""
+    """Dev console windows off (no extra cmd windows next to the game - UE4SS.log has it all),
+    engine pinned to 5.7, AOB scan budget raised - rewrite only when wrong."""
     ini = ue4ss / "UE4SS-settings.ini"
     if not ini.is_file():
         return
-    want = {"ConsoleEnabled": "1", "GuiConsoleEnabled": "1", "GuiConsoleVisible": "1",
+    want = {"ConsoleEnabled": "0", "GuiConsoleEnabled": "0", "GuiConsoleVisible": "0",
             "MajorVersion": "5", "MinorVersion": "7", "SecondsToScanBeforeGivingUp": "120"}
     txt = new = ini.read_text(errors="replace")
     for key, val in want.items():
         new = re.sub(rf"(?m)^{key}\s*=.*$", f"{key} = {val}", new)
     if new != txt:
         ini.write_text(new, encoding="ascii")
-        say("  UE4SS console enabled, engine version pinned to 5.7")
+        say("  UE4SS settings normalized (console windows off, engine pinned to 5.7)")
 
 
 def deploy(game_dir: Path, full: bool):
@@ -305,7 +306,7 @@ def report(log: Path, ready: bool, elapsed: float, wait_s: int):
         say("Load a save (the menu has no pawn, so most features need a world), then press P for a storm.")
         return 0
     say(f"! Did not see \"SolarpunkSurvival vX.Y.Z starting\" within {wait_s}s.")
-    say(f"! Check the UE4SS console window, or the log at: {log}")
+    say(f"! Check the log at: {log}")
     say("! If UE4SS did not inject at all, confirm the Solarpunk-patched UE4SS is installed (install --force),")
     say('! and on Linux the Proton launch option WINEDLLOVERRIDES="dwmapi=n,b" %command% + vcrun2022 (docs/INSTALL.md).')
     if log.is_file():

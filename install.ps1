@@ -193,19 +193,21 @@ if ($Ue4ssZip -and ((-not $haveUe4ss) -or $Force)) {
          "Drop the zip next to install.ps1 and re-run, or pass -Ue4ssZip with its path.")
 }
 
-# --- 3. UE4SS settings: console on, engine version pinned ----------------------------------
+# --- 3. UE4SS settings: dev console windows OFF, engine version pinned ---------------------
 # UE4SS cannot auto-detect 5.7, and the AOB scan needs longer than the stock budget on this game.
+# The console windows are dev tools (extra windows next to the game) - everything they show also
+# lands in ue4ss\UE4SS.log, so keep them off; flip to 1 by hand if you want them for debugging.
 $ini = Join-Path $ue4ss 'UE4SS-settings.ini'
 if (Test-Path $ini) {
   $txt = Get-Content $ini -Raw
-  $txt = $txt -replace '(?m)^ConsoleEnabled\s*=.*$',              'ConsoleEnabled = 1'
-  $txt = $txt -replace '(?m)^GuiConsoleEnabled\s*=.*$',           'GuiConsoleEnabled = 1'
-  $txt = $txt -replace '(?m)^GuiConsoleVisible\s*=.*$',           'GuiConsoleVisible = 1'
+  $txt = $txt -replace '(?m)^ConsoleEnabled\s*=.*$',              'ConsoleEnabled = 0'
+  $txt = $txt -replace '(?m)^GuiConsoleEnabled\s*=.*$',           'GuiConsoleEnabled = 0'
+  $txt = $txt -replace '(?m)^GuiConsoleVisible\s*=.*$',           'GuiConsoleVisible = 0'
   $txt = $txt -replace '(?m)^MajorVersion\s*=.*$',                'MajorVersion = 5'
   $txt = $txt -replace '(?m)^MinorVersion\s*=.*$',                'MinorVersion = 7'
   $txt = $txt -replace '(?m)^SecondsToScanBeforeGivingUp\s*=.*$', 'SecondsToScanBeforeGivingUp = 120'
   Set-Content -Path $ini -Value $txt -Encoding ascii
-  Step 'UE4SS console enabled, engine version pinned to 5.7'
+  Step 'UE4SS console windows off, engine version pinned to 5.7'
 }
 
 # --- 4. the Lua mod ------------------------------------------------------------------------
@@ -268,5 +270,5 @@ if ($SkipPak) {
 }
 
 Say ''
-Say 'Done. Launch Solarpunk - the UE4SS console window should open and log'
+Say 'Done. Launch Solarpunk - Binaries\Win64\ue4ss\UE4SS.log should log'
 Say '"SolarpunkSurvival v0.1.0 starting". Every player in a co-op session needs this same install.'

@@ -165,19 +165,21 @@ else
   fail "UE4SS is missing and no UE4SS*.zip was found beside this script.\n\nDownload the Solarpunk-patched UE4SS (stock UE4SS cannot scan this game's engine build):\n    https://www.nexusmods.com/solarpunk/mods/4   ->  UE4SS-SP-Developer.zip\nDrop the zip next to install.sh and re-run, or pass --ue4ss-zip <path>."
 fi
 
-# --- 2. UE4SS settings: console on, engine version pinned ----------------------------------
+# --- 2. UE4SS settings: dev console windows OFF, engine version pinned ---------------------
 # UE4SS cannot auto-detect 5.7, and the AOB scan needs longer than the stock budget on this game.
+# The console windows are dev tools (extra windows next to the game) - everything they show also
+# lands in ue4ss/UE4SS.log, so keep them off; flip to 1 by hand if you want them for debugging.
 INI="$UE4SS_DIR/UE4SS-settings.ini"
 if [ -f "$INI" ]; then
   sed -i -E \
-    -e 's/^ConsoleEnabled[[:space:]]*=.*$/ConsoleEnabled = 1/' \
-    -e 's/^GuiConsoleEnabled[[:space:]]*=.*$/GuiConsoleEnabled = 1/' \
-    -e 's/^GuiConsoleVisible[[:space:]]*=.*$/GuiConsoleVisible = 1/' \
+    -e 's/^ConsoleEnabled[[:space:]]*=.*$/ConsoleEnabled = 0/' \
+    -e 's/^GuiConsoleEnabled[[:space:]]*=.*$/GuiConsoleEnabled = 0/' \
+    -e 's/^GuiConsoleVisible[[:space:]]*=.*$/GuiConsoleVisible = 0/' \
     -e 's/^MajorVersion[[:space:]]*=.*$/MajorVersion = 5/' \
     -e 's/^MinorVersion[[:space:]]*=.*$/MinorVersion = 7/' \
     -e 's/^SecondsToScanBeforeGivingUp[[:space:]]*=.*$/SecondsToScanBeforeGivingUp = 120/' \
     "$INI"
-  step "UE4SS console enabled, engine version pinned to 5.7"
+  step "UE4SS console windows off, engine version pinned to 5.7"
 fi
 
 # --- 3. the Lua mod ------------------------------------------------------------------------
@@ -268,5 +270,5 @@ else
 fi
 
 say ""
-say "Done. Launch Solarpunk - the UE4SS console window should open and log"
+say "Done. Launch Solarpunk - Binaries/Win64/ue4ss/UE4SS.log should log"
 say '"SolarpunkSurvival v0.1.0 starting". Every player in a co-op session needs this same install.'
