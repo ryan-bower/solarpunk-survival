@@ -21,6 +21,7 @@ read_globals = {
   "LoadAsset",
   "Key",
   "ImGui",
+  "FText",
 }
 
 -- Written, not just read: core/scheduler.lua deliberately SHADOWS these two with its own

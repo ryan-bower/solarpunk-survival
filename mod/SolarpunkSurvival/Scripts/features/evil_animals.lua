@@ -508,9 +508,8 @@ local function brainTick()
           -- a long ram-recovery, others the atk-speed-scaled interval). A sheep RAMS -- it flings
           -- each bitten player up and back (an auto-jump), then stands frozen for the recovery.
           local sp = SPECIES[rec.species]
-          if now < (rec.stunUntil or 0) then
-            -- mid-recovery: no bite
-          elseif now - (rec.lastBite or 0) >= attackGap(sp) then
+          -- a stunned animal (mid ram-recovery) never bites
+          if now >= (rec.stunUntil or 0) and now - (rec.lastBite or 0) >= attackGap(sp) then
             local bit = false
             for _, p in ipairs(pawns) do
               local pl = ctx.identity.locationOf(p)

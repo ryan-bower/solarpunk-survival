@@ -48,7 +48,8 @@ local function callOutBool(obj, fnName)
   if not ok then return nil end
   local v = rawget(out, 1)
   if v == nil then
-    for _, x in pairs(out) do v = x; break end
+    local _, first = next(out)
+    v = first
   end
   if type(v) == "userdata" then pcall(function() local g = v:get(); v = g end) end
   if type(v) == "boolean" then return v end
@@ -124,7 +125,7 @@ local function sizeChest(chest)
   end
   local out = {}
   pcall(function() comp:GetNrOfFreeSlots(out) end)
-  local free; for _, v in pairs(out) do free = v; break end
+  local _, free = next(out)
   if free ~= len then return end   -- occupied: try again once it's been emptied
   local arr = {}
   for i = 1, want do arr[i] = {} end
