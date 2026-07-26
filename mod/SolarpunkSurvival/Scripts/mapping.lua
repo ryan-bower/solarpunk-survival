@@ -59,6 +59,11 @@ M.schema = {
                "researchFieldId", "researchFieldDone" },
   foundation = { "previewPaths", "buildSystemClass", "buildSystemPath", "gateFn", "ruleFn",
                  "snapProp", "previewProp" },
+  qol      = { "chestClass", "invSizeProp", "invUpgradeFn", "airshipClass", "shipChestOpenFn",
+               "shipChestCloseFn", "openChestUiFn", "toggleInvFn", "controllingShipFn",
+               "invWidgetProp", "dockClass", "dockSpeedProp", "pingClass", "pingMeshProps",
+               "overlayClass", "dropsProp", "mapCompClass", "mapOpenFn", "friendsMarkersProp",
+               "mapIconImgProp", "mapSelfIconProp", "palette" },
 }
 
 M.profiles = {
@@ -475,6 +480,42 @@ M.profiles = {
       ruleFn           = "TestAdvancedBuildingRule",
       snapProp         = "IsSnapping",
       previewProp      = "BuildingPreview",
+    },
+    -- The QoL batch (features/qol.lua; offline RE 2026-07-26 of BP_Chest_Buildable,
+    -- BC_InventorySystem, BP_MainPlayerCharacter/Controller, BP_Airship, BP_Dock, BP_Ping,
+    -- W_PlayerOverlay, WC_Map -- scratchpad re_qol/ dumps).
+    qol = {
+      chestClass    = "BP_Chest_Buildable_C",
+      invSizeProp   = "InventorySize",            -- on the BC_InventorySystem component (int; chest stock 12)
+      invUpgradeFn  = "SetInventoryUpgradeLevel", -- pawn fn (Level: int) -- the backpack tier apply
+      airshipClass  = "BP_Airship_C",
+      shipChestOpenFn  = "OpenChest",             -- airship events: the chest lid (no params)
+      shipChestCloseFn = "CloseChest",
+      openChestUiFn    = "UI_OpenChestInventory", -- controller fn (ChestInventorySystem) -- the
+                                                  -- game's one chest-UI entry, any inventory system
+      toggleInvFn      = "ToggleInventory",       -- controller fn, no params: open/close own inventory
+      controllingShipFn = "IsControllingAirship?",-- controller fn, single OUT bool (fresh-table call)
+      invWidgetProp    = "UI_PlayerInventory",    -- controller prop -> the open W_PlayerInventory
+      dockClass     = "BP_Dock_C",
+      dockSpeedProp = "TimelineSpeed",            -- double, stock 800.0 -- paces the recall flight
+      pingClass     = "BP_Ping_C",
+      pingMeshProps = { "StaticMesh", "SM_Ping", "Mesh" },  -- comp-prop candidates; first hit wins
+      overlayClass  = "W_PlayerOverlay_C",
+      dropsProp     = "SW_ItemsObtainedDisplay",  -- overlay prop -> the "+4 Wood" pickup feed
+      mapCompClass  = "WC_Map_C",                 -- the pannable map inside W_ingameMap
+      mapOpenFn     = "OpenMap",
+      friendsMarkersProp = "FriendsMarkers",      -- TMap<FString, WC_MapPlayerIcon> -- name -> icon
+      mapIconImgProp     = "IMG_Player",          -- the icon widget's single Image
+      mapSelfIconProp    = "WC_MainPlayer",       -- the local player's own icon on WC_Map
+      -- Per-player colors: cooked materials (ping mesh tint; SetMaterial on static comps is the
+      -- safe family) paired with the matching FLinearColor for the map icon. Deterministic
+      -- name-hash slot assignment keeps host and clients agreeing without replication.
+      palette = {
+        { mat = "M_Cobalt",       r = 0.15, g = 0.45, b = 1.0  },  -- river blue
+        { mat = "M_Beeswax",      r = 1.0,  g = 0.8,  b = 0.1  },  -- wax yellow
+        { mat = "M_Plant_Tomato", r = 1.0,  g = 0.15, b = 0.1  },  -- tomato red
+        { mat = "M_Energy_On",    r = 0.2,  g = 1.0,  b = 0.55 },  -- powered green
+      },
     },
     rod = {
       stationClassCandidates = {

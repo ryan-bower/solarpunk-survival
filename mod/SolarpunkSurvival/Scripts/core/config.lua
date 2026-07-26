@@ -237,6 +237,29 @@ M.defaults = {
                                  -- the sweep still skips owned animals. Host decisions (ritual,
                                  -- lightning, tools) use the authoritative tracking table, not names.
 
+  -- quality of life (features/qol.lua) -- all live-tunable via `sps set`
+  qol_chest_size      = 24,      -- chest slots (stock 12). Host grows EMPTY chests to this size
+                                 -- (the game's own bulk setter); an occupied chest grows on the
+                                 -- next pass after it is emptied. Clients see it via replication.
+  qol_backpack_level  = 3,       -- backpack upgrade tier applied on world entry (-1 = leave alone)
+  qol_crouch          = true,    -- crouch toggle keys below
+  qol_crouch_key      = "C",
+  qol_crouch_key2     = "LEFT_CONTROL",
+  qol_ship_chest_key  = "B",     -- open the airship's built-in chest (near it or at the wheel)
+  qol_ship_chest_range = 3000.0, -- cm (30 m); how far from the ship the chest key still works
+  qol_ship_inv_key    = "TAB",   -- open your OWN inventory while flying (game blocks its key there)
+  qol_recall_mult     = 3.0,     -- airship recall speed multiplier (dock TimelineSpeed, stock 800)
+  qol_hotbar_raise    = true,    -- pull the hotbar up under the open inventory window
+  qol_hotbar_x        = 0.0,     -- hotbar shift while the inventory is open (px at 1080p design res)
+  qol_hotbar_y        = -240.0,  -- negative = up
+  qol_drops_center    = true,    -- move the "+4 Wood" pickup feed to mid-screen
+  qol_drops_x         = 0.0,     -- offset from dead centre (px); tune live with `sps set`
+  qol_drops_y         = 120.0,   -- a touch below centre so it never sits on the crosshair
+  qol_ping_scale_xy   = 1.5,     -- ping marker girth (1.0 = stock)
+  qol_ping_scale_z    = 12.0,    -- ping marker height -- a pillar that reads over trees/hills
+  qol_ping_colors     = true,    -- tint each ping with the pinging player's palette color
+  qol_map_names       = true,    -- map player icons: palette tint + name tooltip
+
   -- misc
   friendly_fire       = true,
   imgui_key           = "F7",

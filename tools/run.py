@@ -128,7 +128,12 @@ def main():
         inst.deploy(game_dir, force=args.force, include_dev=True)
 
     log = game_dir / "Binaries" / "Win64" / "ue4ss" / "UE4SS.log"
-    log.unlink(missing_ok=True)
+    try:
+        log.unlink(missing_ok=True)
+    except PermissionError:
+        # a dying game instance can hold the log a beat longer than the process poll suggests;
+        # a stale log only costs wait_for_mod a little scrollback, so don't die over it
+        say("  (UE4SS.log still locked by the old instance; continuing with the stale log)")
     launch()
     ready, elapsed = wait_for_mod(log, args.wait)
     sys.exit(report(log, ready, elapsed, args.wait))
