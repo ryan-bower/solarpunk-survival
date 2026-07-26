@@ -194,29 +194,53 @@ function F.fellTree(actor, cls, loc)
 end
 
 --------------------------------------------------------------------- impact scan
+-- HOST-LOAD RULE (live meltdown on a friend's host, 2026-07-26): this scan runs for EVERY landed
+-- bolt -- ambient (6-14 s cadence), bursts, and every tapped native bolt -- so its per-actor cost
+-- is the host's storm frame budget. The old shape called K2_GetActorLocation (a reflected
+-- UFunction) on EVERY actor in the world FIRST and classified after: tens of thousands of
+-- reflected calls per bolt on a mature co-op world (frame drops), touching placement-preview
+-- ghosts and mid-teardown actors (the twice-proven uncatchable native AV -- see lightning_rod's
+-- one-shot-sweep comment). Order is therefore: className (one property-chain read) -> classify
+-- (exclusions bar previews before anything else) -> ONLY classified candidates get the reflected
+-- location call. Class names of no interest are cached across sweeps -- trees/rocks/foliage make
+-- up most of the world and their classes never classify, so later sweeps skip them on a plain
+-- Lua table hit with zero reflection.
+local classKindCache = {}   -- class name -> kind or false (false = classified as "not ours")
+local lastSweep = -1e9      -- os.clock() of the last full sweep; bursts land 0.35 s apart at the
+                            -- SAME spot, so one sweep per second covers every bolt of a burst
+
 function F.onStrike(e)
   if not ctx.net.isHost() then return end
   local loc = e and e.location
   if not loc then return end
+  local now = os.clock()
+  if now - lastSweep < ctx.config.get("strike_scan_min_gap") then return end
+  lastSweep = now
   local r = ctx.config.get("strike_radius")
   local r2 = r * r
 
   -- One guarded scan per landed bolt (same access pattern as the manual RE capture).
   for _, a in ipairs(ctx.uehelp.findAll("Actor")) do
     if ctx.uehelp.isValid(a) then
-      local al = ctx.identity.locationOf(a)
-      if al and ctx.uehelp.dist2(al, loc) <= r2 then
-        local cls = ctx.uehelp.className(a)
-        local kind = cls and classifyName(cls)
-        if kind == "battery" or kind == "generator" then
-          F.chargeToFull(a, cls)
-          ctx.bus.emit("strike.battery", { actor = a, id = ctx.identity.idOf(a), location = al })
-        elseif kind == "furnace" then
-          F.fuelFurnace(a, cls)
-        elseif kind == "tech" then
-          F.breakTech(a, cls, al)
-        elseif kind == "tree" then
-          F.fellTree(a, cls, al)
+      local cls = ctx.uehelp.className(a)
+      local kind = cls and classKindCache[cls]
+      if kind == nil and cls then
+        kind = classifyName(cls) or false
+        classKindCache[cls] = kind
+      end
+      if kind then
+        local al = ctx.identity.locationOf(a)
+        if al and ctx.uehelp.dist2(al, loc) <= r2 then
+          if kind == "battery" or kind == "generator" then
+            F.chargeToFull(a, cls)
+            ctx.bus.emit("strike.battery", { actor = a, id = ctx.identity.idOf(a), location = al })
+          elseif kind == "furnace" then
+            F.fuelFurnace(a, cls)
+          elseif kind == "tech" then
+            F.breakTech(a, cls, al)
+          elseif kind == "tree" then
+            F.fellTree(a, cls, al)
+          end
         end
       end
     end

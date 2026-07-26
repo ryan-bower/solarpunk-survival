@@ -173,13 +173,31 @@ end
 
 -- NotifyOnNewObject REJECTS short class names ("must contain at least two parts") -- it needs a
 -- full object path. Register on a native parent path and filter to the BP class in the callback.
+--
+-- MULTIPLEXED: registrations on the same native path share ONE engine notify. Several features
+-- listen on broad parents (/Script/Engine.Actor fires for EVERY actor the game constructs), and
+-- each separate NotifyOnNewObject cost its own C++->Lua transition plus its own className
+-- reflection per constructed actor -- on a storm's actor churn that is real host frame time.
+-- One notify, one className read, then a plain Lua dispatch to every listener.
+M._newInstanceListeners = {}
 function M.onNewInstance(nativePath, shortClass, cb)
-  return pcall(NotifyOnNewObject, nativePath, function(obj)
+  local listeners = M._newInstanceListeners[nativePath]
+  if listeners then
+    listeners[#listeners + 1] = { cls = shortClass, cb = cb }
+    return true
+  end
+  listeners = { { cls = shortClass, cb = cb } }
+  local ok = pcall(NotifyOnNewObject, nativePath, function(obj)
     -- the notify callback runs mid-construction with no outer guard: never let an error escape
     pcall(function()
-      if not shortClass or M.className(obj) == shortClass then cb(obj) end
+      local name = M.className(obj)
+      for _, l in ipairs(listeners) do
+        if not l.cls or name == l.cls then pcall(l.cb, obj) end
+      end
     end)
   end)
+  if ok then M._newInstanceListeners[nativePath] = listeners end
+  return ok
 end
 
 -- Deferred-spawn an actor class at a world location so its BeginPlay (VFX, timelines) runs at the

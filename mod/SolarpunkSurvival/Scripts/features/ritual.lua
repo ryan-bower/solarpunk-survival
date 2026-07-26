@@ -192,8 +192,24 @@ end
 
 -- The first rite whose full tableau stands, with everything the impact needs. Also whispers
 -- (once per change) what an otherwise-standing pentagram still lacks.
+--
+-- BACKOFF (host storm load, 2026-07-26): scanWorld is a full-world className sweep, and it ran
+-- every ritual_check_interval for the whole storm even on hosts with no pentagram anywhere. A
+-- pentagram takes minutes to build, so while consecutive scans keep finding fewer candles than a
+-- circle needs, only every 3rd check pays for a real sweep -- detection latency grows to ~24 s
+-- exactly when nobody is performing a rite, and snaps back to every check once candles appear.
+local emptyScans = 0
 local function findReadyRite()
+  if emptyScans > 0 and emptyScans % 3 ~= 0 then
+    emptyScans = emptyScans + 1
+    return nil
+  end
   local fences, candles, offerings = scanWorld()
+  if #candles < ctx.config.get("ritual_candles") or #fences < ctx.config.get("ritual_fences") then
+    emptyScans = emptyScans + 1
+    return nil
+  end
+  emptyScans = 0
   local lack
   for _, rite in ipairs(RITES) do
     local cls = ctx.map.animal and ctx.map.animal[rite.animalKey]

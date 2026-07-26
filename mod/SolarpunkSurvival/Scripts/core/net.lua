@@ -35,8 +35,15 @@ end
 function M.invalidate() M._isHostCache = nil end
 
 -- The replicated global mod-state actor (from BP_ModStateActor.pak). nil until cooked+installed.
+-- The miss is CACHED (retried once a minute): no LogicMod pak ships today, and the old shape ran
+-- a full object-array FindFirstOf for this never-existing class on every telegraph AND every bolt
+-- -- measurable host lag during a heavy storm for a lookup that can never succeed mid-session.
+M._stateActorMissAt = nil
 function M.stateActor()
-  return uehelp.findFirst("BP_ModStateActor_C")
+  if M._stateActorMissAt and os.clock() - M._stateActorMissAt < 60 then return nil end
+  local actor = uehelp.findFirst("BP_ModStateActor_C")
+  M._stateActorMissAt = actor == nil and os.clock() or nil
+  return actor
 end
 
 -- Multicast a transient effect to all clients via a replicated CustomEvent on the state actor.

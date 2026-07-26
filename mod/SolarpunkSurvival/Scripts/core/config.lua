@@ -145,6 +145,10 @@ M.defaults = {
   -- world-object strikes
   tree_wood_drop      = 4,       -- logs dropped when lightning fells a tree
   furnace_briquette_seconds = 160.0, -- burn time credited to a struck furnace (1 wax briquette)
+  strike_scan_min_gap = 1.0,     -- seconds between full-world impact scans on the host. Burst
+                                 -- bolts land 0.35 s apart at the SAME point, so one sweep covers
+                                 -- the whole burst; without this cap a heavy storm ran the sweep
+                                 -- per bolt and melted the host's frame budget (live 2026-07-26)
 
   -- dark-arts ritual
   ritual_radius       = 2000.0,  -- cm (20 m) pentagram/sheep/wand radius

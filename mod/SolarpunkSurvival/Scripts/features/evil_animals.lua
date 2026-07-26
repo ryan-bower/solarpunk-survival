@@ -922,8 +922,17 @@ local function glowFollow()
   end
 end
 
+-- Discovery backoff: with nothing dressed and nothing found last pass, only every 4th pass pays
+-- for the per-species findAll + name reflection (Unlit exist only after a rite unlocks a species,
+-- yet this watcher runs on EVERY machine for EVERY storm -- it was pure overhead on most hosts).
+local fxIdle = 0
+
 local function fxPass()
   local cfg = ctx.config
+  if next(dressed) == nil and fxIdle > 0 and fxIdle % 4 ~= 0 then
+    fxIdle = fxIdle + 1
+    return
+  end
   local pc = ctx.uehelp.localController(ctx.map.player.controllerClass)
   if not pc then return end
   local myPawn; pcall(function() myPawn = pc:K2_GetPawn() end)
@@ -1027,6 +1036,7 @@ local function fxPass()
   for fn, d in pairs(dressed) do
     if d.seen ~= seenPass then killGlow(d); dressed[fn] = nil end
   end
+  if next(dressed) == nil then fxIdle = fxIdle + 1 else fxIdle = 0 end
 end
 
 -- The fx chain stops calling fxPass the instant the storm window closes, so its own
