@@ -19,9 +19,16 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   the dark-arts rites, the wand ladder (Mundane → Hydration / Electrick), the Tempest Codex.
 - **Content pak toolchain** (`tools/pakkit`): cooks real items, DataTable edits and cloned UI
   offline — no Unreal Editor. Ships the wands, the codex and its research cards.
-- Tooling: `install.ps1` (one-command install of every runtime dependency: VC++ runtime, UE4SS,
-  the Lua mod, the content pak — with `-Uninstall`), `tools/pakkit/setup.ps1` (build-toolchain
-  bootstrap), `tools/package.ps1` (drop-in release zip), `tools/dump-diff.py` (symbol diff).
+- Tooling, all pure Python (no PowerShell anywhere): `install.py` (one-command, cross-platform
+  install of every runtime dependency — VC++ runtime, UE4SS, the Lua mod, the content pak — with
+  `--uninstall`; player installs ship no dev tools), `tools/run.py` (dev deploy + launch + log
+  tail, sharing `install.py`'s logic), `tools/package.py` (drop-in release zip),
+  `tools/pakkit/setup.py` (build-toolchain bootstrap), `tools/capture_dump.py` (RE capture),
+  `tools/dump-diff.py` (symbol diff).
+- **Bundled UE4SS runtime** (`vendor/UE4SS-Solarpunk-runtime.zip`, built by
+  `tools/make_ue4ss_runtime.py`): a trimmed, runtime-only build of the Solarpunk-patched UE4SS —
+  no debug symbols, debugger DLLs or dumper configs — so nothing has to be downloaded from
+  Nexus or anywhere else.
 - Docs: design, install, reverse-engineering checklist, compatibility, release checklist.
 
 ### Known limitations

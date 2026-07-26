@@ -19,12 +19,14 @@ python tools/run.py
 ```
 
 The script: stops any running instance → fast-syncs the current `mod/` + pak into the game install
-(changed files only, dev tools included; it also installs the UE4SS core itself, in Python, when
-it's missing or on `--force`) → launches via `steam://rungameid/1805110` → tails
+(changed files only, dev tools included; it also installs the UE4SS core when it's missing or on
+`--force`, extracted from the bundled `vendor/UE4SS-Solarpunk-runtime.zip` — nothing is ever
+downloaded) → launches via `steam://rungameid/1805110` → tails
 `<game>/Binaries/Win64/ue4ss/UE4SS.log` until the mod prints `SolarpunkSurvival vX.Y.Z starting`
 (≤120 s, failing fast if the game process crashes), then echoes the recent mod log lines.
-It never shells out to `install.ps1`/`install.sh` — those are the player installers, which
-exclude the `Scripts/dev` tools.
+All install logic is imported from the repo-root `install.py` (the player installer, which
+excludes `Scripts/dev`; `run.py` includes it). This sets up everything from nothing on a fresh
+machine — Steam + the game + Python are the only prerequisites.
 
 Useful flags: `--no-install` (relaunch without redeploying — faster when only testing a launch),
 `--force` (reinstall the UE4SS core), `--wait N`, `--game-dir <path>` if auto-detection misses
@@ -43,10 +45,10 @@ so most features (storms on **P**, the wand on **V**, `sps_*` console commands) 
   gameplay) the user playing, or the live `dump/cmd.txt` → `dump/result.txt` remote exec channel
   (see the `solarpunk-live-hotload` memory) to poke the running game. Do not claim to have seen
   in-game behavior you didn't observe.
-- **Prerequisites the scripts assume are already met:** Solarpunk installed on Steam, and the
-  Solarpunk-patched UE4SS available to the installer (see `README.md` / `docs/INSTALL.md`). On
-  Linux, Proton must already have the `WINEDLLOVERRIDES="dwmapi=n,b" %command%` launch option and
-  `vcrun2022` in the prefix — the script can't set those (`docs/INSTALL.md`).
+- **Prerequisites the script assumes are already met:** Solarpunk installed on Steam (UE4SS is
+  bundled in `vendor/`, so nothing needs downloading). On Linux, Proton must already have the
+  `WINEDLLOVERRIDES="dwmapi=n,b" %command%` launch option and `vcrun2022` in the prefix — the
+  script can't set those (`docs/INSTALL.md`).
 - **The game must be closed to redeploy** — the script stops it for you; if the user has an
   unsaved session, warn before restarting.
 - **Multiplayer:** every player in a co-op session needs the same install.

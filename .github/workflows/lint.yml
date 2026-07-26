@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.x'
       - name: Byte-compile tools
-        run: python -m py_compile tools/dump-diff.py
+        run: python -m py_compile install.py tools/run.py tools/package.py tools/capture_dump.py tools/make_ue4ss_runtime.py tools/dump-diff.py tools/pakkit/setup.py tools/pakkit/build_wand_pak.py
 
   luatest:
     runs-on: ubuntu-latest

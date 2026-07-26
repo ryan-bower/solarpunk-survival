@@ -12,22 +12,24 @@ pak (the new items — wands, the Tempest Codex, its research card).
 
 ## Install
 
-**One script does everything.** It finds your game, installs the Visual C++ runtime if it's
-missing, puts UE4SS next to the game exe with the right engine-version settings, and copies in
-both the Lua mod and the content pak.
+**One command does everything, and everything is bundled** — including a trimmed, runtime-only
+build of the Solarpunk-patched [UE4SS](https://docs.ue4ss.com/) (`vendor/`). There is **nothing
+else to download** and no developer tooling in what gets installed. The installer finds your game
+through Steam, puts UE4SS next to the game exe with the right engine-version settings, and copies
+in both the Lua mod and the content pak.
 
 You need three things first:
 
 | | |
 |---|---|
-| **Windows** or **Linux / Steam Deck** + **Solarpunk** on Steam | tested against build `24038177`. Linux / Steam Deck run through Proton — use [`install.sh`](#linux--steam-deck-proton) instead of the PowerShell script |
-| **[The Solarpunk-patched UE4SS](https://www.nexusmods.com/solarpunk/mods/4)** (`UE4SS-SP-Developer.zip`) | stock UE4SS can't scan this game's engine build. Nexus needs a login, so this is the one file the installer can't fetch for you — just leave it in your **Downloads** folder |
+| **Windows** or **Linux / Steam Deck** + **Solarpunk** on Steam | tested against build `24038177`. Linux / Steam Deck run through [Proton](#linux--steam-deck-proton) |
+| **Python 3.8+** | Windows: [python.org](https://www.python.org/downloads/) or the Microsoft Store (`python` in a terminal walks you through it). Linux / Steam Deck already have `python3` |
 | This mod — the **release zip**, or a clone of this repo | a clone has no content pak (game-derived data isn't committed); use the release zip, or build it yourself ([`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)) |
 
 Then, with the game closed:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+```
+python install.py
 ```
 
 Launch Solarpunk. `Binaries\Win64\ue4ss\UE4SS.log` logs `SolarpunkSurvival v0.1.0 starting`.
@@ -37,45 +39,47 @@ Launch Solarpunk. `Binaries\Win64\ue4ss\UE4SS.log` logs `SolarpunkSurvival v0.1.
 
 | Flag | |
 |---|---|
-| `-GameDir <path>` | skip auto-detection — pass the `Solarpunk` folder (or its `Binaries\Win64`) |
-| `-Ue4ssZip <path>` | point at the UE4SS zip explicitly |
-| `-SkipPak` | Lua mod only — no wands, no codex |
-| `-SkipVcRedist` | don't check for / install the Visual C++ runtime |
-| `-Force` | reinstall the UE4SS core even if it's already there |
-| `-Uninstall` | remove the mod and the content pak (leaves UE4SS in place) |
+| `--game-dir <path>` | skip auto-detection — pass the `Solarpunk` folder (or its `Binaries\Win64`) |
+| `--skip-pak` | Lua mod only — no wands, no codex |
+| `--no-vcredist` | don't check for / install the Visual C++ runtime (Windows) |
+| `--vcrun` | Linux: also run `protontricks 1805110 vcrun2022` now |
+| `--force` | reinstall the UE4SS core even if it's already there |
+| `--uninstall` | remove the mod and the content pak (leaves UE4SS in place) |
 
 </details>
 
-**Updating:** `git pull` (or unzip the newer release) and run `install.ps1` again — it's idempotent,
-and it leaves your config and mod save alone.
+**Updating:** `git pull` (or unzip the newer release) and run `python install.py` again — it's
+idempotent, and it leaves your config and mod save alone.
 
 **Multiplayer:** Solarpunk co-op is a host-authoritative listen server. All the logic runs on the
 host, so **every player in the session needs this same install**. Unmodded clients are unsupported.
 
+**Network access:** none, with one exception — on a Windows machine that's missing the
+Visual C++ 2015-2022 runtime (which UE4SS links against), the installer fetches Microsoft's
+installer from `aka.ms` and runs it. Skip that with `--no-vcredist`.
+
 ### Linux & Steam Deck (Proton)
 
 There is **no native Linux build** of Solarpunk — it runs through **Proton**, and so can this mod.
-Use the Linux installer instead of `install.ps1`, with the game closed:
+Same command, with the game closed:
 
 ```bash
-bash install.sh
+python3 install.py
 ```
 
-It does the same filesystem work as the Windows script — finds the game through Steam's
-`libraryfolders.vdf` (native, Flatpak, and Deck SD-card libraries), installs the patched UE4SS, pins
-the engine version, and copies in the Lua mod and content pak — then prints the **two Steam-side
-steps it can't do for you**:
+It does the same filesystem work as on Windows — finds the game through Steam's
+`libraryfolders.vdf` (native, Flatpak, and Deck SD-card libraries), installs the bundled UE4SS,
+pins the engine version, and copies in the Lua mod and content pak — then prints the **two
+Steam-side steps it can't do for you**:
 
 1. **Launch option** (Steam ▸ Solarpunk ▸ Properties ▸ Launch Options), so Wine loads UE4SS's proxy
    DLL: `WINEDLLOVERRIDES="dwmapi=n,b" %command%`
 2. **The MSVC runtime** in the game's Proton prefix: `protontricks 1805110 vcrun2022` — or run
-   `bash install.sh --vcrun` to do it for you (needs the prefix to exist, so launch the game once
-   first).
+   `python3 install.py --vcrun` to do it for you (needs the prefix to exist, so launch the game
+   once first).
 
-Same prerequisite as Windows (drop the patched UE4SS zip in `~/Downloads`), and `install.sh` takes
-the same flags: `--game-dir`, `--ue4ss-zip`, `--skip-pak`, `--force`, `--uninstall`. The Proton path
-is newer and less battle-tested than the Windows one — reports of what works on Proton / the Deck are
-welcome.
+The Proton path is newer and less battle-tested than the Windows one — reports of what works on
+Proton / the Deck are welcome.
 
 Manual steps, troubleshooting and what goes where: [`docs/INSTALL.md`](docs/INSTALL.md).
 
@@ -122,3 +126,5 @@ Working on the mod itself (dev loop, building the content pak, tests): [`docs/DE
 ## License
 
 MIT — see [`LICENSE`](LICENSE). This project ships **no** Solarpunk game files, assets, or symbols.
+The bundled UE4SS runtime (`vendor/`) is [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) (MIT), as
+patched for Solarpunk; its license text ships inside the payload.

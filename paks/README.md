@@ -1,7 +1,7 @@
 # Cooked paks
 
 Release copies of the cooked content live here (git-ignored — they contain game-derived data, so
-they ship in the release zip, not in the public repo). `install.ps1` picks up a triple from this
+they ship in the release zip, not in the public repo). `install.py` picks up a triple from this
 folder first, then falls back to `tools/pakkit/out/`.
 
 ## The content pak

@@ -23,8 +23,8 @@ item-actor Blueprints (and a whole cloned book UI), all offline via binary asset
 
 ## Prerequisites (one-time)
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/pakkit/setup.ps1
+```
+python tools/pakkit/setup.py
 ```
 
 does everything below except the usmap dump (which needs the game running). By hand:
@@ -46,7 +46,7 @@ does everything below except the usmap dump (which needs the game running). By h
 python build_wand_pak.py          # -> out/z_SolarpunkWand_P.{utoc,ucas,pak}
 ```
 
-`install.ps1` in the repo root picks that output up and installs it (game closed). By hand: copy the
+`install.py` in the repo root picks that output up and installs it (game closed). By hand: copy the
 triple into `<game>/Content/Paks/` **renamed to a patch layer above the game's own** —
 `Solarpunk-Windows_1_P.{utoc,ucas,pak}`. The game's base container is
 `Solarpunk-Windows_0_P` at mount Order 104; a `_1_P` name mounts at Order 204 and therefore

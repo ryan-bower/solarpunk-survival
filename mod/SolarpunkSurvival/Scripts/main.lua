@@ -54,7 +54,7 @@ local ok, err = pcall(function()
     "features.codex",        -- the Tempest Codex: placed-book interact -> reader UI (content pak)
     "features.foundation",   -- snapped foundations skip the corners-touch-ground rule
     "ui.imgui_panel",
-    -- dev.* are developer tools; the player install (install.ps1/.sh) excludes Scripts/dev
+    -- dev.* are developer tools; the player install (install.py) excludes Scripts/dev
     -- entirely, and a missing dev module is skipped silently below. tools/run.py deploys them.
     "dev.recapture",
     "dev.remote",

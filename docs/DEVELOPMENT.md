@@ -13,8 +13,10 @@ One cross-platform script (Windows native, Linux/Steam Deck via Proton). It stop
 instance, fast-syncs the current `mod/` + pak into the game install (changed files only, stale
 files pruned — the installed `dump/` and `config/` are never touched), launches via Steam, and
 tails `ue4ss/UE4SS.log` until the mod logs `SolarpunkSurvival vX.Y.Z starting`, failing fast if
-the game process dies first. It even puts UE4SS in place when it's missing — the only thing it
-can't fetch is the Solarpunk-patched UE4SS zip (Nexus needs a login); leave that in `Downloads`.
+the game process dies first. It even puts UE4SS in place when it's missing, extracted from the
+bundled `vendor/UE4SS-Solarpunk-runtime.zip` — a fresh machine needs nothing but Steam, the game
+and Python. All install logic is imported from `install.py` (the player installer), so the two
+flows can't drift apart; `run.py` only adds kill-then-relaunch, dev tools, and the log tail.
 
 | Flag | |
 |---|---|
@@ -29,7 +31,7 @@ exec channel below.
 
 ## Dev tools (`Scripts/dev/`)
 
-The player installers (`install.ps1` / `install.sh`) **exclude `Scripts/dev` entirely** — players
+The player install (`python install.py`) **excludes `Scripts/dev` entirely** — players
 get no RE dumper, no remote exec channel, no ritual dev kit, and `main.lua` silently skips the
 missing modules. `tools/run.py` deploys them. The tools:
 
@@ -41,7 +43,7 @@ missing modules. `tools/run.py` deploys them. The tools:
 | `dev/ritual_kit.lua` | `sps_needful hydration\|electrick [noanimal]` — stages a rite's animal + rod + offerings at your last map ping |
 
 The UE4SS console windows (`ConsoleEnabled` / `GuiConsoleEnabled` / `GuiConsoleVisible` in
-`UE4SS-settings.ini`) are pinned **off** by the installers and `run.py` — everything they show
+`UE4SS-settings.ini`) are pinned **off** by the installer and `run.py` — everything they show
 also lands in `ue4ss/UE4SS.log`. Flip them to `1` by hand if you want the live console; note the
 next deploy pins them back.
 
@@ -51,13 +53,13 @@ Only needed if you're working from a clone (the release zip ships the pak). The 
 offline — no Unreal Editor — by round-tripping the game's own assets, so it can't be
 redistributed in a public repo.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools/pakkit/setup.ps1   # one-time: every build dependency
-python tools/pakkit/build_wand_pak.py                             # -> tools/pakkit/out/z_SolarpunkWand_P.*
-python tools/run.py                                               # deploys the result and launches
+```
+python tools/pakkit/setup.py           # one-time: every build dependency
+python tools/pakkit/build_wand_pak.py  # -> tools/pakkit/out/z_SolarpunkWand_P.*
+python tools/run.py                    # deploys the result and launches
 ```
 
-`setup.ps1` fetches Python, the .NET SDK, Lua, retoc and UAssetAPI, builds the `wandsmith` CLI, and
+`setup.py` fetches git, the .NET SDK, Lua, retoc and UAssetAPI, builds the `wandsmith` CLI, and
 extracts the game's own assets to work from. The single piece it can't fetch is `Solarpunk.usmap`,
 which is dumped out of the *running* game — that step, and the toolchain's one very sharp gotcha,
 are in [`tools/pakkit/HOWTO.md`](../tools/pakkit/HOWTO.md).

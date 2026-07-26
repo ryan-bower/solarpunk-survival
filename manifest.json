@@ -6,7 +6,7 @@
   "steamAppId": 1805110,
   "engine": "Unreal Engine 5 (IoStore; exe stamped UE5-CL-0, exact minor TBD via UE4SS dump)",
   "testedGameBuilds": ["24038177"],
-  "ue4ssVersion": "Solarpunk-patched UE4SS (Nexus mod 4, SP Developer 1.0.3) — stock UE4SS cannot scan UE 5.7.1",
+  "ue4ssVersion": "Solarpunk-patched UE4SS (SP Developer 1.0.3), bundled as a trimmed runtime-only payload in vendor/ — stock UE4SS cannot scan UE 5.7.1",
   "requiresAllPlayersInstalled": true,
   "logicModPaks": [],
   "contentPaks": [
@@ -14,5 +14,5 @@
     "Solarpunk-Windows_1_P.ucas",
     "Solarpunk-Windows_1_P.pak"
   ],
-  "notes": "Install with install.ps1 (see docs/INSTALL.md). The content pak carries the wands, the Tempest Codex and its research cards; without it the Lua mod still runs, minus those items."
+  "notes": "Install with `python install.py` (see docs/INSTALL.md) — everything is bundled, nothing to download. The content pak carries the wands, the Tempest Codex and its research cards; without it the Lua mod still runs, minus those items."
 }

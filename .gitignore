@@ -16,6 +16,10 @@ ue4ss.log
 /build/
 *.zip
 
+# The one binary the repo ships on purpose: the trimmed, runtime-only UE4SS payload
+# (built by tools/make_ue4ss_runtime.py; players download nothing from the internet).
+!/vendor/UE4SS-Solarpunk-runtime.zip
+
 # Cooked assets staging (source .uasset live in a separate art repo, not here)
 /paks/**/*.uasset
 /paks/**/*.umap
