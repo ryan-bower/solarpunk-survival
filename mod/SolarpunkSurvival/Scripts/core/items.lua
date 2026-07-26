@@ -34,11 +34,31 @@ function M.classFor(row)
   return nil
 end
 
+-- ONE CALL PER ITEM, deliberately.
+--
+-- `DEBUG_SpawnItems(Item, Amt)` takes an amount and returns cleanly for any value, but it only
+-- ever DELIVERS for Amt == 1. Proven live 2026-07-26: asking for 30 muffins returned true and put
+-- nothing in the inventory; the identical call with 1 landed exactly one; sixty calls of 1 landed
+-- sixty. Every bulk grant in the mod rode on that lie and silently handed the player nothing --
+-- a lightning-felled tree grants `tree_wood_drop` (4) logs and destroyed tech drops its half-cost
+-- salvage, so both logged their success line while dropping not a single item.
+local MAX_GRANT = 200   -- runaway-loop backstop; every real caller asks for single digits
+
+local function spawnN(pc, cls, amount)
+  local n = math.floor(tonumber(amount) or 1)
+  if n < 1 then n = 1 elseif n > MAX_GRANT then n = MAX_GRANT end
+  local got = 0
+  for _ = 1, n do
+    if pcall(function() pc:DEBUG_SpawnItems(cls, 1) end) then got = got + 1 end
+  end
+  return got == n, got
+end
+
 -- Grant `amount` of a row's item to a controller's player via the game's debug spawner.
 function M.give(pc, row, amount)
   local cls = M.classFor(row)
   if not (cls and pc) then return false end
-  return pcall(function() pc:DEBUG_SpawnItems(cls, amount or 1) end) == true
+  return (spawnN(pc, cls, amount))
 end
 
 -- Grant `amount` of an item named by its ITEM-ACTOR class short name (e.g. "BP_Beeswax_Item_C").
@@ -54,7 +74,7 @@ function M.giveByClass(pc, shortClass, amount)
   end
   local cls = uehelp.classByName(shortClass, asset)
   if not cls then return false end
-  return pcall(function() pc:DEBUG_SpawnItems(cls, amount or 1) end) == true
+  return (spawnN(pc, cls, amount))   -- one call per item; see spawnN
 end
 
 return M

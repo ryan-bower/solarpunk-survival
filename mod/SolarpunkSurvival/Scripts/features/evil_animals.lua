@@ -79,7 +79,9 @@ local stormOn    = false
 local token      = 0       -- storm generation; bumped on every start/stop
 local swingsHooked = false
 local lastSwing  = {}      -- per-pawn-id swing debounce (input events fire multiple phases)
-local straysSwept = false  -- one stray-cleanup per session, at the first storm
+local sweptForPawn = nil   -- local-pawn fullname the stray-cleanup last ran for (a new pawn = a new
+                           -- world, which is exactly when a save's leftovers need reaping)
+local sweepScheduled = false
 
 -- FX watcher (runs on EVERY machine, host included -- all its effects are client-local)
 local fxToken     = 0
@@ -572,10 +574,23 @@ local function spawnChain(tok)
 end
 
 -- A previous session's Unlit that leaked into the game save (or survived a crash) wakes up as a
--- plain animal wearing our marker name. Sweeping them is DESTRUCTIVE and keyed on the spoofable
--- Name, so it is OFF by default (a player who renames a pet "Unlit Clucky" via AnimalTag must
--- never have it destroyed) and, when enabled, skips owned animals (a tamed/named pet reports
--- IsOwned). Untracked + our-marker + not-owned is the only thing it will remove.
+-- plain animal wearing our marker name. The two markers are NOT equally safe to act on:
+--
+--   * the DEAD marker ("Banished ") is written by exactly one line in this mod -- killEvil, which
+--     renames the animal, plays its Sleep montage, and destroys it evil_death_linger seconds
+--     later. An animal still wearing it is a CORPSE whose destroy never landed, because the
+--     session ended inside that window: a save+quit right after a storm (or a crash) writes it
+--     into the SAVE. It reloads untracked by `evils`, so nothing reaps it, its native brain runs
+--     as usual and it wanders the farm behaving like any ordinary animal -- seen live
+--     2026-07-26, a "Banished Chicken" pottering about the morning after a storm. Reaping that
+--     needs no opt-in: the mod already considers it dead.
+--   * the ALIVE marker ("Vengeful ") sits on a LIVING creature and the Name is player-spoofable
+--     (AnimalTag renames pets), so destroying those stays behind evil_sweep_strays.
+--
+-- Both skip tracked evils, owned animals and the class default object. NOTE (live 2026-07-26):
+-- `IsOwned` does not resolve on this build -- the call fails, so isOwnedAnimal reports false and
+-- the pet guard is currently inert. That is survivable for the dead marker (a pet would have to
+-- be named "Banished ..." exactly) and is another reason the alive sweep stays opt-in.
 local function isOwnedAnimal(a)
   local fn = ctx.map.animal.isOwnedFn
   if not fn then return false end
@@ -583,19 +598,33 @@ local function isOwnedAnimal(a)
   return ok and res == true
 end
 
-local function sweepStrays()
-  if straysSwept or not ctx.net.isHost() then return end
-  straysSwept = true
-  if not ctx.config.get("evil_sweep_strays") then return end
-  local swept = 0
+-- `force` runs it regardless of the pawn latch (the storm-start call does, so a world whose
+-- animals had not streamed in yet at entry still gets cleaned).
+local function sweepStrays(force)
+  if not ctx.net.isHost() then return end
+  local pawn = ctx.uehelp.localPawn()
+  local pfn; if pawn then pcall(function() pfn = pawn:GetFullName() end) end
+  if not pfn then return end                       -- no world yet; the notify will come again
+  if not force and pfn == sweptForPawn then return end
+  sweptForPawn = pfn
+  local aggressive = ctx.config.get("evil_sweep_strays")
+  local reaped, swept = 0, 0
   for spKey in pairs(SPECIES) do
     for _, a in ipairs(ctx.uehelp.findAll(speciesClass(spKey))) do
-      if ctx.uehelp.isValid(a) and parseEvil(nameOf(a) or "")
+      local full = ""; pcall(function() full = a:GetFullName() end)
+      if ctx.uehelp.isValid(a) and not full:find("Default__", 1, true)
           and not isTrackedEvil(a) and not isOwnedAnimal(a) then
-        pcall(function() a:K2_DestroyActor() end)
-        swept = swept + 1
+        local state = parseEvil(nameOf(a) or "")
+        if state == "dead" then
+          if pcall(function() a:K2_DestroyActor() end) then reaped = reaped + 1 end
+        elseif state == "alive" and aggressive then
+          if pcall(function() a:K2_DestroyActor() end) then swept = swept + 1 end
+        end
       end
     end
+  end
+  if reaped > 0 then
+    ctx.log.info("evil: reaped " .. reaped .. " Unlit corpse(s) an older session left in the save")
   end
   if swept > 0 then ctx.log.info("evil: swept " .. swept .. " stray Unlit from an older storm") end
 end
@@ -610,7 +639,7 @@ local function startChains()
   end
   if chainsFor == token then return end
   chainsFor = token
-  sweepStrays()
+  sweepStrays(true)
   spawnChain(token)
   brainChain(token)
 end
@@ -1145,6 +1174,16 @@ function F.init(c)
   ctx.bus.on("weather.changed",  ctx.log.guard("evil.weather", onWeather))
   ctx.bus.on("ritual.completed", ctx.log.guard("evil.ritual", onRitual))
   ctx.bus.on("lightning.strike", ctx.log.guard("evil.strike", onStrike))
+
+  -- Reap what an older session left in the SAVE as soon as the world is up, instead of waiting for
+  -- the next storm -- a corpse that never finished dying otherwise wanders the farm until then.
+  -- Animals are Characters too, so this notify fires constantly: the body stays ONE Lua boolean
+  -- and a schedule, never a UObject read (it runs mid-construction, where reads are fatal).
+  ctx.uehelp.onNewInstance("/Script/Engine.Character", nil, ctx.log.guard("evil.entry", function()
+    if sweepScheduled then return end
+    sweepScheduled = true
+    after(3, sweepStrays)
+  end))
 
   -- Clients get no weather.changed (storms is host-gated) -- but bolt ACTORS replicate to every
   -- machine. Seeing one opens the FX window, exactly like storms' own natural-storm tap.
