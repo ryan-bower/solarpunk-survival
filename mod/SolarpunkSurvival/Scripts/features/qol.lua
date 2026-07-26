@@ -26,6 +26,17 @@ local function defer(ms, fn)
   if not pcall(ExecuteWithDelay, ms, fn) then onGameThread(fn) end
 end
 
+-- Schedule-ONLY defer, for hook bodies. defer()'s fallback runs fn inline, and inline is the one
+-- thing a hook body may never do here: our own Lua re-enters these hooks (openInvOnShip calls
+-- ToggleInventory), so the fallback would run widget reads and SetRenderTranslation on the hook
+-- thread -- the re-entrant hook-body-touches-UObjects shape that native-crashes uncatchably.
+-- If there is no scheduler, the work is dropped: a hotbar that misses one sync beats a dead game.
+local function deferOnly(ms, fn)
+  if not pcall(ExecuteWithDelay, ms, fn) then
+    ctx.log.debug("qol: no delay scheduler; skipped deferred work (hook bodies never run inline)")
+  end
+end
+
 -- Resolve a UFunction's full object path off a live instance (RegisterHook rejects short
 -- "Class:Fn"). Mirrors features/storms.fullFuncPath.
 local function fullFuncPath(obj, fnName)
@@ -63,10 +74,23 @@ end
 
 -- Cooked-material loader (the wand/evil_animals pattern: find by name, LoadAsset the path on a
 -- miss, re-find -- LoadAsset's return value is not trusted).
-local matCache = {}
+local matCache  = {}    -- name -> the material, once found
+local matMissAt = {}    -- name -> os.clock() of the last failed lookup
+local MAT_RETRY = 20    -- seconds before a miss is worth another look
+
 local function matByName(name)
   if not name then return nil end
-  if matCache[name] ~= nil then return matCache[name] or nil end
+  local hit = matCache[name]
+  if hit then
+    if ctx.uehelp.isValid(hit) then return hit end
+    matCache[name] = nil
+  end
+  -- A miss is REMEMBERED, never latched. The first ping of a session routinely fires before the
+  -- palette package is in memory, and caching `false` for good meant that one early miss left
+  -- that player's pings untinted for the rest of the session -- and only on that machine, so
+  -- host and clients disagreed about ping colors, which is the one thing the palette must not do.
+  local at = matMissAt[name]
+  if at and (os.clock() - at) < MAT_RETRY then return nil end
   local function find()
     for _, kind in ipairs({ "Material", "MaterialInstanceConstant" }) do
       local ok, m = pcall(FindObject, kind, name)
@@ -80,7 +104,8 @@ local function matByName(name)
     pcall(LoadAsset, dir .. name .. "." .. name)
     mt = find()
   end
-  matCache[name] = mt or false
+  if mt then matCache[name], matMissAt[name] = mt, nil
+  else matMissAt[name] = os.clock() end
   return mt
 end
 
@@ -92,6 +117,24 @@ local function paletteFor(name)
   local h = 0
   for i = 1, #tostring(name) do h = (h * 31 + tostring(name):byte(i)) % 65521 end
   return pal[(h % #pal) + 1]
+end
+
+-- Live instances of a class, and ONLY live ones. FindAllOf hands back the class default object
+-- ("Default__BP_Foo_C") as well, and for widgets the archetype living in the class's :WidgetTree.
+-- Neither is a thing on screen or in the world, and both are worse than useless to write to: a
+-- property set on a template is inherited by every instance built afterwards, so scaling a dock's
+-- timeline or replacing a chest's inventory array on the CDO silently rewrites the class itself.
+local function liveInstances(className)
+  local out = {}
+  for _, o in ipairs(ctx.uehelp.findAll(className)) do
+    if ctx.uehelp.isValid(o) then
+      local full; pcall(function() full = o:GetFullName() end)
+      if full and not full:find("Default__", 1, true) and not full:find(":WidgetTree", 1, true) then
+        out[#out + 1] = o
+      end
+    end
+  end
+  return out
 end
 
 --------------------------------------------------------------------- chests hold double
@@ -116,7 +159,9 @@ local function sizeChest(chest)
   local ok2, comp = ctx.uehelp.get(chest, ctx.map.wand and ctx.map.wand.inventorySystemProp or "InventorySystem")
   if not (ok2 and ctx.uehelp.isValid(comp)) then return end
   local fn; pcall(function() fn = comp:GetFullName() end)
-  if not fn or chestSized[fn] then return end
+  -- never the class template: ForceReplace on the CDO's component would hand a 24-slot array to
+  -- every chest the game builds (and to the save serializer) from then on
+  if not fn or chestSized[fn] or fn:find("Default__", 1, true) then return end
   local len = -1
   pcall(function() len = #comp.Inventory end)
   if len <= 0 or len >= want then
@@ -138,7 +183,7 @@ local function sizeChest(chest)
 end
 
 local function sweepChests()
-  for _, c in ipairs(ctx.uehelp.findAll(qmap().chestClass)) do sizeChest(c) end
+  for _, c in ipairs(liveInstances(qmap().chestClass)) do sizeChest(c) end
 end
 
 --------------------------------------------------------------------- backpack: a bigger pack
@@ -184,14 +229,7 @@ end
 -- UI_OpenChestInventory(ChestInventorySystem) is the game's every-chest UI entry.
 local shipChestHinted = false
 local function openShipChest()
-  local ship
-  for _, s in ipairs(ctx.uehelp.findAll(qmap().airshipClass)) do
-    if ctx.uehelp.isValid(s) then
-      local full = ""; pcall(function() full = s:GetFullName() end)
-      -- FindAllOf hands back the class default object too; only a placed ship counts
-      if not full:find("Default__", 1, true) then ship = s; break end
-    end
-  end
+  local ship = liveInstances(qmap().airshipClass)[1]   -- a placed ship, never the CDO
   local pc = localController()
   if not (ship and pc) then return end
   local near = false
@@ -233,42 +271,45 @@ local function openInvOnShip()
 end
 
 -- Faster recall: the dock's return flight is a timeline paced by its TimelineSpeed double
--- (800.0 stock). Scaled once per dock; a world reload resets the stock value, which the
--- target-mismatch check detects and re-scales.
-local dockTarget = {}   -- dock fullname -> the value we set
+-- (800.0 stock).
+--
+-- The multiplier is ALWAYS applied to the dock's remembered STOCK value, never to whatever the
+-- property reads right now -- because what it reads right now is usually already ours. Deriving
+-- from the live value compounds: the config.changed handler used to clear the memo and re-sweep,
+-- so every single qol_* tweak multiplied the dock again (800 -> 2400 -> 7200 -> 21600) until the
+-- recall timeline was less a flight than a teleport, and the corrupted value rode into the save.
+-- Working from stock also makes the setting reversible: back to x1 and the dock returns to 800.
+local dockStock = {}   -- dock fullname -> the speed the game shipped it with
 
 local function speedDock(dock)
   local mult = tonumber(ctx.config.get("qol_recall_mult")) or 1.0
-  if mult <= 1.0 or not ctx.uehelp.isValid(dock) then return end
+  if not ctx.uehelp.isValid(dock) then return end
   local fn; pcall(function() fn = dock:GetFullName() end)
-  if not fn then return end
+  if not fn or fn:find("Default__", 1, true) then return end   -- never the class template
   local prop = qmap().dockSpeedProp or "TimelineSpeed"
   local ok, v = ctx.uehelp.get(dock, prop)
   if not (ok and type(v) == "number" and v > 0) then return end
-  local t = dockTarget[fn]
-  if t and math.abs(v - t) < 0.5 then return end   -- still at our value: done
-  local nv = v * mult
-  if ctx.uehelp.set(dock, prop, nv) then
-    dockTarget[fn] = nv
-    ctx.log.info(string.format("qol: airship recall %.0f -> %.0f (x%.1f)", v, nv, mult))
+  -- first sighting of this dock: what it reads now IS stock (a world reload hands back the
+  -- shipped value, which is why stock is learned per dock rather than assumed once per session)
+  local stock = dockStock[fn]
+  if not stock then stock = v; dockStock[fn] = stock end
+  local want = stock * math.max(mult, 1.0)
+  if math.abs(v - want) < 0.5 then return end   -- already where we want it
+  if ctx.uehelp.set(dock, prop, want) then
+    ctx.log.info(string.format("qol: airship recall %.0f -> %.0f (x%.1f)", stock, want, mult))
   end
 end
 
 local function sweepDocks()
-  for _, d in ipairs(ctx.uehelp.findAll(qmap().dockClass)) do speedDock(d) end
+  for _, d in ipairs(liveInstances(qmap().dockClass)) do speedDock(d) end
 end
 
 --------------------------------------------------------------------- overlay: hotbar + drops
--- The live W_PlayerOverlay (FindAllOf hands back the archetype too; the archetype's path
--- contains ":WidgetTree").
+-- The live W_PlayerOverlay. Both of FindAllOf's impostors matter here: the archetype (its path
+-- contains ":WidgetTree") and the CDO, which is constructed before any instance and therefore
+-- tends to come back FIRST -- re-anchoring that one moves nothing on screen.
 local function liveOverlay()
-  for _, w in ipairs(ctx.uehelp.findAll(qmap().overlayClass)) do
-    if ctx.uehelp.isValid(w) then
-      local full; pcall(function() full = w:GetFullName() end)
-      if full and not full:find(":WidgetTree", 1, true) then return w end
-    end
-  end
-  return nil
+  return liveInstances(qmap().overlayClass)[1]
 end
 
 -- The pickup feed ("+4 Wood") re-anchored to mid-screen: its canvas slot is re-anchored to the
@@ -377,9 +418,15 @@ local function tintIcon(icon, name)
   if not ctx.uehelp.isValid(icon) then return end
   local pal = name and paletteFor(name)
   if pal then
-    pcall(function()
-      icon[qmap().mapIconImgProp]:SetColorAndOpacity({ R = pal.r, G = pal.g, B = pal.b, A = 1.0 })
-    end)
+    -- IMG_Player is a UObject PROPERTY, and a null one reads back as a truthy wrapper: calling
+    -- straight off the read (icon[prop]:SetColorAndOpacity(...)) invokes a UFunction on nothing,
+    -- which is a native access violation no pcall can catch. dressMap runs 150 ms after the map
+    -- opens, so an icon being rebuilt right then -- a teammate leaving, a marker respawning -- is
+    -- exactly the window that hits it. isValid() the read first, always.
+    local okI, img = ctx.uehelp.get(icon, qmap().mapIconImgProp)
+    if okI and ctx.uehelp.isValid(img) then
+      pcall(function() img:SetColorAndOpacity({ R = pal.r, G = pal.g, B = pal.b, A = 1.0 }) end)
+    end
   end
   if name and FText then
     pcall(function() icon:SetToolTipText(FText(tostring(name))) end)
@@ -391,43 +438,46 @@ end
 -- local player's icon (WC_MainPlayer) gets their own.
 local function dressMap()
   if not ctx.config.get("qol_map_names") then return end
-  for _, wc in ipairs(ctx.uehelp.findAll(qmap().mapCompClass)) do
-    if ctx.uehelp.isValid(wc) then
-      local full; pcall(function() full = wc:GetFullName() end)
-      if full and not full:find(":WidgetTree", 1, true) then
-        pcall(function()
-          local markers = wc[qmap().friendsMarkersProp]
-          if markers and markers.ForEach then
-            markers:ForEach(function(k, v)
-              local key, icon = k, v
-              pcall(function() key = k:get() end)
-              pcall(function() icon = v:get() end)
-              tintIcon(icon, tostring(key))
-            end)
-          end
-        end)
-        pcall(function()
-          local mine = wc[qmap().mapSelfIconProp]
-          local pc = localController()
-          tintIcon(mine, pc and playerNameOf(pc) or nil)
+  for _, wc in ipairs(liveInstances(qmap().mapCompClass)) do
+    pcall(function()
+      local markers = wc[qmap().friendsMarkersProp]
+      if markers and markers.ForEach then
+        markers:ForEach(function(k, v)
+          local key, icon = k, v
+          pcall(function() key = k:get() end)
+          pcall(function() icon = v:get() end)
+          tintIcon(icon, tostring(key))
         end)
       end
-    end
+    end)
+    pcall(function()
+      local mine = wc[qmap().mapSelfIconProp]
+      local pc = localController()
+      tintIcon(mine, pc and playerNameOf(pc) or nil)
+    end)
   end
 end
 
 --------------------------------------------------------------------- arming
-local hooked = {}   -- fn-name -> true once its RegisterHook stuck
+-- "owner:fn" -> true once its RegisterHook stuck. Qualified by OWNER, not the bare function name:
+-- the map hooks and the controller hooks come from different classes, and two of them sharing a
+-- short name (a plain "Open", say, after a mapping change) would leave the second never hooked.
+-- The check stays a plain table lookup on purpose -- armHooks is re-run on every Character
+-- construction notify, so resolving the UFunction path first would put a per-class function
+-- enumeration in the storm's animal-spawn path.
+local hooked = {}
 
 local function armHook(pathOwner, fnName, tag, body)
-  if not fnName or hooked[fnName] then return end
+  if not fnName then return end
+  local key = tostring(pathOwner) .. ":" .. fnName
+  if hooked[key] then return end
   local inst = ctx.uehelp.findFirst(pathOwner)
   if not inst then return end
   local path = fullFuncPath(inst, fnName)
   if not path then return end
   local ok = pcall(RegisterHook, path, ctx.log.guard(tag, body))
   if ok then
-    hooked[fnName] = true
+    hooked[key] = true
     ctx.log.debug("qol: hooked " .. path)
   end
 end
@@ -437,10 +487,10 @@ local function armHooks()
   -- Our own ship-inventory key calls ToggleInventory, so its hook body must touch no UObjects:
   -- it only schedules the sync. Same shape for the UI-close funnel.
   armHook(pl.controllerClass, qmap().toggleInvFn, "qol.inv", function()
-    defer(120, syncHotbar)
+    deferOnly(120, syncHotbar)
   end)
   armHook(pl.controllerClass, ctx.map.codex and ctx.map.codex.inputGameFn, "qol.uiclose", function()
-    defer(120, syncHotbar)
+    deferOnly(120, syncHotbar)
   end)
   -- MULTI_Ping fires once per accepted ping ON EVERY MACHINE with the pinging controller as
   -- context: two guarded reads stash the pinger's name for the construction notify to use.
@@ -453,12 +503,19 @@ local function armHooks()
     end
   end)
   armHook(qmap().mapCompClass, qmap().mapOpenFn, "qol.map", function()
-    defer(150, dressMap)
+    deferOnly(150, dressMap)
   end)
 end
 
 -- Everything (re)applied when the LOCAL pawn changes -- world entry, respawn, hot reload.
 local function applyAll()
+  -- A brand-new local pawn means a new world, a reloaded save or a respawn -- and UE recycles
+  -- object names, so a cache keyed by fullname can hand a FRESH chest or pawn the verdict reached
+  -- about a dead one in the previous world (a 12-slot chest stuck at 12, a respawned player whose
+  -- movement component never gets bCanCrouch and whose crouch key silently stops working).
+  -- Re-deciding costs one pass: both paths fast-out again the moment the work is already done.
+  chestSized = {}
+  crouchReady = {}
   armHooks()
   applyBackpack()
   sweepDocks()
@@ -527,7 +584,9 @@ function F.init(c)
   -- live tuning: any qol_* change re-applies the cheap visual state
   ctx.bus.on("config.changed", function(ev)
     if ev and type(ev.key) == "string" and ev.key:sub(1, 4) == "qol_" then
-      dockTarget = {}
+      -- NOT dockStock: it holds each dock's SHIPPED speed, and re-learning that from the live
+      -- (already scaled) value is exactly how the recall multiplier used to compound itself on
+      -- every single tweak. speedDock recomputes from stock, so a new multiplier just lands.
       chestSized = {}
       onGameThread(function() applyDrops(); syncHotbar(); sweepDocks(); sweepChests() end)
     end

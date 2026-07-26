@@ -206,20 +206,25 @@ end
 -- up most of the world and their classes never classify, so later sweeps skip them on a plain
 -- Lua table hit with zero reflection.
 local classKindCache = {}   -- class name -> kind or false (false = classified as "not ours")
-local lastSweep = -1e9      -- os.clock() of the last full sweep; bursts land 0.35 s apart at the
-                            -- SAME spot, so one sweep per second covers every bolt of a burst
 
-function F.onStrike(e)
-  if not ctx.net.isHost() then return end
-  local loc = e and e.location
-  if not loc then return end
-  local now = os.clock()
-  if now - lastSweep < ctx.config.get("strike_scan_min_gap") then return end
-  lastSweep = now
+-- RATE LIMIT, NOT A DROP. A sweep is the host's most expensive storm frame (findAll("Actor")
+-- walks the whole object array), so at most one runs per strike_scan_min_gap -- but bolts that
+-- land inside that window QUEUE rather than vanish. The first shape of this throttle returned
+-- early, and "one sweep per second covers a burst" only holds for a burst, whose bolts land
+-- 0.35 s apart at the same spot. Ambient and tapped native bolts land wherever they like: any of
+-- them landing within a second of another had its entire impact pass swallowed -- a tree visibly
+-- struck and never felled, a battery under the bolt left flat -- intermittently, and worst
+-- exactly when the storm was busiest. Queuing also restores the second hit of a burst, which is
+-- what turns a broken machine into "destroyed, half its components salvaged".
+local lastSweep  = -1e9     -- os.clock() of the last sweep
+local pending    = {}       -- bolt locations waiting to be served by the next one
+local flushArmed = false
+local flush                 -- fwd (onStrike calls it; it is defined below sweep)
+
+local function sweep(locs)
   local r = ctx.config.get("strike_radius")
   local r2 = r * r
-
-  -- One guarded scan per landed bolt (same access pattern as the manual RE capture).
+  -- One guarded scan serving every queued bolt (same access pattern as the manual RE capture).
   for _, a in ipairs(ctx.uehelp.findAll("Actor")) do
     if ctx.uehelp.isValid(a) then
       local cls = ctx.uehelp.className(a)
@@ -230,21 +235,55 @@ function F.onStrike(e)
       end
       if kind then
         local al = ctx.identity.locationOf(a)
-        if al and ctx.uehelp.dist2(al, loc) <= r2 then
-          if kind == "battery" or kind == "generator" then
-            F.chargeToFull(a, cls)
-            ctx.bus.emit("strike.battery", { actor = a, id = ctx.identity.idOf(a), location = al })
-          elseif kind == "furnace" then
-            F.fuelFurnace(a, cls)
-          elseif kind == "tech" then
-            F.breakTech(a, cls, al)
-          elseif kind == "tree" then
-            F.fellTree(a, cls, al)
+        if al then
+          for _, loc in ipairs(locs) do
+            -- re-checked per bolt: fellTree/breakTech may have destroyed it on the last one
+            if not ctx.uehelp.isValid(a) then break end
+            if ctx.uehelp.dist2(al, loc) <= r2 then
+              if kind == "battery" or kind == "generator" then
+                F.chargeToFull(a, cls)
+                ctx.bus.emit("strike.battery", { actor = a, id = ctx.identity.idOf(a), location = al })
+              elseif kind == "furnace" then
+                F.fuelFurnace(a, cls)
+              elseif kind == "tech" then
+                F.breakTech(a, cls, al)
+              elseif kind == "tree" then
+                F.fellTree(a, cls, al)
+              end
+            end
           end
         end
       end
     end
   end
+end
+
+flush = function()
+  if #pending == 0 then return end
+  local locs = pending
+  pending = {}
+  lastSweep = os.clock()
+  sweep(locs)
+end
+
+function F.onStrike(e)
+  if not ctx.net.isHost() then return end
+  local loc = e and e.location
+  if not loc then return end
+  pending[#pending + 1] = loc
+  -- a storm this dense has already made the point; keep the newest bolts and let the rest go
+  if #pending > 24 then table.remove(pending, 1) end
+  local gap = ctx.config.get("strike_scan_min_gap")
+  local since = os.clock() - lastSweep
+  -- clearing the arm here matters: a scheduled flush that never fires (a world change drains the
+  -- scheduler's queue) would otherwise leave the queue permanently unarmed and bolts stranded
+  if since >= gap then flushArmed = false; flush(); return end
+  if flushArmed then return end
+  flushArmed = true
+  local ok = pcall(ExecuteWithDelay, math.floor((gap - since) * 1000) + 10,
+    ctx.log.guard("strike_world.sweep", function() flushArmed = false; flush() end))
+  -- no scheduler is no reason to lose the bolt: pay for the sweep now instead
+  if not ok then flushArmed = false; flush() end
 end
 
 function F.init(c)

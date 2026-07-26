@@ -194,10 +194,14 @@ end
 -- (once per change) what an otherwise-standing pentagram still lacks.
 --
 -- BACKOFF (host storm load, 2026-07-26): scanWorld is a full-world className sweep, and it ran
--- every ritual_check_interval for the whole storm even on hosts with no pentagram anywhere. A
--- pentagram takes minutes to build, so while consecutive scans keep finding fewer candles than a
--- circle needs, only every 3rd check pays for a real sweep -- detection latency grows to ~24 s
--- exactly when nobody is performing a rite, and snaps back to every check once candles appear.
+-- every ritual_check_interval for the whole storm even on hosts with no pentagram anywhere. On a
+-- world with NO ritual furniture standing at all, only every 3rd check pays for a real sweep.
+--
+-- The emptiness test is deliberately "not one candle and not one fence", not "fewer than a circle
+-- needs": a partial circle means somebody is BUILDING one, and that is precisely the minute the
+-- last candle goes down. Backing off there would leave a finished tableau -- animal penned, five
+-- offerings laid -- unseen for up to ~24 s, long enough for the animal to wander back out, and the
+-- players would rightly conclude the rite is broken.
 local emptyScans = 0
 local function findReadyRite()
   if emptyScans > 0 and emptyScans % 3 ~= 0 then
@@ -206,7 +210,7 @@ local function findReadyRite()
   end
   local fences, candles, offerings = scanWorld()
   if #candles < ctx.config.get("ritual_candles") or #fences < ctx.config.get("ritual_fences") then
-    emptyScans = emptyScans + 1
+    if #candles == 0 and #fences == 0 then emptyScans = emptyScans + 1 else emptyScans = 0 end
     return nil
   end
   emptyScans = 0

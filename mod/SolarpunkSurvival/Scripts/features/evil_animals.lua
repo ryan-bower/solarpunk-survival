@@ -1105,6 +1105,10 @@ local function onRitual(e)
   for spKey, sp in pairs(SPECIES) do
     if sp.riteKey == rite and not unlocked[spKey] then
       unlocked[spKey] = true
+      -- a rite has just made Unlit walk: the discovery backoff must not sit out the next three
+      -- passes now, or the red aura -- the only telegraph that an animal is hostile -- shows up
+      -- seconds after the thing has already started biting
+      fxIdle = 0
       if ctx.save.setFlag then ctx.save.setFlag(sp.flag, true) end
       ctx.log.info("*** the storm has tasted " .. spKey ..
         " blood -- from this night the Unlit " .. spKey .. "s walk in every storm ***")

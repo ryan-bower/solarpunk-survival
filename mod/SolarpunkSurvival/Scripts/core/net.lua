@@ -32,7 +32,13 @@ function M.isHost()
 end
 
 -- Call on level travel / session change so authority is re-evaluated.
-function M.invalidate() M._isHostCache = nil end
+-- The state-actor miss goes with it: the new level spawns its own BP_ModStateActor, and a miss
+-- cached in the old one (or on the menu) would keep multicast()/hasCarriers() dark for the first
+-- minute of the new world -- exactly the opening storm the carrier exists to serve.
+function M.invalidate()
+  M._isHostCache = nil
+  M._stateActorMissAt = nil
+end
 
 -- The replicated global mod-state actor (from BP_ModStateActor.pak). nil until cooked+installed.
 -- The miss is CACHED (retried once a minute): no LogicMod pak ships today, and the old shape ran

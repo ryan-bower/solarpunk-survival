@@ -68,7 +68,27 @@ def launch():
     say("! Could not find steam / flatpak / xdg-open to launch. Start Solarpunk from Steam yourself.")
 
 
-def wait_for_mod(log: Path, wait_s: int):
+def log_since(log: Path, baseline: int) -> str:
+    """The log's text from byte `baseline` on - i.e. only what THIS run wrote.
+
+    Everything that decides "did the mod load" reads through here. When the old instance still
+    holds the log we cannot delete it, and its previous run's startup line matches READY_RE just
+    as well as a fresh one would; anchoring at the byte count we saw before launching is what
+    keeps that from reading as instant success. A file shorter than the baseline was recreated or
+    truncated by the new instance, so all of it is new.
+    """
+    if not log.is_file():
+        return ""
+    try:
+        data = log.read_bytes()
+    except OSError:
+        return ""
+    if len(data) < baseline:
+        baseline = 0
+    return data[baseline:].decode("utf-8", errors="replace")
+
+
+def wait_for_mod(log: Path, wait_s: int, baseline: int = 0):
     """Poll the UE4SS log for the mod's startup line. Fail fast if the game process appears
     and then dies without the mod loading (crash), instead of burning the whole timeout."""
     started = time.monotonic()
@@ -78,7 +98,7 @@ def wait_for_mod(log: Path, wait_s: int):
     tick = 0
     while time.monotonic() < deadline:
         time.sleep(1)
-        if log.is_file() and READY_RE.search(log.read_text(errors="replace")):
+        if READY_RE.search(log_since(log, baseline)):
             return True, time.monotonic() - started
         tick += 1
         if tick % 3 == 0:  # process check is a subprocess spawn - keep it at 1/3 the rate
@@ -92,11 +112,11 @@ def wait_for_mod(log: Path, wait_s: int):
     return False, time.monotonic() - started
 
 
-def report(log: Path, ready: bool, elapsed: float, wait_s: int):
+def report(log: Path, ready: bool, elapsed: float, wait_s: int, baseline: int = 0):
     say()
     if ready:
         say(f"Mod loaded ({elapsed:.0f}s). Recent {MOD} log:")
-        lines = [l for l in log.read_text(errors="replace").splitlines() if MOD in l]
+        lines = [l for l in log_since(log, baseline).splitlines() if MOD in l]
         for l in lines[-15:]:
             say(f"  {l}")
         say()
@@ -128,15 +148,23 @@ def main():
         inst.deploy(game_dir, force=args.force, include_dev=True)
 
     log = game_dir / "Binaries" / "Win64" / "ue4ss" / "UE4SS.log"
+    baseline = 0
     try:
         log.unlink(missing_ok=True)
     except PermissionError:
-        # a dying game instance can hold the log a beat longer than the process poll suggests;
-        # a stale log only costs wait_for_mod a little scrollback, so don't die over it
-        say("  (UE4SS.log still locked by the old instance; continuing with the stale log)")
+        # A dying game instance can hold the log a beat longer than the process poll suggests.
+        # Deleting it is not just tidiness: it is what makes a READY_RE match mean "the NEW
+        # instance loaded". The stale log still carries the previous run's startup line, so
+        # without an anchor we would report "Mod loaded (1s)" one second after launch no matter
+        # what happened -- even if UE4SS never injected. Watch only past its current end instead.
+        try:
+            baseline = log.stat().st_size
+        except OSError:
+            baseline = 0
+        say("  (UE4SS.log still locked by the old instance; watching only lines written from here on)")
     launch()
-    ready, elapsed = wait_for_mod(log, args.wait)
-    sys.exit(report(log, ready, elapsed, args.wait))
+    ready, elapsed = wait_for_mod(log, args.wait, baseline)
+    sys.exit(report(log, ready, elapsed, args.wait, baseline))
 
 
 if __name__ == "__main__":
