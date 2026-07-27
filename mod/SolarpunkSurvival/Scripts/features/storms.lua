@@ -178,35 +178,52 @@ function F.startStorm()
   end
 end
 
+-- Stand the MOD's machinery down without touching the game's weather: flags, tokens, pending
+-- strikes, the relatch bar. This is all a natural storm may ever get -- see stopStorm below.
+function F.stormStandDown(reason)
+  local wasNatural = naturalStorm
+  naturalStorm = false
+  if not (stormActive or wasNatural) then return end
+  stormActive = false
+  strikeToken = strikeToken + 1  -- invalidate every pending strike
+  -- A deliberate calm must STAY calm: an ambient bolt still in flight loses its modBolts tag on
+  -- the clear, so its detector would misread it as a natural GAME bolt, relatch the storm, and
+  -- restart the ambient loop (the "storm that never ended"). Bar that relatch for a few sec.
+  calmUntil = os.clock() + 8
+  modBolts, modBoltLocs = {}, {} -- leak backstop (entries are normally consumed/expired)
+  ctx.bus.emit("weather.changed", { storm = false, severity = 0 })
+  ctx.log.info("storm stood down (" .. tostring(reason or "asked") .. ")")
+end
+
+-- Fully END a storm: the game's weather program AND our machinery.
+--
+-- THE 2026-07-27 LESSON (user: "clouds clear but the wind keeps thrashing the trees and
+-- lightning keeps falling"): InstantSunny is a sky REPAINT, not a storm stop. Called during a
+-- NATURAL storm -- which the old dawn checks did every time a game storm crossed daybreak -- it
+-- desynchronizes the weather: clouds gone, daylight, while the game's still-running thunderstorm
+-- keeps its native thunder loop dropping bolts and its wind pinned at storm level (and the mod
+-- then dutifully tapped damage off every one of those "native bolts" in bright sunshine).
+-- So: DEBUG_StopWeather first -- the manager's own program stop -- and only then the sunny
+-- repaint + wind restore. And dawn on a PURELY natural storm calls stormStandDown instead,
+-- leaving the game to blow its own storm out with the sky, wind and thunder in agreement.
 function F.stopStorm()
   local mgr = weatherMgr()
-  if mgr and ctx.map.weather.stopStormFn then ctx.uehelp.call(mgr, ctx.map.weather.stopStormFn) end
+  local w = ctx.map.weather
+  if mgr and w.hardStopFn then ctx.uehelp.call(mgr, w.hardStopFn) end   -- end the program
+  if mgr and w.stopStormFn then ctx.uehelp.call(mgr, w.stopStormFn) end -- then repaint the sky
 
   -- InstantSunny does NOT bring the storm wind back down (verified: stuck at ~5.0 forever).
   -- Restore the pre-storm intensity: the DEBUG setter alone doesn't move the realtime value, so
   -- also write the property directly, then refresh the wind audio so the howling stops now.
-  local w = ctx.map.weather
   if mgr and w.windIntensityProp then
     local calm = preStormWind or 1.0
     if w.setWindIntensityFn then ctx.uehelp.call(mgr, w.setWindIntensityFn, calm) end
     ctx.uehelp.set(mgr, w.windIntensityProp, calm)
     if w.windAudioFn then ctx.uehelp.call(mgr, w.windAudioFn, calm) end
   end
-  -- Also stand the natural storm down: InstantSunny just cleared the sky, and without this
-  -- `stormy()` stayed true off the latched flag, so sps_storm_off could not stop the bolts.
-  local wasNatural = naturalStorm
-  naturalStorm = false
-  if stormActive or wasNatural then
-    stormActive = false
-    strikeToken = strikeToken + 1  -- invalidate every pending strike
-    -- A deliberate calm must STAY calm: an ambient bolt still in flight loses its modBolts tag on
-    -- the clear below, so its detector would misread it as a natural GAME bolt, relatch the storm,
-    -- and restart the ambient loop (the "storm that never ended"). Bar that relatch for a few sec.
-    calmUntil = os.clock() + 8
-    modBolts, modBoltLocs = {}, {} -- leak backstop (entries are normally consumed/expired)
-    ctx.bus.emit("weather.changed", { storm = false, severity = 0 })
-    ctx.log.info("storm stopped — skies clear")
-  end
+  local hadAny = stormActive or naturalStorm
+  F.stormStandDown("stopped")
+  if hadAny then ctx.log.info("storm stopped — skies clear") end
 end
 
 function F.toggleStorm()
@@ -264,7 +281,14 @@ function F.scheduleAmbient(token)
   local guarded = ctx.log.guard("storm.ambient", function()
     onGameThread(function()
       if token ~= ambientToken or not stormy() then ambientLive = false; return end
-      if isDay() then ambientLive = false; F.stopStorm(); return end  -- dawn: send the storm home
+      if isDay() then
+        -- Dawn: OUR storm gets fully ended (we pinned that sky, we clear it). A purely NATURAL
+        -- storm only has our machinery stood down -- InstantSunny on the game's own storm is the
+        -- sky-repaint desync that left wind howling and bolts falling under a clear morning sky.
+        ambientLive = false
+        if stormActive then F.stopStorm() else F.stormStandDown("dawn, natural storm left to the game") end
+        return
+      end
       F.ambientBolt()
       F.scheduleAmbient(token)
     end)

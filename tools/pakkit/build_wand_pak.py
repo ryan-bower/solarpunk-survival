@@ -34,6 +34,8 @@ def run(*args):
 MASTER_BP = os.path.join(LEGACY, ITEMS_DIR, "ItemActors", "_BP_ItemActor_MASTER.uasset")
 S_ITEM = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "S_Item.uasset")
 S_ATTR = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "S_ItemAttribute.uasset")
+S_SMELT = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "S_Smeltable.uasset")
+S_SLOT  = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "S_InventorySlotSlim.uasset")
 
 def tojson(asset, out, preloads=""):
     run(WS, "tojson", USMAP, asset, out, "VER_UE5_6", preloads)
@@ -339,7 +341,7 @@ def add_texture_import(d, base_tex, new_tex):
     return tex_idx
 
 def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx, durability=None,
-             tools_tab=False):
+             tools_tab=False, extra_types=None):
     stick = next(r for r in rows if r["Name"] == "Stick")
     rasp = next(r for r in rows if r["Name"] == "Raspberry")
     cobalt = next(r for r in rows if r["Name"] == "Cobalt")
@@ -369,11 +371,25 @@ def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx, durability=N
     # ItemType (its only refs are empty-hand struct consts), so extra entries can't reroute
     # the hand-render path; T5 stays at index 0 purely for it's-a-consumable clarity.
     # T1 == the Tools tab (Hoe/Axe/Watercan all carry it).
+    def _append_type(enum_val):
+        e = copy.deepcopy(field(rasp, "ItemType")["Value"][0])
+        e["Name"] = str(len(field(row, "ItemType")["Value"]))
+        e["Value"] = f"EItemType::NewEnumerator{enum_val}"
+        field(row, "ItemType")["Value"].append(e)
     if tools_tab:
-        tool_entry = copy.deepcopy(field(rasp, "ItemType")["Value"][0])
-        tool_entry["Name"] = str(len(field(row, "ItemType")["Value"]))
-        tool_entry["Value"] = "EItemType::NewEnumerator1"
-        field(row, "ItemType")["Value"].append(tool_entry)
+        _append_type(1)
+    # FURNACE INPUT-SLOT FILTER (offline RE of DB_Smeltables x DB_Items 2026-07-23): a valid
+    # DB_Smeltables recipe is NOT sufficient -- the appliance's input slot rejects the item first,
+    # by ItemType. EVERY furnace input carries T6 (ore: Iron/Clay/Sand/Quartz/Copper/Cobalt/Dough)
+    # or T13 (cookable: dirty-water carafe, raw pizza, raw muffin); NONE is T5. The wand cloned
+    # Raspberry's lone T5, so the slot turned it away despite the recipe being present and correct.
+    # Fix: also carry T13 (the water-boiling appliance the user analogised to) AND T6 (the metal
+    # furnace), so whichever appliance they use accepts the rod. T5 STAYS at index 0 -- the in-hand
+    # render + world-load safety ride on the primary type; the slot check is array-membership
+    # (same Array_CONTAINS shape as the crafting tabs), so appended types suffice. If a live test
+    # shows the slot reads index 0 only, promote T13 to the front instead.
+    for t in (extra_types or []):
+        _append_type(t)
     # ALSO copy Raspberry's INTERACTION (I2). The game only renders an item in-hand when it has an
     # active "use" interaction -- a passive I0 (Stick) shows nothing (proven: T5+I0 => invisible).
     # I2 makes the game draw the palm-out hold + SM_Stick. The wand has empty DefaultAttribues, so
@@ -469,9 +485,11 @@ def patch_db_items():
     # "Electrick" with the k -- the occult spelling, like magick (user-requested rename; the ROW
     # KEYS stay ElectricWand/ChargedElectricWand -- renaming keys would re-fight the name-index
     # gotcha and break the mod's itemRows mapping for zero gain)
+    # extra_types [13,6] = the furnace input-slot filter: T13 lets the energy furnace (where foul
+    # water is boiled) accept the spent rod, T6 lets the metal furnace accept it. See make_row.
     make_row(d, rows, "ElectricWand", "Electrick Wand",
              "The bolt has been spent. The rod waits, dim gold, for the storm to fill it again.",
-             icon_gold, elec_cls)
+             icon_gold, elec_cls, extra_types=[13, 6])
     # durability 3 = the bolt count: the bar shows the three casts a full rod holds.
     make_row(d, rows, "ChargedElectricWand", "Charged Electrick Wand",
              "The storm sits caged in the rod, yellow-hot and howling. Loose it before it fades.",
@@ -484,6 +502,49 @@ def patch_db_items():
     fromjson(jout, os.path.join(STAGED, ITEMS_DIR, "Framework_and_Data", "DB_Items.uasset"),
              preloads=";".join([S_ITEM, S_ATTR]))
     print(f"DB_Items patched: {len(rows)} rows")
+
+def _slot_set(slot_props, item_ref, qty):
+    """Point an S_InventorySlotSlim (Item ObjectProperty + Quantity int) at a new item/count."""
+    for p in slot_props:
+        n = p["Name"].split("_")[0]
+        if n == "Item":
+            p["Value"] = item_ref
+        elif n == "Quantity":
+            p["Value"] = qty
+
+def patch_db_smeltables():
+    """DB_Smeltables: a furnace recipe that COOKS a spent Electrick Wand into a Charged one -- the
+    same mechanism the game boils foul water clean (row WaterDirty: CarafeDirtWater -> Drinkable).
+    Input BP_ElectricWand_Item_C -> Output BP_ChargedElectricWand_Item_C, smelt time like boiling.
+    The row is keyed by input theme; the furnace matches the INPUT by item CLASS, not by row name.
+    Both BP_Furnace and BP_EnergyFurnace read this one table, so the recipe serves either."""
+    src = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "DB_Smeltables.uasset")
+    j = os.path.join(OUT, "db_smeltables_src.json")
+    tojson(src, j)
+    d = json.load(open(j, encoding="utf-8"))
+    rows = d["Exports"][0]["Table"]["Data"]
+    # DB_Smeltables has no BP_Stick import to template off (add_bp_imports' anchor), so add the
+    # class imports the generic way -- exactly how patch_db_recipes references the wand classes.
+    def cls_idx(name):
+        return add_import_pair(d, f"/Game/Code/Inventory_Items/ItemActors/{name[:-2]}", name,
+                               "BlueprintGeneratedClass")
+    elec_cls = cls_idx("BP_ElectricWand_Item_C")            # the spent rod (input)
+    chg_cls  = cls_idx("BP_ChargedElectricWand_Item_C")     # the charged rod (output)
+    row = copy.deepcopy(next(r for r in rows if r["Name"] == "WaterDirty"))  # 1-in/1-out template
+    row["Name"] = "ElectricWand"
+    _slot_set(field(row, "Output")["Value"], chg_cls, 1)
+    parts = field(row, "SmeltingParts")["Value"]
+    parts[:] = parts[:1]                                            # exactly one ingredient slot
+    _slot_set(parts[0]["Value"], elec_cls, 1)
+    field(row, "SmeltingTime")["Value"] = 30                        # seconds, like boiling water
+    rows.append(row)
+    add_rowkey(d, "ElectricWand", "DB_Smeltables")
+    fix_name_count(d)
+    jout = os.path.join(OUT, "db_smeltables_patched.json")
+    json.dump(d, open(jout, "w", encoding="utf-8"), indent=1)
+    fromjson(jout, os.path.join(STAGED, ITEMS_DIR, "Framework_and_Data", "DB_Smeltables.uasset"),
+             preloads=";".join([S_SMELT, S_SLOT]))
+    print(f"DB_Smeltables patched: {len(rows)} rows (+ElectricWand furnace recipe)")
 
 # ---------------------------------------------------------------- 4. the Tempest Codex
 # A REAL in-game book, cloned wholesale from the survival guide's data-driven chain (RE 2026-07-21,
@@ -674,6 +735,15 @@ CODEX_PAGES = [
      " enough to lift the haire upon thy necke. Thou must stand close unto the stroke."
      "\n\nCaveat. Closer than anie sensible woman would stand. They that have done it beare the"
      " markes upon their armes, and they doe it againe."),
+    ("Codex_I6", 2, "Icon_Stormy",
+     "Yet mark a kindlier feeding, founde by them that had no stomacke for standing neare the"
+     " stroke. The grounded rod, gone spent and dimme and golde, hath a second hunger the fyre can"
+     " fille."
+     "\n\nLaye the emptie electrick rod within the furnace, in the white hotte inferno thereof, even"
+     " as thou wouldst sette a carafe of foule watir to boile. Shutte it up and be patient. The heat"
+     " worketh the storme backe into the wood, and it commeth forth charged and howling againe, and"
+     " no marke lefte upon thine arme. What the storme asketh in feare, the furnace asketh onlie in"
+     " waiting."),
     # -------- HYDRATION (the path of water: the Rite of the Quenched Rod) --------
     ("Codex_H1", 3, "AnimalIcon_Chicken",
      "The Rite of the Quenched Rod. The path of watir."
@@ -1204,9 +1274,9 @@ def pack():
             sys.exit(f"missing pack output {f}")
         print("built", f, os.path.getsize(f), "bytes")
     # NOT ~mods/ -- that mounts at order 103, BELOW the base container, where these edits are
-    # silently shadowed. install.ps1 copies the triple in under the _1_P name (order 204).
-    print("build complete -- run install.ps1 (game closed) to install the triple as"
-          " <game>/Content/Paks/Solarpunk-Windows_1_P.*")
+    # silently shadowed. install.py copies the triple in under the _1_P name (order 204).
+    print("build complete -- run python tools/run.py (or python install.py, game closed) to"
+          " install the triple as <game>/Content/Paks/Solarpunk-Windows_1_P.*")
 
 if __name__ == "__main__":
     shutil.rmtree(STAGED, ignore_errors=True)
@@ -1218,6 +1288,7 @@ if __name__ == "__main__":
     make_icons()
     build_codex()
     patch_db_items()
+    patch_db_smeltables()
     pack()
     verify_pak()
     print("DONE")

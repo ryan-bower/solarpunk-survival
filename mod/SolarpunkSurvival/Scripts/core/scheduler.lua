@@ -19,11 +19,24 @@
 --
 -- SAFETY: the ticker itself touches only Lua tables and os.clock -- never a UObject (the
 -- proven native-crash rule); all queued actions run on the game thread inside the hop.
+--
+-- 2026-07-26: the same abort came back once, at save load, with a byte-identical UE4SS frame
+-- list. So the shadowing above removed the mod's OWN registry refs but not the last one it still
+-- has to make: the per-tick hop. `m_simple_lua_actions` is appended from THIS thread and walked
+-- on the game thread, so every hop is a chance to lose that race -- and a save load is when the
+-- mod schedules hardest (a Character notify per streamed-in animal, two passes per chest). Two
+-- rules now keep the list nearly empty: only ONE hop may be outstanding at a time, and a hop
+-- drains at most MAX_PER_HOP actions so a load-time flood is spread over ticks instead of run as
+-- one huge batch inside a single engine tick.
 local M = {}
 
 local TICK_MS = 50
+local MAX_PER_HOP = 24    -- actions per game-thread hop; the rest wait for the next tick
+local HOP_LOST_S = 5.0    -- a hop that never ran by now is gone (level change ate it); re-arm
 local queue = {}   -- array of { due = os.clock() seconds, fn = function }; drained slots hold false
 local deadSlots = 0
+local hopPending = false
+local hopArmedAt = 0
 
 function M.init(log)
   local realLoop = LoopAsync
@@ -44,6 +57,12 @@ function M.init(log)
 
   pcall(realLoop, TICK_MS, function()
     -- Lua tables + clock ONLY on this thread; UObjects are game-thread only.
+    if hopPending then
+      -- Last hop has not run yet. Adding a second one would put two of our entries in UE4SS's
+      -- action list at once for no gain -- the queue keeps everything, it just waits a tick.
+      if os.clock() - hopArmedAt > HOP_LOST_S then hopPending = false end
+      return false
+    end
     if #queue > 0 then
       local now = os.clock()
       local due
@@ -57,6 +76,7 @@ function M.init(log)
         if e and e.due <= now then
           due = due or {}; due[#due + 1] = e.fn
           queue[i] = false
+          if #due >= MAX_PER_HOP then break end
         end
       end
       if due then
@@ -74,12 +94,24 @@ function M.init(log)
           for i = last, w + 1, -1 do queue[i] = nil end
           deadSlots = 0
         end
-        pcall(realEIGT, function()
+        hopPending, hopArmedAt = true, os.clock()
+        local armed = pcall(realEIGT, function()
+          if log then log.step("sched.hop " .. #due) end
           for i = 1, #due do
             local ok, err = pcall(due[i])
             if not ok and log then log.warn("scheduler: deferred action failed: " .. tostring(err)) end
           end
+          if log then log.step("sched.done") end
+          hopPending = false
         end)
+        -- ExecuteInGameThread itself refused: nothing will ever clear the latch, so clear it here
+        -- or the whole mod's deferred work stops dead. The drained actions go back on the queue --
+        -- they were taken off in the expectation of a hop that never happened, and silently
+        -- dropping them is how a heal or a save-guard release goes missing.
+        if not armed then
+          hopPending = false
+          for i = 1, #due do queue[#queue + 1] = { due = 0, fn = due[i] } end
+        end
       end
     end
     return false -- keep ticking

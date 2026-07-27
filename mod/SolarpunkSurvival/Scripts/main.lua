@@ -15,6 +15,9 @@ local ok, err = pcall(function()
   local bus       = require("core.eventbus")
   local gate      = require("core.gate")
   local config    = require("core.config").init(modRoot)
+  -- Breadcrumbs BEFORE any feature arms a hook: a native AV leaves nothing behind but this file,
+  -- and its last line is the name of whatever was running when the process died.
+  log.armSteps(modRoot, config.get("step_log") == true, config.get("step_log_notify") == true)
   local buildinfo = require("buildinfo").init()
 
   log.info("SolarpunkSurvival v0.1.0 starting")
@@ -54,6 +57,8 @@ local ok, err = pcall(function()
     "features.codex",        -- the Tempest Codex: placed-book interact -> reader UI (content pak)
     "features.foundation",   -- snapped foundations skip the corners-touch-ground rule
     "features.qol",          -- chests x2, backpack, crouch, airship QoL, UI fixes, pings, map names
+    "features.ship_chest",   -- after qol: provides services.shipChestOpen that qol's wheel keys use
+    "features.manual_save",  -- a Save button in the pause menu (runs the game's own autosave)
     "ui.imgui_panel",
     -- dev.* are developer tools; the player install (install.py) excludes Scripts/dev
     -- entirely, and a missing dev module is skipped silently below. tools/run.py deploys them.

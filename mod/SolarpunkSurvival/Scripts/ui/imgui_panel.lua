@@ -41,16 +41,35 @@ function F.dumpStatus()
   ctx.log.info("tracked health records: " .. n)
 end
 
+-- Console values arrive as strings. Numbers were the only thing this ever accepted, which quietly
+-- made every BOOLEAN setting untunable: `sps set qol_crouch_hold 0` stored the NUMBER zero, and
+-- zero is true in Lua, so the switch you just "turned off" stayed on. A key whose default is a
+-- boolean now takes on/off/true/false/1/0 and is stored as a boolean.
+local function parseValue(key, raw)
+  if raw == nil then return nil, "missing value" end
+  local defaults = ctx.config.defaults or {}
+  local word = tostring(raw):lower()
+  if type(defaults[key]) == "boolean" then
+    if word == "true" or word == "on" or word == "yes" or word == "1" then return true end
+    if word == "false" or word == "off" or word == "no" or word == "0" then return false end
+    return nil, key .. " is a switch -- use on/off"
+  end
+  if word == "true" or word == "false" then return (word == "true") end
+  local n = tonumber(raw)
+  if n ~= nil then return n end
+  return nil, "value must be a number (or on/off for a switch)"
+end
+
 function F.command(params)
   params = params or {}
   if params[1] == "set" and params[2] then
     local key = params[2]
-    local val = tonumber(params[3])
+    local val, why = parseValue(key, params[3])
     if val ~= nil then
       ctx.config.set(key, val)
       ctx.log.info("config: " .. key .. " = " .. tostring(val))
     else
-      ctx.log.warn("usage: sps set <key> <number>")
+      ctx.log.warn("usage: sps set <key> <number|on|off>" .. (why and ("  -- " .. why) or ""))
     end
   else
     F.dumpStatus()

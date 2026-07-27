@@ -11,7 +11,7 @@ local M = {}
 -- Every symbol the mod can use, grouped by section. This schema drives the
 -- startup "what's still missing" report; keep it in sync with the profiles below.
 M.schema = {
-  weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn", "isDayProp", "isNightProp" },
+  weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "hardStopFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn", "isDayProp", "isNightProp" },
   player   = { "controllerClass", "curHealthProp", "maxHealthProp", "addHealthFn", "reduceHealthFn", "dieFn", "respawnFn", "pingFn", "curThirstProp", "maxThirstProp", "addThirstFn", "clientAddThirstFn" },
   pawn     = { "class", "healthProp", "isShelteredFn", "worldLocationFn", "respawnFn", "dropInventoryFn", "playerIdProp" },
   build    = { "pieceClass", "stableIdProp", "demolishFn", "demolishRefund" },
@@ -27,7 +27,12 @@ M.schema = {
   energy   = { "linkFn" },
   smoke    = { "shipDamageVfxFn" },
   net      = { "hasAuthorityFn", "playerStateClass" },
-  save     = { "saveFn", "loadFn" },
+  save     = { "saveFn", "loadFn", "managerClass", "managerProp", "gameStateClass",
+               "autosaveArmFn", "intervalProp", "saveDoneFns" },
+  savemenu = { "menuClass", "menuOpenFn", "buttonsBoxProp", "resumeButtonProp", "buttonClass",
+               "buttonPath", "buttonTextFn", "buttonClickFn",
+               "boxAddFn", "boxRemoveFn", "boxHasFn", "slotPadFn", "wblPath",
+               "setAngleFn", "renderTransformProp", "angleField", "buttonAngle" },
   items    = { "classFmt", "assetDir" },
   tree     = { "classPrefix", "fellFn", "growMeshesProp", "fakeMeshProp" },
   animal   = { "sheepClass", "chickenClass", "pigClass", "masterClass", "classPaths",
@@ -61,9 +66,17 @@ M.schema = {
                  "snapProp", "previewProp" },
   qol      = { "chestClass", "invSizeProp", "invUpgradeFn", "airshipClass", "shipChestOpenFn",
                "shipChestCloseFn", "openChestUiFn", "toggleInvFn", "controllingShipFn",
-               "invWidgetProp", "dockClass", "dockSpeedProp", "pingClass", "pingMeshProps",
+               "invWidgetProp", "invRowCountFn", "dockClass", "dockSpeedProp", "pingClass", "pingMeshProps",
                "overlayClass", "dropsProp", "mapCompClass", "mapOpenFn", "friendsMarkersProp",
-               "mapIconImgProp", "mapSelfIconProp", "palette" },
+               "mapIconImgProp", "mapSelfIconProp", "palette",
+               "pingIconSlot", "pingBeamSlot", "pingHideMat", "pingHideMatDir", "setMaterialFn",
+               "chestClassPath", "shipUnpossessFn",
+               "slotGridLibPath", "slotGridFn", "chestGridRows", "chestGridCols",
+               "chestUiClass", "chestUiPanelProp", "chestUiSlotsProp", "chestUiInvRefProp",
+               "chestUiSyncFn",
+               "crouchKeyEventFns", "deathLootStampFns", "deathLootLocProp",
+               "backpackTierFn", "playerdataProp", "playerdataTierField", "playerdataInvIdField",
+               "setInvIdFn", "invIdProp" },
 }
 
 M.profiles = {
@@ -72,6 +85,24 @@ M.profiles = {
     pawn = { worldLocationFn = "K2_GetActorLocation" }, -- standard AActor UFUNCTION
     net  = { hasAuthorityFn  = "HasAuthority" },         -- standard AActor UFUNCTION
     wand = { smcPath = "/Script/Engine.StaticMeshComponent" }, -- rig comps live ON the pawn
+    -- UMG's own API, unchanged since UE4. NOTE what is NOT here: UPanelWidget::InsertChildAt and
+    -- ShiftChild are plain C++, not UFUNCTIONs, so a Blueprint/Lua caller can only ever APPEND to
+    -- a box -- features/manual_save.lua works around that by re-appending the button it wants to
+    -- stay last.
+    savemenu = {
+      boxAddFn    = "AddChildToVerticalBox",  -- UVerticalBox -> the new UVerticalBoxSlot
+      boxRemoveFn = "RemoveChild",            -- UPanelWidget (returns bool)
+      boxHasFn    = "HasChild",               -- UPanelWidget: is this widget still OUR box's child?
+      slotPadFn   = "SetPadding",             -- UVerticalBoxSlot (FMargin)
+      wblPath     = "/Script/UMG.Default__WidgetBlueprintLibrary", -- CreateWidget from Lua
+      -- The pause menu's button box is itself rotated 180 degrees (that is how the designer made a
+      -- bottom-anchored menu grow upward), and every button in it carries a 180 counter-rotation so
+      -- its own text reads the right way up. A widget we create has NO transform, so it inherits the
+      -- container's flip and renders upside down -- we have to copy the siblings' counter-rotation.
+      setAngleFn          = "SetRenderTransformAngle", -- UWidget (float degrees)
+      renderTransformProp = "RenderTransform",         -- UWidget -> FWidgetTransform
+      angleField          = "Angle",                   -- FWidgetTransform's degrees field
+    },
     -- Stable engine symbols the Unlit ride (AAIController / ACharacter / UBrainComponent):
     animal = {
       moveCompProp     = "CharacterMovement", -- ACharacter's movement component property
@@ -97,7 +128,12 @@ M.profiles = {
       isDayProp       = "IsDay",                -- bool on the cycle manager -- daylight culls the Unlit
       isNightProp     = "IsNighttime",          -- inverse fallback if IsDay is renamed on a build
       startStormFn    = "InstantThunderstorm",  -- instantly begins a thunderstorm
-      stopStormFn     = "InstantSunny",         -- clears it
+      stopStormFn     = "InstantSunny",         -- repaints the sky sunny. A REPAINT ONLY: it does
+                                                -- not stop the running weather program -- wind
+                                                -- stays pinned and the native thunder loop keeps
+                                                -- striking (the 2026-07-27 "storm never clears").
+      hardStopFn      = "DEBUG_StopWeather",    -- the manager's own program stop; called BEFORE
+                                                -- the repaint so ending a storm actually ends it
       thunderFn       = "PlayThunder",          -- audible/sky-flash thunder cue (NOT a located bolt)
       -- (StartThunderLoop exists but is a runaway loop that InstantSunny won't stop -- do NOT use it)
       thunderLocXProp = "Thunderimpactlocx",    -- impact loc the game's own loop writes (informational --
@@ -486,8 +522,42 @@ M.profiles = {
     -- W_PlayerOverlay, WC_Map -- scratchpad re_qol/ dumps).
     qol = {
       chestClass    = "BP_Chest_Buildable_C",
+      -- Package path for a LoadAsset fallback when no chest is resident yet (a fresh world), so
+      -- the ship can still grow its storage chest (features/ship_chest.lua).
+      chestClassPath = "/Game/Code/Building_Placing/Placeables/BP_Chest_Buildable",
+      -- The chest UI's slot grid is built ONCE per widget by a LIBRARY call with LITERAL
+      -- dimensions -- W_ChestInventory's bytecode reads `CreateItemSlotGrid(self, player,
+      -- ChestInventory, 2, 6, ...)` (offline RE 2026-07-27, scratchpad re_ui/) -- so a grown
+      -- chest kept showing 12 widgets no matter how many slots the array held
+      -- (FillInventoryInGridPanel populates only the widgets that exist). The build is an
+      -- EX_FinalFunction static call, which UE4SS script hooks do NOT intercept (proven live
+      -- 2026-07-27), so qol rebuilds the grid from outside after each UI_OpenChestInventory:
+      -- these names are that rebuild's fingers into the widget.
+      slotGridLibPath = "/Game/UI/Framework/BPL_UiFunctions.BPL_UiFunctions_C",
+      slotGridFn      = "CreateItemSlotGrid",
+      chestGridRows   = 2,                        -- stock grid, kept for reference/tests
+      chestGridCols   = 6,                        -- column count the rebuild preserves
+      chestUiClass      = "W_ChestInventory_C",
+      chestUiPanelProp  = "ChestInventory",       -- UniformGridPanel the slots live in
+      chestUiSlotsProp  = "ChestSlots",           -- TArray<W_InventorySlot*> the fill loop reads
+      chestUiInvRefProp = "ChestInventoryRef",    -- BC_InventorySystem the widget is showing
+      chestUiSyncFn     = "SyncAndFill_Chest",    -- no-arg event: repopulate from the inventory
+      -- The airship BP implements the Pawn possession events (offline RE, scratchpad re_ship/):
+      -- ReceiveUnpossessed = "someone just stopped driving" = the ship-chest re-anchor moment.
+      shipUnpossessFn = "ReceiveUnpossessed",
       invSizeProp   = "InventorySize",            -- on the BC_InventorySystem component (int; chest stock 12)
       invUpgradeFn  = "SetInventoryUpgradeLevel", -- pawn fn (Level: int) -- the backpack tier apply
+      -- Backpack tier PERSISTENCE. SetInventoryUpgradeLevel only grows the live array; the tier
+      -- itself lives in the controller's Playerdata and is written by this one event -- exactly what
+      -- the game's own BLIB_DebugFunctions::SetInventoryLevel and BP_Backpack::OnCollect call.
+      -- Skipping it desyncs the save (see features/qol.lua::applyBackpack for what that costs).
+      backpackTierFn = "Playerdata_SaveBackpackTier", -- controller event (Level: int)
+      playerdataProp = "Playerdata",                  -- controller prop -> S_Saved_Player
+      -- S_Saved_Player members keep Blueprint's mangled <name>_<idx>_<guid> FNames.
+      playerdataTierField  = "InventoryUpgrades_84_42A7B4124E8647560320D69F2EBAAE56",
+      playerdataInvIdField = "InventoryID_60_9F40B03D435683709B5A9CA6D58906AE",
+      setInvIdFn    = "SetInventoryID",           -- controller event (InventorySystem, ID: FGuid)
+      invIdProp     = "InventoryID",              -- on BC_InventorySystem (FGuid; 0 = unlinked)
       airshipClass  = "BP_Airship_C",
       shipChestOpenFn  = "OpenChest",             -- airship events: the chest lid (no params)
       shipChestCloseFn = "CloseChest",
@@ -496,6 +566,26 @@ M.profiles = {
       toggleInvFn      = "ToggleInventory",       -- controller fn, no params: open/close own inventory
       controllingShipFn = "IsControllingAirship?",-- controller fn, single OUT bool (fresh-table call)
       invWidgetProp    = "UI_PlayerInventory",    -- controller prop -> the open W_PlayerInventory
+      invRowCountFn    = "GetRowCount",           -- W_PlayerInventory fn, single OUT int: how many
+                                                  -- 7-wide rows the grid is showing right now
+                                                  -- (3/4/5/6 for backpack tier 0/1/3/7). The window
+                                                  -- grows by whole rows, so this is what the
+                                                  -- hotbar's lift has to track.
+      -- HOLD-to-crouch needs a key RELEASE, and UE4SS only ever reports key DOWN. The game hands
+      -- us one: BP_MainPlayerCharacter declares raw LeftControl input-key events, and a UE
+      -- InputKey node compiles its Pressed and Released pins into exactly this pair of functions --
+      -- so hooking both IS a key-up subscription. (The game declares raw key events for only four
+      -- keys -- LeftControl, Gamepad_RightTrigger, Nine, Semicolon -- so this trick is Ctrl-only;
+      -- the letter key falls back to sampling APlayerController::IsInputKeyDown.)
+      crouchKeyEventFns = { "InpActEvt_LeftControl_K2Node_InputKeyEvent_2",
+                            "InpActEvt_LeftControl_K2Node_InputKeyEvent_3" },
+      -- Death loot: the controller stamps where your gear drops (DeathLootSpawnLocation) from the
+      -- dying pawn's ACTOR location, then spawns the chest a standing-height below it -- which
+      -- buries the chest when you die crouched, because crouching drops the actor origin by the
+      -- half-height difference (the feet stay planted, so the origin has to come down).
+      deathLootStampFns = { "SERVER_SetCurLocationAsDeathLootSpawn",
+                            "CLIENT_SetCurLocationAsDeathLootSpawn" },
+      deathLootLocProp  = "DeathLootSpawnLocation",
       dockClass     = "BP_Dock_C",
       dockSpeedProp = "TimelineSpeed",            -- double, stock 800.0 -- paces the recall flight
       pingClass     = "BP_Ping_C",
@@ -507,15 +597,103 @@ M.profiles = {
       friendsMarkersProp = "FriendsMarkers",      -- TMap<FString, WC_MapPlayerIcon> -- name -> icon
       mapIconImgProp     = "IMG_Player",          -- the icon widget's single Image
       mapSelfIconProp    = "WC_MainPlayer",       -- the local player's own icon on WC_Map
-      -- Per-player colors: cooked materials (ping mesh tint; SetMaterial on static comps is the
-      -- safe family) paired with the matching FLinearColor for the map icon. Deterministic
-      -- name-hash slot assignment keeps host and clients agreeing without replication.
+      -- The marker's own materials, from the SM_Ping mesh (offline RE, scratchpad re_ping/ and
+      -- re_ping2/SM_Ping.json): ONE flat plane, 167 wide x 1103 tall, origin at the base, and
+      -- BP_Ping overrides neither slot (OverrideMaterials is [null, null]). Neither stock
+      -- material declares a colour parameter, which is why tinting was never going to work.
+      -- SLOT ORDER, read from StaticMaterials (it is the reverse of the first guess):
+      --   slot 0 = M_Ping2, the Icon_Ping quad at the bottom of the plane ("the box")
+      --   slot 1 = M_Ping1, the ObjectOrientation-gradient beam (the rod)
+      pingIconSlot = 0,
+      pingBeamSlot = 1,
+      -- The engine's own draw-nothing material (BLEND_Masked, mask clips every pixel; it is what
+      -- Nanite dresses hidden sections in). Cooked into the game (bIncludedInBaseGame), lives in
+      -- Engine content rather than the game's material dir -- hence its own load path.
+      pingHideMat    = "NaniteHiddenSectionMaterial",
+      pingHideMatDir = "/Engine/EngineMaterials/",
+      -- The ONE material call this build tolerates. The whole material-PARAMETER family is fatal
+      -- on 24038177, and each member earned its entry the hard way:
+      --   * CreateDynamicMaterialInstance -- crashed twice (2026-07-26 22:52 + 23:40).
+      --   * SetVectorParameterValueOnMaterials -- crashed 2026-07-27 00:05:37, the moment it was
+      --     tried as the "safer door".
+      -- All three dumps are IDENTICAL: access violation reading 0x70, top frames UE4SS
+      -- +261bb1/+25ba75, not one game-module frame. UE4SS dies setting the call up; the engine
+      -- never runs, so neither the component nor the arguments were ever the problem. (Every
+      -- member call this mod has proven safe passes no FName parameter; every one of these takes
+      -- an FName. Unproven as the mechanism, but the pattern also swallows the "attach family"
+      -- fatalities -- worth remembering before trying any FName-taking member next time.)
+      -- Colour therefore cannot be APPLIED to a material at runtime, only CHOSEN: see palette.
+      setMaterialFn = "SetMaterial",     -- (ElementIndex: int, Material) -- proven live 00:05:37
+      -- Per-player colors. Each slot pairs the FLinearColor the MAP icon is tinted with (a UMG
+      -- widget call, safe) and the cooked game material whose BAKED-IN look is that same colour,
+      -- which is what the WORLD marker's slots are painted with -- flat colour without ever
+      -- touching a material parameter. Deterministic name-hash slot assignment keeps host and
+      -- clients agreeing without replication.
+      --
+      -- The materials (offline RE of the cooked binaries, scratchpad re_ping2/; same
+      -- BLEND_TranslucentGreyTransmittance family as the stock ping materials, except Energy_On
+      -- which is opaque emissive): M_Preview_Blue/Red are the build previews (exercised every
+      -- session), M_Energy_On is the powered-device indicator (constant 0,4,0 emissive green),
+      -- M_DockingBox is the airship docking guide's yellow.
       palette = {
-        { mat = "M_Cobalt",       r = 0.15, g = 0.45, b = 1.0  },  -- river blue
-        { mat = "M_Beeswax",      r = 1.0,  g = 0.8,  b = 0.1  },  -- wax yellow
-        { mat = "M_Plant_Tomato", r = 1.0,  g = 0.15, b = 0.1  },  -- tomato red
-        { mat = "M_Energy_On",    r = 0.2,  g = 1.0,  b = 0.55 },  -- powered green
+        { r = 0.15, g = 0.45, b = 1.0,  mat = "M_Preview_Blue" },  -- river blue
+        { r = 1.0,  g = 0.8,  b = 0.1,  mat = "M_DockingBox"   },  -- wax yellow
+        { r = 1.0,  g = 0.15, b = 0.1,  mat = "M_Preview_Red"  },  -- tomato red
+        { r = 0.2,  g = 1.0,  b = 0.55, mat = "M_Energy_On"    },  -- powered green
       },
+    },
+    -- The world save (offline RE 2026-07-26 of BPC_SaveManager + SkygameExtraFunctions --
+    -- scratchpad re_save/ dumps). The manager is a component on the GAME STATE; the library's
+    -- GetSaveManager is literally GetSkyGameGameState().BPC_SaveManager, so the mod reads the
+    -- property instead of marshalling an out-param library call.
+    --
+    -- `Save` IS the autosave: InvalidateAndSetAutosaveInterval binds a looping timer straight to
+    -- it. It broadcasts OnAutoSaveStarting (every system flushes its state into CachedSave and the
+    -- HUD's W_SaveIndicator lights up), then AsyncSaveCompressedGameToSlot(CachedSave,
+    -- GetCurWorldSaveName) and broadcasts OnAutoSaveCompleted when the write lands. So a manual
+    -- save is ONE call -- nothing reimplements saving. SaveToDisk is the sibling path that skips
+    -- the OnAutoSaveStarting flush; never use it for a player-triggered save.
+    save = {
+      gameStateClass = "BP_SkyGameGameState_C",
+      managerProp    = "BPC_SaveManager",       -- the component property on the game state
+      managerClass   = "BPC_SaveManager_C",     -- fallback lookup if the game state moves
+      saveFn         = "Save",                  -- the autosave entry point (no params)
+      loadFn         = "LoadSaveFromDisk",
+      autosaveArmFn  = "InvalidateAndSetAutosaveInterval",  -- (Interval) clear + re-arm the timer
+      intervalProp   = "SaveIntervall",         -- the manager's own interval (game's spelling)
+      -- "the write finished" signals, tried in order; the first that arms wins. The manager's own
+      -- callback is authoritative but GUID-named (a BP recompile renames it on a game update),
+      -- so the save indicator's stably-named handler -- bound to the same OnAutoSaveCompleted --
+      -- is kept as the degrade path. If BOTH ever go missing the in-flight guard falls back to
+      -- its timeout, so a lost signal costs a stale button label, never a stuck one.
+      saveDoneFns = {
+        { class = "BPC_SaveManager_C", fn = "Completed_BB33EECA440DCA1E1E27DABE0E75C18D" },
+        { class = "W_SaveIndicator_C", fn = "AutoSaveStopped" },
+      },
+    },
+    -- The pause menu (same dump session). BOX_MenuButtons is a plain UVerticalBox holding
+    -- [socials, spacer, unstuck, spacer, Quit, BackToMenu, Host, Invite, Settings, Resume], and the
+    -- box itself is rotated 180 degrees -- so VISUAL top-to-bottom is that list REVERSED (Resume on
+    -- top, socials at the bottom) and the last child renders highest. Re-appending Resume after the
+    -- Save button therefore parks Save directly under Resume. Every BTN2_ slot ships
+    -- Padding {Bottom = 4}; the mod re-applies that so a re-added button keeps the menu's spacing.
+    savemenu = {
+      menuClass        = "W_IngameMenu_C",     -- pre-created by the controller (its UI_IngameMenu)
+      menuOpenFn       = "Open",               -- fires every time ESC brings the menu up
+      buttonsBoxProp   = "BOX_MenuButtons",
+      resumeButtonProp = "BTN2_Resume",
+      buttonClass      = "W_MenuButton_V2_C",  -- the menu's own button widget (label + click sound)
+      buttonPath       = "/Game/UI/Widgets/WidgetComponents/W_MenuButton_V2.W_MenuButton_V2_C",
+      buttonTextFn     = "SetText",            -- (FText) -> TXT_Main. The button's `Text`
+                                               -- PROPERTY is deliberately never written -- see
+                                               -- manual_save.setLabel for why.
+      -- The button's OWN click handler. UE4SS cannot bind a Blueprint multicast delegate from
+      -- Lua, so the mod hooks this class function instead and filters on the instance -- it fires
+      -- for every W_MenuButton_V2 in the game, ours included.
+      buttonClickFn    = "BndEvt__Button_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature",
+      -- Fallback counter-rotation, used only if BTN2_Resume's own RenderTransform can't be read.
+      -- Every BTN2_ directly in BOX_MenuButtons ships RenderTransform {Angle = 180}.
+      buttonAngle      = 180.0,
     },
     rod = {
       stationClassCandidates = {

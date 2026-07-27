@@ -1,7 +1,9 @@
 -- Headless unit tests for the game-independent logic. Run from the repo root:
 --   lua tests/spec.lua
 -- Stubs the UE4SS globals + the game-facing modules so the pure logic (json, eventbus, config,
--- mapping, gate, health/damage math) can be verified without the game.
+-- mapping, gate, health/damage math) can be verified without the game. The last section goes
+-- further and drives features/manual_save.lua against fake UObjects -- its double-save guard is
+-- the one piece of feature code where being wrong costs the player their save file.
 local ROOT = "mod/SolarpunkSurvival/Scripts/"
 package.path = ROOT .. "?.lua;" .. package.path
 
@@ -66,6 +68,8 @@ do
   eq(m.items.classFmt, "BP_%s_Item_C", "mapping: item class format")
   eq(string.format(m.items.classFmt, "Log"), "BP_Log_Item_C", "mapping: item class formats a row")
   eq(m.player.pingFn, "MULTI_Ping", "mapping: ping hook is the validated broadcast")
+  eq(m.weather.hardStopFn, "DEBUG_StopWeather",
+     "mapping: ending a storm needs the program stop, not just the InstantSunny repaint")
   eq(m.player.reduceHealthFn, "Reduce Health", "mapping: damage goes through Reduce Health")
   eq(m.ritual.bookItemRow, "Handbook", "mapping: ritual book item")
   eq(m.ritual.hydrationOfferings.water, "BP_CarafeDrinkableWater_Item_C",
@@ -190,6 +194,72 @@ do
   end
   eq(m.foundation.ruleFn, "TestAdvancedBuildingRule", "mapping: the corner-ground rule fn")
   eq(m.foundation.snapProp, "IsSnapping", "mapping: build-system snap state prop")
+  -- the world save + its pause-menu button
+  eq(m.save.saveFn, "Save", "mapping: the save fn IS the autosave (the timer binds to it)")
+  eq(m.save.gameStateClass, "BP_SkyGameGameState_C", "mapping: the save manager hangs off the game state")
+  eq(m.save.managerProp, "BPC_SaveManager", "mapping: game-state prop holding the save manager")
+  eq(m.save.autosaveArmFn, "InvalidateAndSetAutosaveInterval",
+     "mapping: the game's own clear-and-re-arm for the autosave timer")
+  ok(#m.save.saveDoneFns >= 2,
+     "mapping: 'save finished' has a degrade path (the primary signal is GUID-named)")
+  eq(m.save.saveDoneFns[1].class, "BPC_SaveManager_C", "mapping: primary save-done signal is the manager's own")
+  eq(m.savemenu.menuClass, "W_IngameMenu_C", "mapping: the pause menu widget")
+  eq(m.savemenu.resumeButtonProp, "BTN2_Resume", "mapping: Resume is the row the Save button parks under")
+  eq(m.savemenu.buttonAngle, 180.0, "mapping: the pause menu's button box is rotated; buttons rotate back")
+  eq(m.savemenu.setAngleFn, "SetRenderTransformAngle", "mapping: how a Lua-made widget joins that flip")
+  eq(m.savemenu.boxAddFn, "AddChildToVerticalBox", "mapping: appending is the only insert Blueprint exposes")
+  eq(m.savemenu.wblPath, "/Script/UMG.Default__WidgetBlueprintLibrary",
+     "mapping: CreateWidget entry (shared with the codex)")
+  ok(m.savemenu.buttonClickFn:find("OnButtonClickedEvent") ~= nil,
+     "mapping: the button's click handler is hooked by name (Lua cannot bind a BP delegate)")
+  -- The backpack tier is the one QoL value that can destroy a save if it is only half-applied:
+  -- growing the live pack without recording the tier makes the game refuse its own player record.
+  eq(m.qol.backpackTierFn, "Playerdata_SaveBackpackTier",
+     "mapping: the tier must be RECORDED, not just applied to the live pawn")
+  ok(m.qol.playerdataTierField:find("^InventoryUpgrades_") ~= nil,
+     "mapping: S_Saved_Player members keep Blueprint's mangled FNames")
+  ok(m.qol.playerdataInvIdField:find("^InventoryID_") ~= nil,
+     "mapping: the saved inventory GUID field is mangled the same way")
+  eq(m.qol.setInvIdFn, "SetInventoryID", "mapping: how a lost inventory-to-save link is restored")
+  -- Ping colour: the ONLY safe material op on this build is SetMaterial with a cooked material --
+  -- every parameter-setting door (CreateDynamicMaterialInstance, Set*ParameterValueOnMaterials)
+  -- is a proven native crash (2026-07-26/27, three identical all-UE4SS dumps). So every palette
+  -- slot must carry its colour twice: the map-icon r/g/b AND a material whose baked look matches.
+  eq(m.qol.setMaterialFn, "SetMaterial", "mapping: the one survivable material call")
+  eq(m.qol.setVecOnMatsFn, nil, "mapping: the parameter family stays banned (vector)")
+  eq(m.qol.setScalarOnMatsFn, nil, "mapping: the parameter family stays banned (scalar)")
+  eq(m.qol.flatMats, nil, "mapping: no shared flat-material list -- colour is per palette slot")
+  -- SM_Ping slot order was read from the cooked mesh and is the REVERSE of the first guess:
+  -- 0 = icon quad ("the box"), 1 = gradient beam (the rod). Pin it so a refactor can't swap back.
+  eq(m.qol.pingIconSlot, 0, "mapping: icon quad is material slot 0 (M_Ping2)")
+  eq(m.qol.pingBeamSlot, 1, "mapping: beam is material slot 1 (M_Ping1)")
+  eq(m.qol.pingHideMat, "NaniteHiddenSectionMaterial",
+     "mapping: rod-only hides the icon with the engine's draw-nothing material")
+  ok(m.qol.pingHideMatDir:find("^/Engine/") ~= nil,
+     "mapping: the hide material loads from Engine content, not the game's material dir")
+  -- Chest grid: the UI dimensions are LITERALS in the chest widget's bytecode, and the build is
+  -- an EX_FinalFunction static call UE4SS hooks cannot intercept -- so qol rebuilds the grid
+  -- after each open through the game's own library. Pin every name that rebuild reaches for.
+  eq(m.qol.slotGridFn, "CreateItemSlotGrid", "mapping: the grid-builder the rebuild calls")
+  ok(m.qol.slotGridLibPath:find(":", 1, true) == nil and m.qol.slotGridLibPath:find("_C$") ~= nil,
+     "mapping: grid library path is a class path (CDO derived from it at rebuild time)")
+  eq(m.qol.chestGridRows, 2, "mapping: stock chest grid rows (reference)")
+  eq(m.qol.chestGridCols, 6, "mapping: chest grid columns the rebuild preserves")
+  eq(m.qol.chestUiClass, "W_ChestInventory_C", "mapping: the chest UI widget class")
+  eq(m.qol.chestUiPanelProp, "ChestInventory", "mapping: the grid panel property")
+  eq(m.qol.chestUiSlotsProp, "ChestSlots", "mapping: the slot-widget array the fill loop reads")
+  eq(m.qol.chestUiInvRefProp, "ChestInventoryRef", "mapping: the inventory the widget is showing")
+  eq(m.qol.chestUiSyncFn, "SyncAndFill_Chest", "mapping: the no-arg repopulate event")
+  eq(m.qol.chestClassPath, "/Game/Code/Building_Placing/Placeables/BP_Chest_Buildable",
+     "mapping: chest package path for the LoadAsset fallback")
+  eq(m.qol.shipUnpossessFn, "ReceiveUnpossessed", "mapping: the ship-chest re-anchor moment")
+  ok(#m.qol.palette >= 3, "mapping: enough palette slots to tell players apart")
+  for i, slot in ipairs(m.qol.palette) do
+    ok(type(slot.mat) == "string" and #slot.mat > 0,
+       "mapping: palette slot " .. i .. " names its baked-colour material")
+    ok(type(slot.r) == "number" and type(slot.g) == "number" and type(slot.b) == "number",
+       "mapping: palette slot " .. i .. " carries the map tint r/g/b")
+  end
 end
 
 ------------------------------------------------------------------ config
@@ -366,6 +436,281 @@ do
   health2.attach({ id = "s_dead" }, { max = 100, kind = "structure" })
   health2.applyDamage("s_dead", 999, { source = "lightning" })  -- -> destroyed
   ok(save.serialize().structures["s_dead"] == nil, "flags: destroyed structures are not persisted")
+end
+
+------------------------------------------------------------------ the poison latch
+-- log.risky is the only thing standing between "one engine call crashes the game" and "one engine
+-- call crashes the game every single launch forever", so it gets tested like it matters.
+do
+  local log = require("core.log")
+  local root = "./tests/.tmp_latch/"
+  local win = package.config:sub(1, 1) == "\\"
+  os.execute(win and 'mkdir "tests\\.tmp_latch\\dump" >nul 2>nul'
+                 or  'mkdir -p tests/.tmp_latch/dump 2>/dev/null')
+  log.armSteps(root, false)
+
+  local ran = 0
+  local survived = log.risky("unit:survives", function() ran = ran + 1 end)
+  eq(survived, true, "latch: a call that returns is reported ok")
+  eq(ran, 1, "latch: and it actually ran")
+  log.risky("unit:survives", function() ran = ran + 1 end)
+  eq(ran, 2, "latch: a survivor is not latched -- it runs again next time")
+
+  -- simulate a native crash: the marker is written and the process dies before it is removed
+  local f = io.open(root .. "dump/risky_unit_crashes.txt", "w")
+  if f then f:write("died\n"); f:close() end
+  local ran2 = 0
+  local rerun, why = log.risky("unit:crashes", function() ran2 = ran2 + 1 end)
+  eq(rerun, false, "latch: a tag whose marker survived the last run is refused")
+  eq(why, "poisoned", "latch: and says why")
+  eq(ran2, 0, "latch: the call that killed the game last time is NOT made again")
+  ok(log.isPoisoned("unit:crashes"), "latch: the tag reads as poisoned")
+  ok(not log.isPoisoned("unit:survives"), "latch: an unrelated tag is unaffected")
+
+  os.remove(root .. "dump/risky_unit_crashes.txt")
+  os.remove(root .. "dump/risky_unit_survives.txt")
+
+  -- stepv is the volume knob on the breadcrumb trail; if it leaks when off, a save load writes a
+  -- file per streamed-in actor and the trail is useless exactly when it is needed
+  local trail = root .. "dump/steps_crash.txt"
+  os.remove(trail)
+  local function trailHas(needle)
+    local h = io.open(trail, "r"); if not h then return false end
+    local body = h:read("*a"); h:close()
+    return body:find(needle, 1, true) ~= nil
+  end
+  log.armSteps(root, true, false)
+  log.step("unit-loud"); log.stepv("unit-quiet")
+  ok(trailHas("unit-loud"),      "stepv: an ordinary step still writes")
+  ok(not trailHas("unit-quiet"), "stepv: a verbose step is silent unless asked for")
+  log.armSteps(root, true, true)
+  log.stepv("unit-quiet")
+  ok(trailHas("unit-quiet"), "stepv: and writes once step_log_notify is on")
+  log.armSteps(root, false)          -- leave the singleton quiet for every block below
+  os.remove(trail)
+end
+
+------------------------------------------------------------------ the deferred-work scheduler
+-- core/scheduler.lua exists because UE4SS aborts the process when its own deferred-action list
+-- goes bad, so the rules that keep our footprint in that list small are worth asserting: at most
+-- ONE outstanding game-thread hop, a bounded batch per hop, and nothing dropped if a hop is
+-- refused. Driven with a hand-cranked ticker -- no timers, no sleeping.
+do
+  local savedEWD, savedEIGT, savedLoop = _G.ExecuteWithDelay, _G.ExecuteInGameThread, _G.LoopAsync
+  local tick
+  _G.LoopAsync = function(_, fn) tick = fn end
+  local hops, refuse = {}, false
+  _G.ExecuteInGameThread = function(fn)
+    if refuse then error("game thread refused") end
+    hops[#hops + 1] = fn
+  end
+
+  local sched = require("core.scheduler")
+  ok(sched.init(nil), "scheduler: init took over the async primitives")
+  ok(type(tick) == "function", "scheduler: and registered exactly one ticker")
+
+  local ran = 0
+  for _ = 1, 30 do ExecuteWithDelay(0, function() ran = ran + 1 end) end
+  tick()
+  eq(#hops, 1, "scheduler: a tick with work arms one hop")
+  tick(); tick()
+  eq(#hops, 1, "scheduler: further ticks add nothing while that hop is outstanding")
+  eq(ran, 0, "scheduler: and nothing has run off the game thread")
+
+  hops[1]()
+  eq(ran, 24, "scheduler: a hop drains at most MAX_PER_HOP actions")
+  tick()
+  eq(#hops, 2, "scheduler: the next tick picks up where it left off")
+  hops[2]()
+  eq(ran, 30, "scheduler: every queued action ran, none dropped")
+
+  -- a refused hop must not eat the batch, and must not latch the scheduler shut forever
+  ExecuteWithDelay(0, function() ran = ran + 1 end)
+  refuse = true
+  tick()
+  eq(#hops, 2, "scheduler: a refused hop is not counted")
+  refuse = false
+  tick()
+  eq(#hops, 3, "scheduler: the latch cleared -- deferred work is not dead")
+  hops[3]()
+  eq(ran, 31, "scheduler: the action the refused hop took off the queue was put back")
+
+  _G.ExecuteWithDelay, _G.ExecuteInGameThread, _G.LoopAsync = savedEWD, savedEIGT, savedLoop
+  package.loaded["core.scheduler"] = nil
+end
+
+------------------------------------------------------------------ playerPawn vs any old Character
+-- localPawn() ends in "the first Character in the world" on purpose, but animals are Characters
+-- and so is whatever the main menu is showing. Anything doing inventory or save work must be able
+-- to ask for the real player and get nil instead of a cow.
+do
+  local savedFirst, savedAll = _G.FindFirstOf, _G.FindAllOf
+  local cls = "BP_Animal_Cow_C"
+  local body = {
+    IsValid = function() return true end,
+    GetClass = function()
+      return { GetFName = function() return { ToString = function() return cls end } end }
+    end,
+  }
+  _G.FindAllOf = function() return {} end
+  _G.FindFirstOf = function(name) if name == "Character" then return body end return nil end
+
+  local uehelp = require("core.uehelp")
+  ok(uehelp.localPawn() == body, "playerPawn: localPawn still falls back to any Character")
+  eq(uehelp.playerPawn("BP_MainPlayerCharacter_C"), nil, "playerPawn: a cow is not the player")
+  ok(uehelp.playerPawn(nil) == body, "playerPawn: no class asked for means no class enforced")
+  cls = "BP_MainPlayerCharacter_C"
+  ok(uehelp.playerPawn("BP_MainPlayerCharacter_C") == body, "playerPawn: the real pawn comes back")
+
+  _G.FindFirstOf, _G.FindAllOf = savedFirst, savedAll
+end
+
+------------------------------------------------------------------ pause-menu save guards
+-- features/manual_save.lua is safety-critical (a second write landing on top of one already in
+-- flight is exactly the corruption the button must never cause), so it is driven for real against
+-- fake UObjects rather than trusted to review. Stubs from here down replace the module-level ones
+-- above; this section is deliberately LAST.
+do
+  local hooks, objects = {}, {}
+
+  -- A fake UObject: reflected props are plain fields, reflected UFunctions are plain methods, and
+  -- the reflection surface uehelp needs (IsValid / GetFullName / GetClass -> ForEachFunction) is
+  -- synthesised from the table itself.
+  local function obj(class, fields)
+    local o = fields or {}
+    function o:IsValid() return true end
+    function o:GetFullName() return class .. " /Game/Fake." .. class .. ":" .. tostring(o.__id or class) end
+    function o:GetClass()
+      return {
+        GetFName = function() return { ToString = function() return class end } end,
+        ForEachFunction = function(_, cb)
+          for name, v in pairs(o) do
+            if type(v) == "function" and name:sub(1, 2) ~= "__"
+               and name ~= "IsValid" and name ~= "GetFullName" and name ~= "GetClass" then
+              cb({ GetFName = function() return { ToString = function() return name end } end,
+                   -- RegisterHook is handed this with the leading type word stripped
+                   GetFullName = function() return "Function " .. class .. ":" .. name end })
+            end
+          end
+        end,
+      }
+    end
+    objects[class] = o
+    return o
+  end
+  local function fire(path, ...) local cb = hooks[path]; if cb then cb(...) end; return cb ~= nil end
+
+  local classes = { W_MenuButton_V2_C = { IsValid = function() return true end } }
+  _G.FindObject       = function(_, name) return classes[name] end
+  _G.FindFirstOf      = function(c) return objects[c] end
+  _G.FindAllOf        = function(c) return objects[c] and { objects[c] } or {} end
+  _G.RegisterHook     = function(path, cb) hooks[path] = cb end
+  _G.ExecuteWithDelay = function(_, fn) fn() end
+  _G.ExecuteInGameThread = function(fn) fn() end
+  _G.FText            = function(s) return s end
+
+  local saveCalls, rearmCalls, labels, removed = 0, 0, {}, {}
+
+  local btn = obj("W_MenuButton_V2_C", { __id = "SaveBtn" })
+  btn.SetText = function(_, t) labels[#labels + 1] = tostring(t) end
+  btn.SetRenderTransformAngle = function(_, a) btn.__angle = a end
+  btn["BndEvt__Button_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature"] = function() end
+
+  local slot = obj("VerticalBoxSlot", {}); slot.SetPadding = function() end
+  local children, adds = {}, 0
+  local box  = obj("VerticalBox", {})
+  box.AddChildToVerticalBox = function(_, w) box.__last = w; children[w] = true; adds = adds + 1; return slot end
+  box.RemoveChild = function(_, w) removed[#removed + 1] = w; children[w] = nil; return true end
+  box.HasChild = function(_, w) return children[w] == true end
+
+  -- the real BTN2_Resume carries a 180 counter-rotation against its rotated parent box
+  local resume = obj("BTN2_Resume_C", { __id = "Resume", RenderTransform = { Angle = 180.0 } })
+  local pc = obj("BP_MainPlayerController_C", {})
+  pc.IsLocalPlayerController = function() return true end
+  local menu = obj("W_IngameMenu_C", { BOX_MenuButtons = box, BTN2_Resume = resume })
+  menu.Open = function() end
+
+  local mgr = obj("BPC_SaveManager_C", { SaveIntervall = 300.0 })
+  mgr.Save = function()
+    saveCalls = saveCalls + 1
+    fire("BPC_SaveManager_C:Save")          -- the game's pre-hook fires on every write, ours included
+  end
+  mgr.InvalidateAndSetAutosaveInterval = function(_, iv) rearmCalls = rearmCalls + 1; mgr.__iv = iv end
+  mgr["Completed_BB33EECA440DCA1E1E27DABE0E75C18D"] = function() end
+  obj("BP_SkyGameGameState_C", { BPC_SaveManager = mgr })
+
+  _G.StaticFindObject = function(p)
+    if p == "/Script/UMG.Default__WidgetBlueprintLibrary" then
+      return { Create = function() return btn end }
+    end
+    return nil
+  end
+
+  local sidecar = 0
+  bus.on("save.write", function() sidecar = sidecar + 1 end)
+  config.init("./__no_such_modroot__/")
+  local isHost = true
+  local log = require("core.log")
+  log.setLevel("error")   -- the refusals below are logged at info by design
+  local F = require("features.manual_save")
+  eq(F.init({
+    map = mapping.resolve("24038177"), config = config, log = log, bus = bus, gate = gate,
+    uehelp = require("core.uehelp"), net = { isHost = function() return isHost end },
+  }), true, "save button: init succeeds")
+
+  eq(box.__last, resume, "save button: Resume is re-appended last, so the Save row sits above it")
+  eq(removed[1], resume, "save button: Resume left the box exactly once to make room")
+  eq(labels[1], "Save Game", "save button: carries the idle label")
+  eq(btn.__angle, 180.0, "save button: copies Resume's counter-rotation (or it renders upside down)")
+
+  -- re-opening the menu must not stack a second button, but a button that is GONE from the box
+  -- (the recycled-object-name case a bare IsValid would miss) must be rebuilt
+  local addsAfterInject = adds
+  fire("W_IngameMenu_C:Open")
+  eq(adds, addsAfterInject, "save button: re-opening the menu does not add a second button")
+  children[btn] = nil
+  fire("W_IngameMenu_C:Open")
+  eq(adds, addsAfterInject + 2, "save button: a button missing from the box is rebuilt (with Resume behind it)")
+
+  local CLICK = "W_MenuButton_V2_C:BndEvt__Button_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature"
+  local DONE  = "BPC_SaveManager_C:Completed_BB33EECA440DCA1E1E27DABE0E75C18D"
+  ok(hooks[CLICK] ~= nil, "save button: the click handler is hooked")
+  ok(hooks["BPC_SaveManager_C:Save"] ~= nil, "save button: the game's own Save is hooked")
+  ok(hooks[DONE] ~= nil, "save button: the save-finished signal is hooked")
+  local function click(who) fire(CLICK, { get = function() return who or btn end }) end
+
+  click()
+  eq(saveCalls, 1, "save button: a click saves")
+  eq(rearmCalls, 1, "save button: a manual save re-arms the autosave timer")
+  eq(mgr.__iv, 300.0, "save button: re-armed with the game's own interval")
+  ok(sidecar >= 1, "save button: the mod's sidecar state rides the game save")
+
+  click()
+  eq(saveCalls, 1, "save button: a second click DURING the write is refused (no double save)")
+
+  fire(DONE); click()
+  eq(saveCalls, 1, "save button: a click inside the cooldown is refused")
+
+  config.set("save_button_cooldown", 0); click()
+  eq(saveCalls, 2, "save button: past the cooldown a click saves again")
+
+  fire(DONE); fire("BPC_SaveManager_C:Save"); click()
+  eq(saveCalls, 2, "save button: a click during the GAME's autosave is refused")
+  fire(DONE)
+
+  isHost = false; click()
+  eq(saveCalls, 2, "save button: a client click is refused (only the host writes the world save)")
+  isHost = true
+
+  -- a completion signal that never arrives must not wedge the button shut for the session
+  fire("BPC_SaveManager_C:Save")
+  config.set("save_button_timeout", -1); click()
+  eq(saveCalls, 3, "save button: a stale in-flight flag times out instead of locking the button")
+
+  fire(DONE); mgr.SaveIntervall = 0
+  local before = rearmCalls; click()
+  eq(rearmCalls, before, "save button: an insane autosave interval leaves the game's timer alone")
+  log.setLevel("info")
 end
 
 print(string.format("\n%d passed, %d failed", passed, failed))

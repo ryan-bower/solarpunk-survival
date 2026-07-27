@@ -36,3 +36,6 @@ __pycache__/
 *.bak
 Thumbs.db
 .DS_Store
+
+# scratch dir the poison-latch spec creates
+tests/.tmp_latch/

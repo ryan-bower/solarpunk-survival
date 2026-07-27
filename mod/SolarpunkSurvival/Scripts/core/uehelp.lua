@@ -64,6 +64,45 @@ function M.localPawn()
   return M.findFirst("Character")
 end
 
+-- The LOCAL PLAYER's pawn and nothing else.
+--
+-- localPawn() ends in `findFirst("Character")` on purpose -- most callers want *a* body and would
+-- rather have one a frame early than none. But animals are Characters, and so is whatever the
+-- main-menu level is showing: on 2026-07-26 that fallback handed the backpack repair a menu
+-- Character five seconds after launch, so the repair ran (and latched "world seen") against
+-- something that was never the player. Anything doing inventory, save or Playerdata work asks
+-- for the mapped player class by name instead.
+function M.playerPawn(className)
+  local pawn = M.localPawn()
+  if not pawn then return nil end
+  if className and M.className(pawn) ~= className then return nil end
+  return pawn
+end
+
+-- Where the local view is, as a plain {X,Y,Z}. The camera manager is the real answer (it follows
+-- the spring arm, the airship seat, a cutscene); the pawn is the fallback for the frame or two
+-- before the manager exists. Nothing here is cached -- a camera manager is per-controller and this
+-- is called from short-lived loops that must never hold a UObject across a tick.
+function M.cameraLocation(pc)
+  pc = pc or M.playerController()
+  if pc then
+    local mgr
+    pcall(function() mgr = pc.PlayerCameraManager end)
+    if M.isValid(mgr) then
+      local loc
+      pcall(function() loc = M.vec(mgr:GetCameraLocation()) end)
+      if loc then return loc end
+    end
+  end
+  local pawn = M.localPawn()
+  if pawn then
+    local loc
+    pcall(function() loc = M.vec(pawn:K2_GetActorLocation()) end)
+    if loc then return loc end
+  end
+  return nil
+end
+
 -- Call a reflected UFunction by name. Returns ok, result.
 -- NOTE: UE4SS exposes reflected methods as *userdata* (callable), NOT a Lua `function`, so we must
 -- NOT type-check for "function" here. obj[fnName](obj, ...) is the method-call form and works for
@@ -191,8 +230,14 @@ function M.onNewInstance(nativePath, shortClass, cb)
     -- the notify callback runs mid-construction with no outer guard: never let an error escape
     pcall(function()
       local name = M.className(obj)
-      for _, l in ipairs(listeners) do
-        if not l.cls or name == l.cls then pcall(l.cb, obj) end
+      for i, l in ipairs(listeners) do
+        if not l.cls or name == l.cls then
+          -- breadcrumb only on a MATCH, and only when explicitly asked for: this fires for every
+          -- actor the world streams in, and a write per construction costs more than the crash
+          -- it is hunting (see log.stepv)
+          log.stepv("notify " .. tostring(nativePath) .. " -> " .. tostring(name) .. " #" .. i)
+          pcall(l.cb, obj)
+        end
       end
     end)
   end)

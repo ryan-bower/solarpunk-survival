@@ -238,32 +238,124 @@ M.defaults = {
                                  -- lightning, tools) use the authoritative tracking table, not names.
 
   -- quality of life (features/qol.lua) -- all live-tunable via `sps set`
-  qol_chest_size      = 24,      -- chest slots (stock 12). Host grows EMPTY chests to this size
+  qol_chest_grow_occupied = true,-- grow chests that HOLD things too, via the buffer shuffle
+                                 -- (game-side index moves through a temporary chest; items are
+                                 -- verified by count at every phase and never deleted)
+  qol_chest_size      = 24,      -- chest slots (stock 12). Host grows chests to this size
                                  -- (the game's own bulk setter); an occupied chest grows on the
                                  -- next pass after it is emptied. Clients see it via replication.
-  qol_backpack_level  = 3,       -- backpack upgrade tier applied on world entry (-1 = leave alone)
-  qol_crouch          = true,    -- crouch toggle keys below
+  qol_backpack_level  = 3,       -- backpack upgrade tier applied on world entry (-1 = leave alone).
+                                 -- Only 0/1/3/7 are real tiers -> 29/36/43/50 slots; anything else
+                                 -- the game rounds down to 29 and your save stops loading.
+  qol_backpack_relink = true,    -- repair a save this mod already broke by upgrading the pack
+                                 -- without recording the tier. On: your CURRENT inventory becomes
+                                 -- the saved one. Off: the next load restores the older snapshot
+                                 -- the game still has stored, and this session's items are lost.
+  qol_crouch          = true,    -- crouch while the key is HELD (release stands you back up)
+  qol_crouch_hold     = true,    -- false = tap-to-toggle instead. Holding needs a key RELEASE,
+                                 -- which UE4SS never reports, so qol takes it from the game: Ctrl
+                                 -- rides the pawn's own LeftControl press/release events, and the
+                                 -- letter key samples the controller's IsInputKeyDown while held.
+                                 -- If a build won't report key state the letter key says so once
+                                 -- in the log and falls back to a toggle; Ctrl still holds.
   qol_crouch_key      = "C",
-  qol_crouch_key2     = "LEFT_CONTROL",
-  qol_ship_chest_key  = "B",     -- open the airship's built-in chest (near it or at the wheel)
+  qol_crouch_key2     = "LEFT_CONTROL",  -- Ctrl/Shift/Alt are absent from UE4SS's Key table; qol
+                                 -- binds these by raw virtual-key code instead (see qol.bind)
+  qol_crouch_deathloot_fix = true, -- dying crouched dropped the loot chest under the ground (the
+                                 -- game stamps the drop spot off the pawn origin, which crouching
+                                 -- lowers). Corrects the stamped spot back to standing height.
+  qol_ship_chest_key  = "B",     -- open the airship's storage (near it or at the wheel)
   qol_ship_chest_range = 3000.0, -- cm (30 m); how far from the ship the chest key still works
-  qol_ship_inv_key    = "TAB",   -- open your OWN inventory while flying (game blocks its key there)
+  qol_ship_inv_key    = "TAB",   -- at the wheel this opens the TRANSFER view: the ship's storage
+                                 -- chest + your own inventory in one panel (on foot the game's
+                                 -- own binding handles the key)
+
+  -- The ship's storage chest (features/ship_chest.lua): a real chest kept at the inside back of
+  -- the airship -- no in-game chest upgrade needed (that upgrade collides with the other ship
+  -- upgrades). Real chest = stock model, native walk-up interact, contents ride the game save.
+  ship_chest          = true,    -- the airship simply HAS storage
+  ship_chest_back     = -240.0,  -- ship-relative offsets to where the chest sits; the default is
+  ship_chest_right    = 0.0,     -- the exact spot the game parks its own chest-upgrade lid
+  ship_chest_up       = 40.0,    -- (SM_Chest_Top at (-239, 0, 56), offline RE). Tune live with
+                                 -- `sps set ship_chest_back -300` etc.; re-anchors on next park.
+  ship_chest_adopt_r  = 600.0,   -- cm; a chest within this range of the anchor (or of where the
+                                 -- sidecar remembers leaving it) IS the ship chest -- adopted,
+                                 -- moved, never duplicated
   qol_recall_mult     = 3.0,     -- airship recall speed multiplier (dock TimelineSpeed, stock 800)
   qol_hotbar_raise    = true,    -- pull the hotbar up under the open inventory window
   qol_hotbar_x        = 0.0,     -- hotbar shift while the inventory is open (px at 1080p design res)
-  qol_hotbar_y        = -240.0,  -- negative = up
+  qol_hotbar_y        = -430.0,  -- negative = up. LIVE geometry is unreadable from Lua
+                                 -- (GetCachedGeometry marshals to an empty table); this constant
+                                 -- was dialled in live (`sps set qol_hotbar_y -500` re-places it
+                                 -- immediately) AT the row count below, and the per-row shift is
+                                 -- taken from the COOKED layout instead (offline RE 2026-07-27,
+                                 -- scratchpad re_ui/): the window's canvas slot is anchored AND
+                                 -- aligned at screen centre with auto-size, so it grows
+                                 -- symmetrically -- its bottom edge moves half a row per row.
+  qol_hotbar_rows_base = 5,      -- the row count qol_hotbar_y was tuned against. -430 was dialled
+                                 -- in live on 2026-07-26 with the tier-3 backpack showing 5 rows
+                                 -- (GetRowCount: tier 0/1/3/7 -> 3/4/5/6 rows).
+  qol_hotbar_row_px   = 40.0,    -- how far the window's BOTTOM EDGE moves per row added: one
+                                 -- W_InventorySlot is 80x80 in a padding-free UniformGridPanel
+                                 -- with no ScaleBox in its chain, and the centre-anchored window
+                                 -- splits that growth between top and bottom -> 40. Positive,
+                                 -- because more rows push the hotbar DOWN (less lift).
   qol_drops_center    = true,    -- move the "+4 Wood" pickup feed to mid-screen
   qol_drops_x         = 0.0,     -- offset from dead centre (px); tune live with `sps set`
   qol_drops_y         = 120.0,   -- a touch below centre so it never sits on the crosshair
   qol_ping_scale_xy   = 1.5,     -- ping marker girth (1.0 = stock)
-  qol_ping_scale_z    = 12.0,    -- ping marker height -- a pillar that reads over trees/hills
-  qol_ping_colors     = true,    -- tint each ping with the pinging player's palette color
+  qol_ping_scale_z    = 10.0,    -- ping marker height ("4X as tall" than the old 2.5 -- user spec
+                                 -- 2026-07-27). The stock plane is ~11m, so this is a ~110m beacon.
+                                 -- Safe to raise now that the marker turns to face you -- a tall
+                                 -- plane no longer goes edge-on and vanishes.
+  qol_ping_colors     = true,    -- paint each ping the pinging player's palette slot: a cooked
+                                 -- material whose baked-in colour matches their map icon's tint.
+                                 -- (Setting a material PARAMETER is a proven native crash on this
+                                 -- build -- the colour must come baked into the material chosen.)
+  qol_ping_rod_only   = true,    -- hide SM_Ping's icon quad (the "box" at the marker's base once
+                                 -- painted flat) by dressing it in the engine's draw-nothing
+                                 -- masked material -- leaving just the beam. false = paint the
+                                 -- icon quad the palette colour too (the old two-slot look).
+  qol_ping_face       = true,    -- turn the marker to face the camera while it is on the ground
+  qol_ping_face_ms    = 66,      -- how often (ms). The loop only runs while a ping exists and
+                                 -- re-finds it every step -- it never holds the actor across one.
+  qol_ping_face_yaw   = 90.0,    -- SM_Ping's visible face is its Y axis, not +X: at 0 the facing
+                                 -- loop presented the marker edge-on 90 degrees off (user-observed
+                                 -- 2026-07-27). The beam is painted flat so front vs back is
+                                 -- indistinguishable; if a stock glyph (rod_only fallback) ever
+                                 -- reads mirrored, use 270.
   qol_map_names       = true,    -- map player icons: palette tint + name tooltip
+
+  -- manual save (features/manual_save.lua): a Save button in the pause menu that runs the game's
+  -- own autosave on demand. HOST ONLY -- only the host holds the world save (see the module).
+  save_button          = true,   -- add the button to the ESC menu, just above Resume
+  save_button_label    = "Save Game",
+  save_button_busy_label = "Saving...",  -- while a save is in flight (ours or the game's autosave)
+  save_button_done_label = "Saved",      -- flashed when the write lands
+  save_button_done_seconds = 3.0,        -- how long "Saved" lingers before the label reads normal
+  save_button_cooldown = 10.0,   -- seconds after a completed save before another may be asked for.
+                                 -- Not a corruption guard (the in-flight check is) -- it just stops
+                                 -- an impatient double-click from queueing a second full write.
+  save_button_timeout  = 60.0,   -- seconds after which an unfinished save is assumed dead. Only
+                                 -- ever reached if the "write finished" hook failed to arm; without
+                                 -- it a lost signal would wedge the button shut for the session.
+  save_button_rearm_autosave = true, -- a manual save pushes the next autosave a full interval out,
+                                 -- so the timer doesn't write again seconds after you just did.
+                                 -- Skipped unless the game's own interval reads back sane.
 
   -- misc
   friendly_fire       = true,
   imgui_key           = "F7",
   log_level           = "info",
+  step_log            = true,    -- write dump/steps_crash.txt: one line per guarded hook body,
+                                 -- appended and closed BEFORE it runs. A native access violation
+                                 -- takes the process down with nothing flushed, so this file's
+                                 -- last line is the only thing that names what died. Cheap, but
+                                 -- it is a crash-hunting tool -- turn it off once the hunt is over.
+  step_log_notify     = false,   -- also breadcrumb every object-construction notify. A save load
+                                 -- streams in hundreds of Characters, so this buries the rest of
+                                 -- the trail and adds file I/O to the seconds being investigated:
+                                 -- on only when the suspect IS a notify listener.
   game_build          = nil,     -- optional manual build-id override for buildinfo
 }
 
