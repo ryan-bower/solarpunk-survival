@@ -244,31 +244,43 @@ M.defaults = {
   qol_chest_size      = 24,      -- chest slots (stock 12). Host grows chests to this size
                                  -- (the game's own bulk setter); an occupied chest grows on the
                                  -- next pass after it is emptied. Clients see it via replication.
-  qol_backpack_level  = 3,       -- backpack upgrade tier applied on world entry (-1 = leave alone).
+  qol_backpack_level  = 0,       -- backpack upgrade tier applied on world entry (-1 = leave alone).
                                  -- Only 0/1/3/7 are real tiers -> 29/36/43/50 slots; anything else
                                  -- the game rounds down to 29 and your save stops loading.
+                                 -- 0 is stock, i.e. no expansion (set back to 3 for the 43-slot
+                                 -- pack). Going DOWN only happens with room to spare: a shrink is
+                                 -- skipped, with a log line, while more is carried than the smaller
+                                 -- pack holds, and the tier is not recorded until the array really
+                                 -- did resize.
   qol_backpack_relink = true,    -- repair a save this mod already broke by upgrading the pack
                                  -- without recording the tier. On: your CURRENT inventory becomes
                                  -- the saved one. Off: the next load restores the older snapshot
                                  -- the game still has stored, and this session's items are lost.
-  qol_crouch          = true,    -- crouch while the key is HELD (release stands you back up)
-  qol_crouch_hold     = true,    -- false = tap-to-toggle instead. Holding needs a key RELEASE,
-                                 -- which UE4SS never reports, so qol takes it from the game: Ctrl
-                                 -- rides the pawn's own LeftControl press/release events, and the
-                                 -- letter key samples the controller's IsInputKeyDown while held.
-                                 -- If a build won't report key state the letter key says so once
-                                 -- in the log and falls back to a toggle; Ctrl still holds.
+  qol_crouch          = true,    -- crouch: TAP either key to toggle, HOLD either key to crouch
+                                 -- for exactly the hold. Ctrl's release is exact (the pawn's own
+                                 -- press/release events); the letter key's release is inferred
+                                 -- from the OS key-repeat stream going quiet, so standing back
+                                 -- up after a HELD letter key lags ~0.7s. Prefer Ctrl for holds.
+  qol_crouch_hold     = true,    -- false = both keys are plain toggles (one press per toggle).
+                                 -- Note there is NO safe direct key-state read on this build:
+                                 -- IsInputKeyDown takes an FKey (a struct wrapping an FName) and
+                                 -- is a proven process kill (2026-07-27).
   qol_crouch_key      = "C",
   qol_crouch_key2     = "LEFT_CONTROL",  -- Ctrl/Shift/Alt are absent from UE4SS's Key table; qol
                                  -- binds these by raw virtual-key code instead (see qol.bind)
+  qol_crouch_repeat_gap = 0.65,  -- s; down-events closer together than this are the OS repeating
+                                 -- a HELD key, farther apart are fresh presses. Raise it (e.g.
+                                 -- 1.1) if Windows' keyboard repeat delay is set to Long and a
+                                 -- held letter key flickers; lower toward 0.35 for Short.
   qol_crouch_deathloot_fix = true, -- dying crouched dropped the loot chest under the ground (the
                                  -- game stamps the drop spot off the pawn origin, which crouching
                                  -- lowers). Corrects the stamped spot back to standing height.
   qol_ship_chest_key  = "B",     -- open the airship's storage (near it or at the wheel)
   qol_ship_chest_range = 3000.0, -- cm (30 m); how far from the ship the chest key still works
-  qol_ship_inv_key    = "TAB",   -- at the wheel this opens the TRANSFER view: the ship's storage
-                                 -- chest + your own inventory in one panel (on foot the game's
-                                 -- own binding handles the key)
+  qol_ship_inv_key    = "TAB",   -- at the wheel this TOGGLES the TRANSFER view: the ship's
+                                 -- storage chest + your own inventory in one panel; press again
+                                 -- (or ESC) to close (on foot the game's own binding handles
+                                 -- the key)
 
   -- The ship's storage chest (features/ship_chest.lua): a real chest kept at the inside back of
   -- the airship -- no in-game chest upgrade needed (that upgrade collides with the other ship
@@ -278,22 +290,27 @@ M.defaults = {
   ship_chest_right    = 0.0,     -- the exact spot the game parks its own chest-upgrade lid
   ship_chest_up       = 40.0,    -- (SM_Chest_Top at (-239, 0, 56), offline RE). Tune live with
                                  -- `sps set ship_chest_back -300` etc.; re-anchors on next park.
+  ship_chest_yaw      = 90.0,    -- deg the chest is spun beyond the ship's own facing. At 0 it
+                                 -- sat lengthwise (user 2026-07-27: quarter-turn it); 270 is the
+                                 -- other quarter if the lid ends up opening into the hull.
   ship_chest_adopt_r  = 600.0,   -- cm; a chest within this range of the anchor (or of where the
                                  -- sidecar remembers leaving it) IS the ship chest -- adopted,
                                  -- moved, never duplicated
   qol_recall_mult     = 3.0,     -- airship recall speed multiplier (dock TimelineSpeed, stock 800)
   qol_hotbar_raise    = true,    -- pull the hotbar up under the open inventory window
   qol_hotbar_x        = 0.0,     -- hotbar shift while the inventory is open (px at 1080p design res)
-  qol_hotbar_y        = -430.0,  -- negative = up. LIVE geometry is unreadable from Lua
+  qol_hotbar_y        = -240.0,  -- negative = up. LIVE geometry is unreadable from Lua
                                  -- (GetCachedGeometry marshals to an empty table); this constant
-                                 -- was dialled in live (`sps set qol_hotbar_y -500` re-places it
+                                 -- was dialled in live (`sps set qol_hotbar_y -240` re-places it
                                  -- immediately) AT the row count below, and the per-row shift is
                                  -- taken from the COOKED layout instead (offline RE 2026-07-27,
                                  -- scratchpad re_ui/): the window's canvas slot is anchored AND
                                  -- aligned at screen centre with auto-size, so it grows
                                  -- symmetrically -- its bottom edge moves half a row per row.
-  qol_hotbar_rows_base = 5,      -- the row count qol_hotbar_y was tuned against. -430 was dialled
-                                 -- in live on 2026-07-26 with the tier-3 backpack showing 5 rows
+                                 -- (-240 is the eyes-on 07-26 dial; an unverified -430 shipped
+                                 -- overnight and parked the bar mid-window -- user report 07-27.)
+  qol_hotbar_rows_base = 5,      -- the row count qol_hotbar_y was tuned against: dialled with the
+                                 -- tier-3 backpack showing 5 rows
                                  -- (GetRowCount: tier 0/1/3/7 -> 3/4/5/6 rows).
   qol_hotbar_row_px   = 40.0,    -- how far the window's BOTTOM EDGE moves per row added: one
                                  -- W_InventorySlot is 80x80 in a padding-free UniformGridPanel

@@ -64,7 +64,7 @@ M.schema = {
                "researchFieldId", "researchFieldDone" },
   foundation = { "previewPaths", "buildSystemClass", "buildSystemPath", "gateFn", "ruleFn",
                  "snapProp", "previewProp" },
-  qol      = { "chestClass", "invSizeProp", "invUpgradeFn", "airshipClass", "shipChestOpenFn",
+  qol      = { "chestClass", "invSizeProp", "invUpgradeFn", "invLenForTierFn", "airshipClass", "shipChestOpenFn",
                "shipChestCloseFn", "openChestUiFn", "toggleInvFn", "controllingShipFn",
                "invWidgetProp", "invRowCountFn", "dockClass", "dockSpeedProp", "pingClass", "pingMeshProps",
                "overlayClass", "dropsProp", "mapCompClass", "mapOpenFn", "friendsMarkersProp",
@@ -73,7 +73,11 @@ M.schema = {
                "chestClassPath", "shipUnpossessFn",
                "slotGridLibPath", "slotGridFn", "chestGridRows", "chestGridCols",
                "chestUiClass", "chestUiPanelProp", "chestUiSlotsProp", "chestUiInvRefProp",
-               "chestUiSyncFn",
+               "chestUiSyncFn", "slotGridPlayerFn", "chestUiPlayerPanelProp",
+               "chestUiBackpackPanelProp", "chestUiPlayerSlotsProp", "chestUiPlayerInvRefProp",
+               "chestUiPlayerSyncFn", "chestUiBackpackToggleProp", "chestUiMainBoxProp",
+               "chestUiBackpackBoxProp", "chestUiShowBackpackProp", "invHotbarSlots",
+               "overlayProp", "overlayShowHotbarFn", "overlayShowShipCtlFn",
                "crouchKeyEventFns", "deathLootStampFns", "deathLootLocProp",
                "backpackTierFn", "playerdataProp", "playerdataTierField", "playerdataInvIdField",
                "setInvIdFn", "invIdProp" },
@@ -542,11 +546,39 @@ M.profiles = {
       chestUiSlotsProp  = "ChestSlots",           -- TArray<W_InventorySlot*> the fill loop reads
       chestUiInvRefProp = "ChestInventoryRef",    -- BC_InventorySystem the widget is showing
       chestUiSyncFn     = "SyncAndFill_Chest",    -- no-arg event: repopulate from the inventory
+      -- The PLAYER side of the same widget (offline RE 2026-07-27, scratchpad re_backpack\):
+      -- UpdateBackpackDisplayIfRequired builds a 3x7 main grid plus a SEPARATE
+      -- GetBackpackRows-sized grid behind a switch; rows come from Playerdata.InventoryUpgrades
+      -- (bitmask 0/1/3/7 -> 0/1/2/3 rows), and its fill loop skips the inventory array's first
+      -- 8 entries (the hotbar; bytecode literal `index > 7`).
+      slotGridPlayerFn        = "CreateItemSlotGridForPlayer", -- BPL_UiFunctions, same arity as
+                                                               -- CreateItemSlotGrid
+      chestUiPlayerPanelProp  = "GRID_PlayerInventory",  -- UniformGridPanel, the 3x7 main grid
+      chestUiBackpackPanelProp = "Grid_BackpackInventory", -- the switched-to backpack grid
+      chestUiPlayerSlotsProp  = "PlayerSlots",           -- TArray<W_InventorySlot*> the player
+                                                         -- fill loop reads (main + backpack)
+      chestUiPlayerInvRefProp = "PlayerInventoryRef",    -- BC_InventorySystem of the player
+      chestUiPlayerSyncFn     = "SyncAndFill_Player",    -- no-arg event: repopulate player side
+      chestUiBackpackToggleProp = "KeyItemsToggle",      -- the main/backpack switch button
+      chestUiMainBoxProp      = "MainInventory",         -- box holding the main grid
+      chestUiBackpackBoxProp  = "BackbackInventory",     -- box holding the backpack grid (sic)
+      chestUiShowBackpackProp = "ShowBackpack",          -- which box the open path shows
+      invHotbarSlots          = 8,                       -- leading inventory entries = hotbar
+      -- Driving the airship swaps the bottom-of-screen hotbar for the airship control icons;
+      -- the giveaway is SERVER_LeaveAirship's client path, which undoes exactly this pair on
+      -- stepping off (offline RE 2026-07-27). Both are events on the player overlay widget.
+      overlayProp          = "PlayerOverlay",            -- the controller's overlay instance
+      overlayShowHotbarFn  = "SetShowHotbar",            -- overlay event (bool)
+      overlayShowShipCtlFn = "SetShowAirshipControls",   -- overlay event (bool)
       -- The airship BP implements the Pawn possession events (offline RE, scratchpad re_ship/):
       -- ReceiveUnpossessed = "someone just stopped driving" = the ship-chest re-anchor moment.
       shipUnpossessFn = "ReceiveUnpossessed",
       invSizeProp   = "InventorySize",            -- on the BC_InventorySystem component (int; chest stock 12)
       invUpgradeFn  = "SetInventoryUpgradeLevel", -- pawn fn (Level: int) -- the backpack tier apply
+      -- The tier -> slot-count ladder, straight from the game rather than from a table here. It is
+      -- the same function the save's own length check calls, so asking it is the only way to know
+      -- what length a tier is SUPPOSED to be on this build.
+      invLenForTierFn = "GetInvLengthForBackpackUpgradeTier", -- pawn fn (Tier: int) -> InvLength
       -- Backpack tier PERSISTENCE. SetInventoryUpgradeLevel only grows the live array; the tier
       -- itself lives in the controller's Playerdata and is written by this one event -- exactly what
       -- the game's own BLIB_DebugFunctions::SetInventoryLevel and BP_Backpack::OnCollect call.
@@ -576,7 +608,10 @@ M.profiles = {
       -- InputKey node compiles its Pressed and Released pins into exactly this pair of functions --
       -- so hooking both IS a key-up subscription. (The game declares raw key events for only four
       -- keys -- LeftControl, Gamepad_RightTrigger, Nine, Semicolon -- so this trick is Ctrl-only;
-      -- the letter key falls back to sampling APlayerController::IsInputKeyDown.)
+      -- the letter key stays a pure toggle: sampling key state off the controller is the proven
+      -- process-killing FKey call, 2026-07-27.)
+      -- ORDER IS MEANING: { down, up }. Bytecode-verified in the pawn's Ubergraph -- the _2 entry
+      -- sets its gate bool TRUE (Pressed), the _3 entry sets it FALSE (Released).
       crouchKeyEventFns = { "InpActEvt_LeftControl_K2Node_InputKeyEvent_2",
                             "InpActEvt_LeftControl_K2Node_InputKeyEvent_3" },
       -- Death loot: the controller stamps where your gear drops (DeathLootSpawnLocation) from the

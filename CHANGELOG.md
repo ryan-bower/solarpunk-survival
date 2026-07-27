@@ -105,6 +105,14 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   run — never before it, or the repair would fail a healthy save the same way. An already-broken
   save is re-linked to its player record on entry so the session's inventory has somewhere to go
   (`qol_backpack_relink`; off instead restores the older stored snapshot on the next load).
+  `qol_backpack_level` now also goes **down** — it ships at `0`, the stock 29-slot pack — but a
+  shrink is not the mirror of a grow: growing only ever adds empty slots, while shrinking takes
+  slots away that may have things in them. So a downgrade is skipped, with a log line naming the
+  count, while more is carried than the smaller pack holds, and the new tier is not recorded until
+  the live array is read back at the length the game's own `GetInvLengthForBackpackUpgradeTier`
+  says that tier has — a record that disagrees with the array is the very thing that broke saves
+  above. (Counts are all that can be checked: reading a struct-array *element* from Lua wedges the
+  scheduler on this build.)
 - **The pause menu's Save Game button rendered upside down.** `BOX_MenuButtons` is rotated 180° —
   that is how the designer made a bottom-anchored menu grow upward — and every button in it carries
   a 180° counter-rotation. A widget created from Lua has no transform at all, so it inherited the
@@ -130,11 +138,21 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   a `bCanCrouch` write that UE4SS logs-but-does-not-throw on a half-constructed pawn, and it
   verifies a few frames later that the collision capsule really shrank (115 → 45 on this build).
   Crouch is a TAP TOGGLE, not hold-to-crouch: UE4SS delivers key-down events only.
-- **Inventory at the airship wheel**: pressing the key now converges on an intent instead of
-  firing one blind toggle — it stands down if the game's own inventory action already handled the
-  press (two toggles inside a frame cancel out and look like a dead key), re-asserts if something
-  else cancelled ours, and falls back to the game's chest-UI entry with your own inventory
-  component if `ToggleInventory` no-ops while the ship is possessed.
+- **Inventory at the airship wheel**: the key now *toggles* the transfer view (ship storage +
+  your own inventory) — press to open, press again (or ESC) to close. Two wrong referees died
+  getting here, both convicted by the step log. First, the handler stood down whenever the
+  game's own inventory action had just fired, assuming that press had opened the inventory —
+  but at the wheel `ToggleInventory` runs and shows *nothing* (six presses, six game toggles,
+  zero UIs), so the stand-down ate every press and TAB read as a dead key. Second, with the
+  view up the mod tried to close it itself, gated on the widget's `IsOpen?` — but with any UI
+  up the game is in UI input mode, its input *actions* are off entirely, and the focused
+  widget's own key handling **already closes on the key** (`SetInputModeGame` fires with no
+  toggle in sight); `IsOpen?` reads false during that hide animation, so "closing" looked like
+  "closed" and the handler re-opened every close. Final shape: the game owns the close half
+  natively, the mod owns only the open, and it stands down while the widget still *draws*
+  (plain `IsVisible`, which stays true through the hide animation) — correct in both
+  orderings of widget-vs-handler on one press. The old converge-on-intent toggle dance survives
+  only as the open fallback for a ship whose chest is missing.
 - **Hotbar lift** while the inventory is open raised to sit under the inventory window
   (`qol_hotbar_y` −240 → −430; tune live with `sps set qol_hotbar_y <n>`), and it now **scales with
   the inventory**: a backpack upgrade adds whole rows to the grid (`W_PlayerInventory::GetRowCount`
@@ -188,6 +206,23 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   per sweep pass, and a chest that aborts three times is left alone. Verified live after the fix:
   every occupied chest on the test save grew (5–9 stacks riding along), zero aborts.
   `qol_chest_grow_occupied`.
+- **The hotbar comes back while the wheel's transfer view is open.** A chest UI never draws
+  your first 8 slots itself — its player grid deliberately skips them, because the
+  bottom-of-screen hotbar *is* their display (the game even makes its items moveable during
+  chest use). But driving the airship swaps that hotbar out for the airship control icons
+  (`SetShowHotbar(false)` / `SetShowAirshipControls(true)` — the leave-airship path flips the
+  same pair back), so at the wheel the transfer view had no hotbar anywhere on screen. While
+  the view is up the mod now borrows the on-foot arrangement — hotbar shown, control icons
+  away — and puts it back when the UI closes if you're still at the wheel; stepping off the
+  wheel restores it natively and the mod stands down for that case.
+- **The chest UI shows your whole pack now, too.** Its player side is a 3×7 main grid plus a
+  *separate* backpack grid hidden behind a switch button (`UpdateBackpackDisplayIfRequired`
+  sizes the second grid from the `Playerdata` tier record) — so with an upgraded pack the
+  transfer view reads as "only the first 3 rows of my inventory". The same post-open rebuild
+  that fixes the chest side now rebuilds the player side as **one grid carrying every bag row**,
+  sized from the inventory array itself (a wrong tier record can't shrink it), with the backpack
+  grid emptied and the switch collapsed. The game's fill loop skips the array's 8 leading
+  hotbar entries, so bag slots are always whole 7-wide rows; odd lengths are left alone.
 - **The chest UI shows every slot now.** Its slot grid is built by
   `CreateItemSlotGrid(..., 2, 6, ...)` — dimensions are **literals in the widget's bytecode** —
   so a 24-slot chest displayed 12 widgets forever (`FillInventoryInGridPanel` only fills widgets
@@ -218,8 +253,9 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   remembered by location in the mod's sidecar save, so reloads adopt the restored chest instead
   of duplicating it. **At the wheel, the inventory key (TAB) opens the transfer view**: the ship's
   storage and your own inventory side by side (the chest UI already draws both), replacing the
-  old blind-toggle dance. `[B]` prefers the stern chest too. `ship_chest`, `ship_chest_back/right/up`,
-  `ship_chest_adopt_r`.
+  old blind-toggle dance. `[B]` prefers the stern chest too. The chest sits a quarter-turn across
+  the ship rather than lengthwise (`ship_chest_yaw`, 90; set 270 if the lid should open the other
+  way). `ship_chest`, `ship_chest_back/right/up`, `ship_chest_adopt_r`.
 
 ### Known limitations
 - Mapped and tested against game build `24038177` only; a game update needs a re-map (and a pak

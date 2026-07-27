@@ -392,6 +392,36 @@ local function relinkInventory()
   end
 end
 
+-- What length does a tier want? Asked of the game first (its own GetInvLengthForBackpackUpgradeTier
+-- is the very function the save's length check uses), with the known ladder as the fallback so a
+-- renamed symbol degrades to a stale number instead of to no check at all.
+local TIER_SLOTS = { [0] = 29, [1] = 36, [3] = 43, [7] = 50 }
+local function slotsForTier(pawn, lvl)
+  local fn = qmap().invLenForTierFn
+  if pawn and fn then
+    local out = {}
+    local ok, ret = ctx.uehelp.call(pawn, fn, lvl, out)
+    if not ok then ok, ret = ctx.uehelp.call(pawn, fn, lvl) end
+    if ok then
+      local _, v = next(out)
+      v = tonumber(v) or tonumber(ret)
+      if v and v > 0 then return math.floor(v) end
+    end
+  end
+  return TIER_SLOTS[lvl]
+end
+
+-- Live pack size and how much of it is in use. Both reads are the safe ones: the array LENGTH and
+-- the game's own free-slot count. Nothing here indexes the array -- reading a struct-array element
+-- from Lua wedges the scheduler on this build.
+local function packCounts(pawn)
+  local invProp = (ctx.map.wand and ctx.map.wand.inventorySystemProp) or "InventorySystem"
+  local ok, inv = ctx.uehelp.get(pawn, invProp)
+  if not (ok and ctx.uehelp.isValid(inv)) then return nil end
+  local len; pcall(function() len = #inv.Inventory end)
+  return tonumber(len), freeSlotCount(inv)
+end
+
 -- Nothing here runs during world load any more, and on a save that already records the tier
 -- nothing runs AT ALL.
 --
@@ -420,17 +450,48 @@ local function applyBackpack()
     return
   end
   defer(5000, function()
-    if not ctx.net.isHost() or recordedTier() == lvl then return end
+    local cur = recordedTier()
+    if not ctx.net.isHost() or cur == lvl then return end
     -- playerPawn, NOT localPawn: five seconds after launch the only Character around can be a
     -- main-menu one, and SetInventoryUpgradeLevel is not something to aim at a guess.
     local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
     if not pawn then return end
+    local want = slotsForTier(pawn, lvl)
+    local len, free = packCounts(pawn)
+    -- GOING DOWN is not the mirror of going up. Growing can only ever add empty slots; shrinking
+    -- takes slots away, and the slots it takes may have things in them -- so a downgrade waits
+    -- until the pack fits in the smaller one, and says why when it does not. The count is all
+    -- that can be checked (per-slot reads wedge the scheduler), so this is deliberately
+    -- conservative: items sitting in high slots of an otherwise-empty pack still ride on the
+    -- game's own resize, which is the only code that knows how to move them.
+    if want and len and free and lvl < (cur or lvl) then
+      local used = len - free
+      if used > want then
+        ctx.log.warn(string.format("qol: not shrinking the backpack to tier %d (%d slots) -- " ..
+          "you are carrying %d items. Stash them below %d first; nothing was changed.",
+          lvl, want, used, want))
+        return
+      end
+    end
     ctx.log.step("qol.backpack repair")
     if ctx.uehelp.call(pawn, qmap().invUpgradeFn, lvl) then
       ctx.log.info("qol: backpack upgrade level " .. lvl .. " applied")
     end
-    stampBackpackTier(lvl)
-    relinkInventory()
+    -- The tier record and the array length have to agree or the next load fails its own check and
+    -- takes the whole player save with it. Growing proves itself by construction; shrinking does
+    -- not, because nothing here knows the game's downgrade path resizes at all -- so the stamp
+    -- waits for the array to actually BE the tier's length.
+    defer(600, function()
+      local now = packCounts(pawn)
+      if want and now and now ~= want then
+        ctx.log.warn(string.format("qol: the inventory array is %d slots but tier %d wants %d -- " ..
+          "leaving the recorded tier alone (a mismatch is what breaks the player save)",
+          now, lvl, want))
+        return
+      end
+      stampBackpackTier(lvl)
+      relinkInventory()
+    end)
   end)
 end
 
@@ -488,76 +549,38 @@ local function isLocalCharacter(pawn)
 end
 
 -- HOLDING is the hard part, not the crouching. UE4SS hands a mod key-DOWN only -- there is no
--- release callback -- so "while the key is held" has to come from somewhere else. Two sources,
--- best first:
---   1. THE GAME'S OWN raw key events (mapping qol.crouchKeyEventFns). A UE InputKey node compiles
---      its Pressed and Released pins into two separate functions, so hooking both IS a key-up
---      subscription -- event-driven, no polling at all. The game only declares raw key events for
---      LeftControl (plus a gamepad trigger and two debug keys), so this covers the Ctrl key.
---   2. APlayerController::IsInputKeyDown(FKey), sampled while the key is held, for the letter key.
---      That is a poll, the one shape the crash post-mortems warn about, so it is kept on the
---      shortest leash there is: it exists ONLY while a key is down, re-fetches the controller and
---      pawn every tick (never caches one), stops the instant either is invalid or the pawn is not
---      our character (menu, airship, death), and has a hard tick cap. If the build turns out not
---      to report key state, the letter key says so once and degrades to a tap-toggle; Ctrl still
---      holds properly through (1).
-local holdKeys  = { c = false, ctrl = false }   -- which crouch keys are down right now
-local polling   = { c = false, ctrl = false }
-local keyApi    = "unknown"     -- "unknown" | "ok" | "dead": can IsInputKeyDown see a held key?
-local apiMisses = 0             -- consecutive "not down" answers while still unproven
-local lastToggleAt = -1e9       -- toggle-fallback gate (OS key repeat must not flicker it)
-local ctrlHooked = false        -- the game's own press/release events are driving Ctrl
-local ctrlDownFn = nil          -- which of the two InputKey functions is the DOWN edge (learned)
-local POLL_MS   = 90
-local POLL_MAX  = 400           -- ~36s: a poll that outlives a real key press must die anyway
-
--- Our config spelling -> the FKey name UE uses. Single letters and digits are already FKey names.
-local FKEY = {
-  LEFT_CONTROL = "LeftControl", RIGHT_CONTROL = "RightControl", CONTROL = "LeftControl",
-  CTRL = "LeftControl", LEFT_SHIFT = "LeftShift", RIGHT_SHIFT = "RightShift", SHIFT = "LeftShift",
-  LEFT_ALT = "LeftAlt", RIGHT_ALT = "RightAlt", ALT = "LeftAlt", TAB = "Tab", SPACE = "SpaceBar",
-}
-local function fkeyName(cfgName)
-  local up = tostring(cfgName or ""):upper()
-  if FKEY[up] then return FKEY[up] end
-  if #up == 1 then return up end
-  return nil
-end
-
--- Physical key state from the game's own input stack. nil = this build cannot answer.
+-- release callback -- so "while the key is held" has to come from somewhere else. TWO safe
+-- sources exist on this build, one per key:
+--   Ctrl -- THE GAME'S OWN raw key events (mapping qol.crouchKeyEventFns): a UE InputKey node
+--   compiles its Pressed and Released pins into two separate functions, so hooking both IS a
+--   key-up subscription. The game declares raw key events for LeftControl only.
+--   The letter key -- the OS KEY-REPEAT STREAM: while the key is held, Windows re-sends the down
+--   event every few tens of ms; when the stream goes quiet for longer than the repeat gap, the
+--   key is up. Release detection lags by the gap (~0.7s), so Ctrl's exact release stays the
+--   better hold key -- but both keys hold, and both keys tap-toggle.
 --
--- Passing an FKey as a Lua table is the one call shape in this feature that has never run on this
--- build, and a native marshaling death is not catchable by pcall -- so the FIRST attempt is
--- written to disk before it is made and again after it returns. If the process ever dies here,
--- dump/crouch_steps.txt names the killer instead of leaving a silent log (the same bisection
--- recipe that cracked the wand rig).
-local keyProbeTried, keyProbeSurvived = false, false
-local function keyProbeLog(line)
-  local f = io.open((ctx.modRoot or "") .. "dump/crouch_steps.txt", "a")
-  if f then f:write(os.date("%H:%M:%S ") .. line .. "\n"); f:close() end
-end
+-- The third source is a PROVEN KILLER and must never come back: reading key state off the
+-- controller (IsInputKeyDown / WasInputKeyJustReleased / GetInputKeyTimeDown / any FKey-taking
+-- member) died on its very first live call -- 2026-07-27 09:04:42, dump/crouch_steps.txt named
+-- it, AV reading 0x70 with zero game frames = UE4SS faulted marshalling the call itself. FKey is
+-- a native struct wrapping an FName, the exact parameter shape every fatal member call on this
+-- build shares (see the gotchas memory). pcall catches nothing; there is no safe probe shape, so
+-- the whole poll apparatus is gone rather than latched.
+local holdKeys  = { c = false, ctrl = false, cHeld = false }  -- latch / Ctrl held / letter held
+local lastDownAt = { c = -1e9, ctrl = -1e9 }  -- last DOWN event per key, OS repeats included
+local ctrlHooked = false        -- the game's own press/release events are driving Ctrl
+local ctrlPressedAt = -1e9      -- when the Ctrl DOWN edge landed (tap vs hold is a duration)
+local cPressAt = -1e9           -- when the current letter-key press began (fresh down, not repeat)
+local cTapLatches = false       -- whether a letter-key TAP should latch when its release lands
+local cWatchArmed = false       -- one letter-key release watcher at a time
 
-local function keyIsDown(pc, name)
-  if not (pc and name) then return nil end
-  if not keyProbeTried then
-    keyProbeTried = true
-    keyProbeLog("about to call IsInputKeyDown({KeyName=" .. tostring(name) .. "})")
-  end
-  local ok, v = pcall(function() return pc:IsInputKeyDown({ KeyName = name }) end)
-  if not keyProbeSurvived then
-    keyProbeSurvived = true
-    keyProbeLog("survived: ok=" .. tostring(ok) .. " value=" .. tostring(v))
-  end
-  if ok and type(v) == "boolean" then return v end
-  return nil
-end
-
-local function noteKeyApiDead(why)
-  if keyApi == "dead" then return end
-  keyApi = "dead"
-  ctx.log.info("qol: this build will not report key state (" .. tostring(why) .. ") -- [" ..
-    tostring(ctx.config.get("qol_crouch_key")) .. "] falls back to tap-to-crouch, tap-to-stand; [" ..
-    tostring(ctx.config.get("qol_crouch_key2")) .. "] still holds")
+-- Spacing that separates a fresh physical press from the OS repeating a held key. Must exceed
+-- Windows' initial repeat delay (250-1000ms by setting; 500ms default) or a held key reads as
+-- tap,press,tap,press; re-taps faster than this read as one press. Tunable for non-default OS
+-- repeat settings: sps set qol_crouch_repeat_gap 1.1
+local function repeatGap()
+  local g = tonumber(ctx.config.get("qol_crouch_repeat_gap"))
+  return (g and g > 0.2) and g or 0.65
 end
 
 -- THE one place crouch state is written: both keys feed booleans into holdKeys and this
@@ -567,13 +590,13 @@ local function applyHold()
   -- at the airship wheel the possessed pawn IS the ship: nothing to crouch, and calling Crouch on
   -- a non-Character is exactly the wrong-class BP call the crash notes warn about
   if not (ctx.uehelp.isValid(pawn) and isLocalCharacter(pawn)) then
-    holdKeys.c, holdKeys.ctrl = false, false
+    holdKeys.c, holdKeys.ctrl, holdKeys.cHeld = false, false, false
     return
   end
   local _, isC = ctx.uehelp.get(pawn, "bIsCrouched")
   local half = capsuleHalf(pawn)
   if isC ~= true and half then standHalf = half end   -- standing height, learned (CDOs are poison)
-  local want = holdKeys.c or holdKeys.ctrl
+  local want = holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
   if want == (isC == true) then return end            -- already where the keys say we should be
   if want then ensureCanCrouch(pawn) end
   ctx.uehelp.call(pawn, want and "Crouch" or "UnCrouch", false)
@@ -586,7 +609,7 @@ local function applyHold()
     local nowHalf = capsuleHalf(pawn)
     -- compare against what the keys want NOW, not what they wanted 300ms ago: with hold-to-crouch
     -- a quick tap is released well inside this window, and that is not a failure
-    local stillWant = holdKeys.c or holdKeys.ctrl
+    local stillWant = holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
     if (now == true) ~= stillWant then
       if os.clock() - crouchWarnedAt > 10 then
         crouchWarnedAt = os.clock()
@@ -609,84 +632,100 @@ local function applyHold()
   end)
 end
 
--- A crouch key went down. Hold semantics where the key state is knowable, toggle where it is not.
-local function holdKeyDown(slot, cfgKey)
+-- A crouch key went down in plain-TOGGLE mode. A held key brings the OS repeat storm, and a
+-- repeat through a toggle re-toggles it -- live 2026-07-27: "you have to press C twice", because
+-- a press lingering past the old 0.4s gate ate its own toggle with its first repeat. Repeats are
+-- recognized by SPACING (anything inside repeatGap of the previous down is the same physical
+-- press), so one press is one toggle no matter how long it lingers.
+local function holdKeyDown(slot)
   if not ctx.config.get("qol_crouch") then return end
-  if keyApi == "dead" or not ctx.config.get("qol_crouch_hold") then
-    -- Toggle fallback. Holding a key makes Windows repeat it, and a repeat storm through a TOGGLE
-    -- is indistinguishable from a dead keybind (duck, stand, duck, stand -- nothing on screen), so
-    -- the toggle wants a much wider gate than the per-press debounce gives.
-    if os.clock() - lastToggleAt < 0.4 then return end
-    lastToggleAt = os.clock()
-    holdKeys[slot] = not holdKeys[slot]
-    applyHold()
-    return
-  end
-  holdKeys[slot] = true
+  local now = os.clock()
+  local fresh = (now - lastDownAt[slot]) > repeatGap()
+  lastDownAt[slot] = now
+  if not fresh then return end
+  holdKeys[slot] = not holdKeys[slot]
   applyHold()
-  if polling[slot] then return end
-  polling[slot] = true
-  local name = fkeyName(cfgKey)
-  local function tick(n)
-    if not polling[slot] then return end
-    local pc = localController()
-    local pawn = ctx.uehelp.localPawn()
-    -- leaving gameplay (menu, level change, possessing the ship, death) ends the poll; the crash
-    -- notes are unambiguous that a timer must never chase objects across those transitions
-    if not (pc and ctx.uehelp.isValid(pawn) and isLocalCharacter(pawn) and n <= POLL_MAX) then
-      polling[slot] = false
-      holdKeys[slot] = false
-      applyHold()
-      return
-    end
-    local down = keyIsDown(pc, name)
-    if down == nil then
-      polling[slot] = false
-      noteKeyApiDead(name and "IsInputKeyDown unavailable" or ("no FKey name for " .. tostring(cfgKey)))
-      return                    -- stay crouched: from here this key behaves as a toggle
-    end
-    if down then
-      keyApi, apiMisses = "ok", 0
-      deferOnly(POLL_MS, function() tick(n + 1) end)
-      return
-    end
-    if keyApi ~= "ok" then
-      -- Never once seen a key reported as down. A single sample cannot tell a genuinely fast tap
-      -- (released inside 90ms) from an API that does not track this key, and calling it dead by
-      -- mistake costs the player hold-to-crouch for the session -- so it takes a run of five
-      -- presses that ALL ended before the first sample before we believe it.
-      apiMisses = apiMisses + 1
-      if apiMisses >= 5 then
-        polling[slot] = false
-        noteKeyApiDead("key state always reads up")
-        return                  -- stay crouched; this key is a toggle from here on
-      end
-    end
-    polling[slot] = false
-    holdKeys[slot] = false
-    applyHold()
-  end
-  deferOnly(POLL_MS, function() tick(1) end)
 end
 
 -- The game's own LeftControl press/release events. The hook body itself touches NO UObject (our
 -- own damage calls can re-enter game code, and a hook body doing UObject work inside a
--- Lua->native->Lua chain is the documented abort): it records which edge fired and schedules the
--- reconcile, which reads the authoritative key state a tick later.
-local function onCtrlKeyEvent(fnName)
+-- Lua->native->Lua chain is the documented abort): it records the edge and schedules the
+-- reconcile. Which function is which edge is bytecode, not a guess: in the pawn's Ubergraph the
+-- ..._2 entry sets the node's gate bool TRUE and the ..._3 entry sets it FALSE -- a compiled
+-- Pressed/Released pair, in that order in mapping crouchKeyEventFns.
+--
+-- A quick TAP latches the crouch instead of blinking it. Live 2026-07-27 09:13: six Ctrl taps,
+-- and every press+release pair was fully processed before the deferred reconcile ran, so pure
+-- hold semantics reconciled to "not held" six times out of six -- the key genuinely did nothing
+-- on screen. So: tap = toggle (it folds into the letter key's latch), held past the tap window
+-- = crouched for exactly the hold.
+local TAP_S = 0.35
+local function onCtrlKeyEvent(isDown)
   if not ctx.config.get("qol_crouch") then return end
-  if ctrlDownFn == nil then ctrlDownFn = fnName end       -- a key goes down before it comes up
-  if fnName == ctrlDownFn then holdKeys.ctrl = true end   -- optimistic, so a fast tap still ducks
-  deferOnly(0, function()
-    local st = keyIsDown(localController(), fkeyName(ctx.config.get("qol_crouch_key2")))
-    if st ~= nil then
-      keyApi = "ok"          -- the state read is authoritative; which event was which stops mattering
-      holdKeys.ctrl = st
+  if ctx.config.get("qol_crouch_hold") == false then
+    -- hold semantics off by config: the down edge toggles, the up edge is ignored
+    if isDown then deferOnly(0, function() holdKeyDown("ctrl") end) end
+    return
+  end
+  if isDown then
+    ctrlPressedAt = os.clock()
+    holdKeys.ctrl = true
+  else
+    holdKeys.ctrl = false
+    if os.clock() - ctrlPressedAt < TAP_S then holdKeys.c = not holdKeys.c end
+  end
+  deferOnly(0, applyHold)
+end
+
+-- The letter key's release watcher: while repeats keep arriving the key is held; the first
+-- quiet stretch longer than repeatGap IS the release. Only then can tap vs hold be told apart --
+-- a tap's whole story is one down event, a hold's is a stream -- so a tap's latch lands here,
+-- ~repeatGap late. (The crouch itself started at the press; only the LATCH decision waits.)
+local function cWatch()
+  if ctx.config.get("qol_crouch_hold") == false then cWatchArmed = false return end
+  local now = os.clock()
+  if now - lastDownAt.c <= repeatGap() then
+    deferOnly(150, cWatch)                       -- still held: look again shortly
+    return
+  end
+  cWatchArmed = false
+  local wasTap = (lastDownAt.c - cPressAt) < TAP_S
+  holdKeys.cHeld = false
+  if wasTap and cTapLatches then holdKeys.c = true end   -- a tap latches: stay crouched
+  cTapLatches = false
+  applyHold()
+end
+
+-- The letter key went down -- a fresh press or an OS repeat, told apart by spacing. Fresh press:
+-- crouch immediately (if latched, STAND immediately instead -- tap-to-stand must not wait out the
+-- release watcher). Repeat: the key is genuinely held, keep the crouch pinned. Runs on the game
+-- thread via bind().
+local function cKeyDown()
+  if not ctx.config.get("qol_crouch") then return end
+  if ctx.config.get("qol_crouch_hold") == false then holdKeyDown("c") return end
+  local now = os.clock()
+  local fresh = (now - lastDownAt.c) > repeatGap()
+  lastDownAt.c = now
+  if fresh then
+    cPressAt = now
+    if holdKeys.c then
+      -- already latched: this press means "stand", now. If repeats reveal it is really a hold,
+      -- the repeat branch below re-crouches for the rest of the hold.
+      holdKeys.c, holdKeys.cHeld = false, false
+      cTapLatches = false
     else
-      holdKeys.ctrl = (fnName == ctrlDownFn)
+      holdKeys.cHeld = true
+      cTapLatches = true
     end
     applyHold()
-  end)
+    if not cWatchArmed then
+      cWatchArmed = true
+      deferOnly(math.floor(repeatGap() * 1000) + 150, cWatch)
+    end
+  elseif not holdKeys.cHeld then
+    holdKeys.cHeld = true
+    applyHold()
+  end
 end
 
 --------------------------------------------------------------------- dying crouched, and the loot
@@ -720,8 +759,16 @@ local function fixDeathLoot()
     half = capsuleHalf(pawn)
   end
   local lift
+  local keysWant = holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
   if isC == true and half and standHalf and standHalf > half then
     lift = standHalf - half
+  elseif keysWant and lastCrouchLift then
+    -- The pawn is unreadable (or the death flow already un-crouched it), but the keys still say
+    -- CROUCHED -- and the mod's keys are the only crouch source this game has, so they are
+    -- authoritative. Live 2026-07-27 09:40: died after staying crouched for minutes; the 3s
+    -- memory below had long expired, this function concluded "died standing", and the loot box
+    -- sank ~70cm under the terrain.
+    lift = lastCrouchLift
   elseif lastCrouchLift and (os.clock() - lastCrouchAt) < 3.0 then
     lift = lastCrouchLift                             -- crouched a moment ago; the body is gone
   else
@@ -747,17 +794,53 @@ local function fixDeathLoot()
   if okW and back and math.abs(back.Z - fixed.Z) < 1.0 then
     ctx.log.info(string.format("qol: died crouched -- death-loot spot raised %.0fcm (%.0f -> %.0f) so the chest lands on the ground",
       lift, at.Z, back.Z))
-  else
+  elseif alive and here then
     -- The struct write did not stick. Fall back to standing the dying pawn up: anything that
-    -- re-reads the pawn's location downstream then sees the standing origin.
+    -- re-reads the pawn's location downstream then sees the standing origin. (Live-pawn only:
+    -- a destroyed-but-pre-GC pawn passes isValid and calling into it is a native crash.)
     local moved = ctx.uehelp.call(pawn, "K2_SetActorLocation",
       { X = here.X, Y = here.Y, Z = here.Z + lift }, false, {}, true)
     ctx.log.warn(string.format("qol: could not rewrite %s (read back %s) -- lifted the pawn instead (ok=%s)",
       tostring(prop), tostring(back and back.Z), tostring(moved)))
+  else
+    ctx.log.warn(string.format("qol: could not rewrite %s (read back %s) and no live pawn to lift -- the loot box may sink",
+      tostring(prop), tostring(back and back.Z)))
   end
 end
 
 --------------------------------------------------------------------- the airship
+-- Driving swaps the bottom-of-screen hotbar for the airship control icons (the giveaway is
+-- SERVER_LeaveAirship's client path, which flips exactly this pair back on stepping off) -- so
+-- at the wheel the transfer view had no hotbar anywhere on screen, and the hotbar IS how a
+-- chest UI shows your first 8 slots (its player grid deliberately skips them). While the view
+-- is up, borrow the on-foot arrangement -- hotbar shown, control icons away -- and put it back
+-- when the UI closes IF still at the wheel; leaving the wheel restores it natively, and the
+-- restore stands down for that case.
+local shipHotbarShown = false
+local function overlayOf(pc)
+  local ov; pcall(function() ov = pc[qmap().overlayProp or "PlayerOverlay"] end)
+  if ctx.uehelp.isValid(ov) then return ov end
+  return nil
+end
+local function showShipHotbar(pc)
+  local ov = overlayOf(pc)
+  if not ov then return end
+  ctx.uehelp.call(ov, qmap().overlayShowHotbarFn or "SetShowHotbar", true)
+  ctx.uehelp.call(ov, qmap().overlayShowShipCtlFn or "SetShowAirshipControls", false)
+  shipHotbarShown = true
+end
+local function restoreShipHotbar()
+  if not shipHotbarShown then return end
+  shipHotbarShown = false
+  local pc = localController()
+  if not pc then return end
+  if callOutBool(pc, qmap().controllingShipFn) ~= true then return end
+  local ov = overlayOf(pc)
+  if not ov then return end
+  ctx.uehelp.call(ov, qmap().overlayShowHotbarFn or "SetShowHotbar", false)
+  ctx.uehelp.call(ov, qmap().overlayShowShipCtlFn or "SetShowAirshipControls", true)
+end
+
 -- Its chest: the ship carries a real BC_InventorySystem of its own; the controller's
 -- UI_OpenChestInventory(ChestInventorySystem) is the game's every-chest UI entry.
 local shipChestHinted = false
@@ -779,6 +862,7 @@ local function openShipChest()
   -- The mod-kept stern chest is the ship's storage now (features/ship_chest.lua) -- the upgrade
   -- component is only a fallback for a ship that happens to have it built.
   if ctx.services.shipChestOpen and ctx.services.shipChestOpen(pc) then
+    if flying then showShipHotbar(pc) end
     ctx.log.debug("qol: ship storage opened (stern chest)")
     return
   end
@@ -794,11 +878,9 @@ local function openShipChest()
   end
   ctx.uehelp.call(ship, qmap().shipChestOpenFn)          -- the lid animation (cosmetic)
   ctx.uehelp.call(pc, qmap().openChestUiFn, inv)
+  if flying then showShipHotbar(pc) end
   ctx.log.debug("qol: ship chest opened (upgrade component)")
 end
-
--- When ToggleInventory last ran from ANY caller (stamped by its hook, plain Lua state only).
-local lastGameToggleAt = -1e9
 
 -- The local CHARACTER, remembered while we are on foot. At the wheel the controller's Pawn IS
 -- the airship, and in co-op FindAllOf hands back every player's character with no way to tell
@@ -840,45 +922,66 @@ local function openOwnInvAsPanel(pc)
   return (ctx.uehelp.call(pc, qmap().openChestUiFn, inv))
 end
 
+-- Is the transfer view still being DRAWN -- fully open, or inside its show/hide animation?
+-- Plain IsVisible on purpose, NOT the widget's own `IsOpen?`: the widget only collapses itself
+-- when the hide animation finishes, so a view the game began closing on THIS very press still
+-- reads visible here -- which is exactly the read the toggle needs (see below). `IsOpen?` is
+-- IsVisible AND not-animating, and that "not-animating" clause is what broke the first toggle
+-- cut: mid-hide it reads false, "closed" and "closing" become indistinguishable, and the
+-- handler re-opened every close.
+local function chestUiDrawn()
+  for _, w in ipairs(liveInstances(qmap().chestUiClass or "W_ChestInventory_C")) do
+    local vis; pcall(function() vis = w:IsVisible() end)
+    if vis == true then return true end
+  end
+  return false
+end
+
 -- Your own inventory while at the wheel -- ONLY while flying (on foot the game's own binding
--- already handles it).
+-- already handles it). At the wheel the key TOGGLES the TRANSFER view (user spec 2026-07-27):
+-- the ship's storage chest + your own inventory in one panel -- W_ChestInventory draws both.
 --
--- The first cut assumed one call would do it and shipped blind. It cannot: the press has to
--- survive two different failure modes, and they want opposite treatment.
---   * The game's OWN inventory action may still be live in the airship mapping context. Then one
---     keystroke reaches both handlers and the two toggles cancel out -- open+close inside a frame,
---     i.e. exactly the "nothing happens" the player sees. Our handler runs up to a scheduler tick
---     (~50ms) later than the game's, so we cannot even read the pre-press state to out-guess it;
---     what we CAN do is notice the game just toggled and keep our hands off.
---   * Or ToggleInventory resolves the inventory off the possessed pawn and no-ops at the wheel,
---     in which case only the chest-panel route above will show anything.
--- So: stand down if the game already handled this press, otherwise state a target and correct
--- what actually happened a beat later. Idempotent under every combination.
+-- The split of labor, settled by the 10:42 step log (2026-07-27): the game already OWNS the
+-- close half. While the view is up the controller is in UI input mode, so the game's input
+-- ACTIONS are off (ToggleInventory does not even run -- no qol.inv step on those presses) and
+-- the focused widget's own key handling closes the view (SetInputModeGame fires with no toggle
+-- in sight). So this handler owns ONLY the open, and only when the view is truly down: if the
+-- widget still draws -- open, or the hide animation this same press just started -- the press's
+-- work is done or in flight, and opening now would undo it (the "reopens on every press" bug).
+-- Both orders of us-vs-widget on one press land right: widget first = we see it still drawn and
+-- stand down; us first = we see it drawn and stand down, the widget then closes it.
+--
+-- The open attempt itself runs unguarded by any "did the game handle this press" referee: at
+-- the wheel with no UI up the game's ToggleInventory runs and shows NOTHING (six presses, six
+-- game toggles, zero UIs -- the earlier step log), so there is nothing to defer to. The
+-- blind-toggle dance survives only as the open fallback for a ship whose chest is missing:
+-- state the target and correct what actually happened a beat later, which is idempotent
+-- whether the game's own toggle turns out to be dead (this build) or live (the re-assert
+-- un-cancels it).
 local function openInvOnShip()
   local pc = localController()
   if not pc then return end
   if callOutBool(pc, qmap().controllingShipFn) ~= true then return end
-  if (os.clock() - lastGameToggleAt) < 0.4 then
-    ctx.log.debug("qol: the game's own inventory action handled this press -- standing down")
+  -- The plain inventory already up means some earlier press got it open; leave the closing to
+  -- ESC / the game rather than stacking the chest panel over it.
+  if invVisible(pc) == true then return end
+  if chestUiDrawn() then
+    ctx.log.debug("qol: wheel inventory key -> view is up; the game's own close handles this press")
     return
   end
-  -- At the wheel the inventory key means the TRANSFER view (user spec 2026-07-27): the ship's
-  -- storage chest + your own inventory in one panel -- W_ChestInventory draws both. One direct
-  -- UI call, none of the toggle-race refereeing below. The dance survives as the fallback for a
-  -- ship whose chest is not there yet.
   if ctx.services.shipChestOpen and ctx.services.shipChestOpen(pc) then
+    showShipHotbar(pc)   -- at the wheel by the gate above
     ctx.log.debug("qol: wheel inventory key -> ship storage transfer view")
     return
   end
-  local seen = invVisible(pc)
-  local want = seen ~= true
+  local seen = invVisible(pc)      -- false or nil here; true bailed above, so the target is OPEN
   ctx.uehelp.call(pc, qmap().toggleInvFn)
   if seen == nil then return end   -- widget unreadable: one honest toggle, no blind correction
   deferOnly(300, function()
-    if invVisible(pc) ~= (not want) then return end   -- landed, or unreadable -- leave it alone
-    ctx.uehelp.call(pc, qmap().toggleInvFn)           -- something cancelled ours; put it back
+    if invVisible(pc) ~= false then return end   -- open now, or unreadable -- leave it alone
+    ctx.uehelp.call(pc, qmap().toggleInvFn)      -- something cancelled ours; put it back
     deferOnly(300, function()
-      if invVisible(pc) == want or not want then return end
+      if invVisible(pc) ~= false then return end
       if openOwnInvAsPanel(pc) then
         ctx.log.info("qol: inventory opened at the wheel via the chest panel (ESC closes it)")
       else
@@ -1311,6 +1414,16 @@ end
 -- the widget's own SyncAndFill_Chest repopulate. Pure UI and idempotent: once the slot count
 -- matches the inventory it fast-outs, and a half-failed rebuild heals on the next open.
 -- Runs on host and clients alike -- clients see the replicated 24-slot inventory too.
+--
+-- The PLAYER side of the same widget gets the same treatment for the opposite reason: the game
+-- DOES size it to the pack, but as a 3x7 main grid plus a separate backpack grid hidden behind
+-- a switch button -- an upgraded pack reads as "only the first 3 rows of my inventory" (user
+-- 2026-07-27). Rebuilt as ONE grid carrying every bag row, sized from the inventory ARRAY (so a
+-- wrong Playerdata tier record cannot shrink it), backpack grid emptied, switch collapsed. The
+-- game's fill loop skips the array's 8 leading hotbar entries, so bag slots = len - 8 -- a
+-- whole number of 7-wide rows on every legal tier; anything else is left alone. The game's own
+-- sizing pass cannot undo this: UpdateBackpackDisplayIfRequired rebuilds only when the TIER
+-- changed since it last looked, and then this pass re-unifies 80 ms later.
 local function rebuildChestGrids()
   local m = qmap()
   local cols = tonumber(m.chestGridCols) or 6
@@ -1336,6 +1449,35 @@ local function rebuildChestGrids()
           w[m.chestUiSlotsProp or "ChestSlots"] = refs
           ctx.uehelp.call(w, m.chestUiSyncFn or "SyncAndFill_Chest")
           ctx.log.info("qol: chest UI grid rebuilt " .. have .. " -> " .. n .. " slots")
+        end
+      end)
+      pcall(function()
+        local inv = w[m.chestUiPlayerInvRefProp or "PlayerInventoryRef"]
+        local invLen = inv and #inv.Inventory or 0
+        local bag = invLen - (tonumber(m.invHotbarSlots) or 8)
+        local panel = w[m.chestUiPlayerPanelProp or "GRID_PlayerInventory"]
+        if bag > 21 and bag % 7 ~= 0 then
+          ctx.log.debug("qol: player pack is " .. bag .. " bag slots -- not whole rows, leaving the grid alone")
+        elseif bag > 21 and panel:GetChildrenCount() < bag then
+          local have = panel:GetChildrenCount()
+          panel:ClearChildren()
+          pcall(function() w[m.chestUiBackpackPanelProp or "Grid_BackpackInventory"]:ClearChildren() end)
+          ctx.uehelp.call(cdo, m.slotGridPlayerFn or "CreateItemSlotGridForPlayer",
+            w, pc, panel, math.floor(bag / 7), 7, w, {})
+          local n = panel:GetChildrenCount()
+          local refs = {}
+          for i = 0, n - 1 do refs[#refs + 1] = panel:GetChildAt(i) end
+          w[m.chestUiPlayerSlotsProp or "PlayerSlots"] = refs
+          -- the switch has nothing left to switch to: park the widget on the (now-complete)
+          -- main view and hide the button (1 = Collapsed, 4 = SelfHitTestInvisible -- the same
+          -- pair the widget's own open path writes)
+          pcall(function() w[m.chestUiShowBackpackProp or "ShowBackpack"] = false end)
+          pcall(function() w[m.chestUiMainBoxProp or "MainInventory"]:SetVisibility(4) end)
+          pcall(function() w[m.chestUiBackpackBoxProp or "BackbackInventory"]:SetVisibility(1) end)
+          pcall(function() w[m.chestUiBackpackToggleProp or "KeyItemsToggle"]:SetVisibility(1) end)
+          ctx.uehelp.call(w, m.chestUiPlayerSyncFn or "SyncAndFill_Player")
+          ctx.log.info("qol: chest UI player grid rebuilt " .. have .. " -> " .. n ..
+            " slots (the whole pack, no backpack switch)")
         end
       end)
     end
@@ -1385,11 +1527,11 @@ local function armHooks()
   -- Our own ship-inventory key calls ToggleInventory, so its hook body must touch no UObjects:
   -- it only schedules the sync. Same shape for the UI-close funnel.
   armHook(pl.controllerClass, qmap().toggleInvFn, "qol.inv", function()
-    lastGameToggleAt = os.clock()   -- who toggled is what openInvOnShip needs to know
     deferOnly(120, syncHotbar)
   end)
   armHook(pl.controllerClass, ctx.map.codex and ctx.map.codex.inputGameFn, "qol.uiclose", function()
     deferOnly(120, syncHotbar)
+    deferOnly(150, restoreShipHotbar)   -- the wheel's transfer view borrowed the hotbar spot
   end)
   -- MULTI_Ping fires once per accepted ping ON EVERY MACHINE with the pinging controller as
   -- context: two guarded reads stash the pinger's name for the construction notify to use.
@@ -1424,9 +1566,12 @@ local function armHooks()
   end)
   -- Hold-to-crouch: the pawn's own LeftControl Pressed/Released pair is the key-up signal UE4SS
   -- cannot give us. Both bodies are state-only -- they record the edge and schedule the reconcile.
+  -- Mapping order is the edge identity: index 1 is the DOWN function (bytecode-verified; see
+  -- onCtrlKeyEvent).
   local pawnClass = ctx.map.pawn and ctx.map.pawn.class
-  for _, fnName in ipairs(qmap().crouchKeyEventFns or {}) do
-    local live = armHook(pawnClass, fnName, "qol.crouchkey", function() onCtrlKeyEvent(fnName) end)
+  for i, fnName in ipairs(qmap().crouchKeyEventFns or {}) do
+    local isDown = (i == 1)
+    local live = armHook(pawnClass, fnName, "qol.crouchkey", function() onCtrlKeyEvent(isDown) end)
     if live then ctrlHooked = true end
   end
   -- Dying crouched used to bury the loot chest. Both RPC halves are hooked because which one runs
@@ -1475,8 +1620,7 @@ local function applyAll()
   step("qol.applyAll myCharacter"); myCharacter()
   -- A fresh pawn (world entry, respawn) is standing and holds no keys: drop any hold state left
   -- over from the last body, and let applyHold re-learn the standing capsule height off this one.
-  holdKeys.c, holdKeys.ctrl = false, false
-  polling.c, polling.ctrl = false, false
+  holdKeys.c, holdKeys.ctrl, holdKeys.cHeld = false, false, false
   step("qol.applyAll hold");       applyHold()
   step("qol.applyAll done")
   -- the map widget (WC_Map) is created a beat after the pawn, so its OpenMap hook misses the
@@ -1574,13 +1718,13 @@ function F.init(c)
 
   if ctx.config.get("qol_crouch") then
     local cKey, ctrlKey = ctx.config.get("qol_crouch_key"), ctx.config.get("qol_crouch_key2")
-    bind(cKey, "qol.crouch", function() holdKeyDown("c", cKey) end)
+    bind(cKey, "qol.crouch", cKeyDown)
     -- The Ctrl bind is a FALLBACK only: when the pawn's own LeftControl press/release events are
     -- hooked they drive the hold, and this would be a second, release-blind opinion on the same
     -- physical key.
     bind(ctrlKey, "qol.crouch2", function()
       if ctrlHooked then return end
-      holdKeyDown("ctrl", ctrlKey)
+      holdKeyDown("ctrl")
     end)
   end
   bind(ctx.config.get("qol_ship_chest_key"), "qol.shipchest", openShipChest)
@@ -1624,8 +1768,9 @@ function F.init(c)
 
   -- hot reload mid-session: a pawn may already exist
   defer(1500, onCharacter)
-  ctx.log.info("qol: chests x2, backpack, crouch -- HOLD " .. tostring(ctx.config.get("qol_crouch_key")) ..
-    " or " .. tostring(ctx.config.get("qol_crouch_key2")) .. ", ship chest (" ..
+  ctx.log.info("qol: chests x2, backpack, crouch -- TAP " .. tostring(ctx.config.get("qol_crouch_key")) ..
+    "/" .. tostring(ctx.config.get("qol_crouch_key2")) .. " toggles, HOLDING either crouches" ..
+    " for the hold, ship chest (" ..
     tostring(ctx.config.get("qol_ship_chest_key")) .. "), ship inventory (" ..
     tostring(ctx.config.get("qol_ship_inv_key")) .. "), recall x" ..
     tostring(ctx.config.get("qol_recall_mult")) .. ", UI + pings + map names armed")

@@ -221,6 +221,8 @@ do
   ok(m.qol.playerdataInvIdField:find("^InventoryID_") ~= nil,
      "mapping: the saved inventory GUID field is mangled the same way")
   eq(m.qol.setInvIdFn, "SetInventoryID", "mapping: how a lost inventory-to-save link is restored")
+  eq(m.qol.invLenForTierFn, "GetInvLengthForBackpackUpgradeTier",
+     "mapping: the tier->length ladder the save's own check uses (a shrink is verified against it)")
   -- Ping colour: the ONLY safe material op on this build is SetMaterial with a cooked material --
   -- every parameter-setting door (CreateDynamicMaterialInstance, Set*ParameterValueOnMaterials)
   -- is a proven native crash (2026-07-26/27, three identical all-UE4SS dumps). So every palette
@@ -252,6 +254,13 @@ do
   eq(m.qol.chestUiSyncFn, "SyncAndFill_Chest", "mapping: the no-arg repopulate event")
   eq(m.qol.chestClassPath, "/Game/Code/Building_Placing/Placeables/BP_Chest_Buildable",
      "mapping: chest package path for the LoadAsset fallback")
+  -- Ctrl crouch edges: ORDER IS MEANING -- index 1 must stay the Pressed function (_2 sets its
+  -- gate bool TRUE in the pawn's Ubergraph; _3 sets it FALSE). Shuffling this list would silently
+  -- invert press and release.
+  eq(m.qol.crouchKeyEventFns[1], "InpActEvt_LeftControl_K2Node_InputKeyEvent_2",
+     "mapping: crouch key DOWN edge is index 1 (bytecode: gate bool := true)")
+  eq(m.qol.crouchKeyEventFns[2], "InpActEvt_LeftControl_K2Node_InputKeyEvent_3",
+     "mapping: crouch key UP edge is index 2 (bytecode: gate bool := false)")
   eq(m.qol.shipUnpossessFn, "ReceiveUnpossessed", "mapping: the ship-chest re-anchor moment")
   ok(#m.qol.palette >= 3, "mapping: enough palette slots to tell players apart")
   for i, slot in ipairs(m.qol.palette) do

@@ -146,7 +146,8 @@ local function ensureChest(reason)
   ctx.log.step("shipchest.place")
   pcall(function() chest:K2_SetActorLocation(anchor, false, {}, false) end)
   if type(yaw) == "number" then
-    pcall(function() chest:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw, Roll = 0.0 }, false) end)
+    local spin = tonumber(ctx.config.get("ship_chest_yaw")) or 90.0
+    pcall(function() chest:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw + spin, Roll = 0.0 }, false) end)
   end
   ctx.save.setFlag("ship_chest_at", { X = anchor.X, Y = anchor.Y, Z = anchor.Z })
 end
