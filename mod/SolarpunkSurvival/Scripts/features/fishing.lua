@@ -878,8 +878,10 @@ end
 -- BAR resolve: judged at the os.clock() STAMPED IN THE HOOK BODY (clickAt), through the same
 -- pure markerPos(clock) the renderer draws -- so the judged position is what was on screen at
 -- the physical click, no matter which path (animator fast lane or deferred fallback) got here.
--- fishing_click_lead trims the residual render/display latency by feel.
-local function resolveMinigame(pawn, clickAt)
+-- fishing_click_lead trims the residual render/display latency by feel. Returns the judged p;
+-- viaJob = the caller animates the marker's settle to p itself (a raw redraw here would read
+-- as a backward TELEPORT of exactly the lead -- the animator job eases it instead).
+local function resolveMinigame(pawn, clickAt, viaJob)
   if not mgActive then return end
   mgActive = false
   mgClickAt, mgAwaitClick = nil, false
@@ -890,7 +892,7 @@ local function resolveMinigame(pawn, clickAt)
   reelLine(pawn)
   lineOut = false
   local hit = F.zoneHit(p, mgCenter, mgWidth)
-  UI.setMarker(p) -- freeze exactly where the judge looked, not at the last animator frame
+  if not viaJob then UI.setMarker(p) end -- degraded path: freeze at the judged spot outright
   UI.flash(hit and "hit" or "miss")
   logBarStats()
   foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)
@@ -900,6 +902,7 @@ local function resolveMinigame(pawn, clickAt)
     ctx.log.info(string.format("fishing: missed the %s zone (%.0f%% vs %.0f%%) -- it got away",
       mgDiamond and "diamond" or "golden", p * 100, mgCenter * 100))
   end
+  return p
 end
 
 -- WHEEL click: the outcome is sealed HERE (the rest position is a pure function of the stamped
@@ -958,21 +961,44 @@ end
 
 -- The per-frame BAR job (core/animator, game thread, ~once per rendered frame). Built ONCE
 -- per bar -- the animator contract forbids per-frame allocations. Checks the stamped click
--- BEFORE the timeout so a buzzer-beater stamp inside the window always counts.
+-- BEFORE the timeout so a buzzer-beater stamp inside the window always counts. After the
+-- click the judged position sits fishing_click_lead BEHIND the freshest frame, so the marker
+-- SETTLES back to it with a short ease instead of teleporting (the flash already marked the
+-- click instant; the settle just parks the marker where the judge looked).
+local SETTLE_S = 0.09
 local function makeMarkerJob(tok, pawn)
+  local lastP, settle = nil, nil
   return function(now)
-    if tok ~= mgToken or not mgActive then return "stop" end
+    if tok ~= mgToken then return "stop" end
+    if settle then
+      local k = (now - settle.t0) / SETTLE_S
+      if k >= 1 then
+        UI.setMarker(settle.to)
+        return "stop"
+      end
+      local e = 1 - (1 - k) * (1 - k)
+      if not UI.setMarker(settle.from + (settle.to - settle.from) * e) then return "stop" end
+      return
+    end
+    if not mgActive then return "stop" end
     local t = mgClickAt
     if t then
       mgClickAt = nil
-      resolveMinigame(pawn, t)
-      return "stop"
+      local p = resolveMinigame(pawn, t, true)
+      if p == nil then return "stop" end
+      if lastP == nil then
+        UI.setMarker(p)
+        return "stop"
+      end
+      settle = { from = lastP, to = p, t0 = now }
+      return
     end
     if now - mgStart > (tonumber(cfg("fishing_minigame_timeout")) or 6) then
       timeoutMinigame()
       return "stop"
     end
-    if not UI.setMarker(F.markerPos(now - mgStart, mgPeriod)) then
+    lastP = F.markerPos(now - mgStart, mgPeriod)
+    if not UI.setMarker(lastP) then
       -- the world ate the widgets mid-bar: fold what is left and wake the water back up
       mgActive = false
       mgClickAt, mgAwaitClick = nil, false

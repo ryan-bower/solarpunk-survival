@@ -35,6 +35,8 @@ local LOOK = {
   markLine = { 1.00, 1.00, 1.00, 1.00 },
   -- resolve flashes (recolors only; the bar folds fishing_flash_secs later)
   hitZone  = { 1.00, 1.00, 0.92, 1.00 },
+  hitTrack = { 0.08, 0.52, 0.16, 0.95 },
+  hitMark  = { 0.72, 1.00, 0.78, 1.00 },
   missTrack = { 0.55, 0.08, 0.08, 0.95 },
   missMark = { 1.00, 0.60, 0.60, 1.00 },
   timeoutTrack = { 0.30, 0.30, 0.32, 0.90 },
@@ -472,9 +474,11 @@ function F.flash(kind)
     for _, w in ipairs(list or {}) do tint(w, c) end
   end
   if r.kind == "bar" then
-    if kind == "hit" then
+    if kind == "hit" then -- green sweep, mirroring the red miss
+      tint(r.track, LOOK.hitTrack)
       tint(r.zoneCore, LOOK.hitZone)
       tint(r.zoneHot, LOOK.hitZone)
+      tint(r.line, LOOK.hitMark)
     elseif kind == "miss" then
       tint(r.track, LOOK.missTrack)
       tint(r.line, LOOK.missMark)
@@ -483,10 +487,13 @@ function F.flash(kind)
     end
   else -- wheel
     if kind == "hit" then
+      tintAll(r.rim, LOOK.hitTrack)
       tintAll(r.zone, LOOK.hitZone)
       tint(r.hub, LOOK.hitZone)
+      tint(r.line, LOOK.hitMark)
     elseif kind == "miss" then
       tintAll(r.rim, LOOK.missTrack)
+      tintAll(r.zone, LOOK.missTrack)
       tint(r.line, LOOK.missMark)
     elseif kind == "timeout" then
       tintAll(r.rim, LOOK.timeoutTrack)
