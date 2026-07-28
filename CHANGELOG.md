@@ -50,6 +50,14 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
     for the session.
   - The button reports on itself (`Save Game` → `Saving…` → `Saved`), because the pause menu covers
     the HUD indicator. Tunable via `save_button*` config keys; `save_button = false` removes it.
+- **Trash-can slot** (`features/trash_slot.lua`): one extra red-marked slot to the right of the
+  bag's bottom-right cell. Drop an item in to queue it for deletion; drop another on top and the
+  previous one is destroyed while the new one takes its place; the last item in stays retrievable
+  until it is replaced or the session ends. The slot is a *real* `W_InventorySlot` (native carry,
+  stacking, half-splits, tooltips) backed by a detached inventory system the save file cannot see —
+  "logout forgets the trash" is structural, not a cleanup pass. Local to each machine, works for
+  host and clients alike. `trash_slot = false` removes it; `sps_trash` reports, `sps_trash_clear`
+  empties it.
 
 ### Fixed
 - **Pinging crashed the game, and the material was never the reason.** Colouring a marker called

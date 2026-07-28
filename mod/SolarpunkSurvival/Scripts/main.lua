@@ -69,6 +69,7 @@ local ok, err = pcall(function()
     "features.qol",          -- chests x2, backpack, crouch, airship QoL, UI fixes, pings, map names
     "features.ship_chest",   -- after qol: provides services.shipChestOpen that qol's wheel keys use
     "features.manual_save",  -- a Save button in the pause menu (runs the game's own autosave)
+    "features.trash_slot",   -- the red trash slot in the inventory (replace deletes the previous)
     "ui.imgui_panel",
     -- dev.* are developer tools; the player install (install.py) excludes Scripts/dev
     -- entirely, and a missing dev module is skipped silently below. tools/run.py deploys them.

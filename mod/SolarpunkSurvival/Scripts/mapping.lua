@@ -88,6 +88,16 @@ M.schema = {
                "crouchKeyEventFns", "deathLootStampFns", "deathLootLocProp",
                "backpackTierFn", "playerdataProp", "playerdataTierField", "playerdataInvIdField",
                "setInvIdFn", "invIdProp" },
+  trash    = { "invUiProp", "invUiClass", "invGridProp", "invSlotsProp", "gridCols",
+               "slotClass", "slotMouseFn", "slotIndexFn", "slotBgProp", "slotBorderProp",
+               "carryClass", "carryGetFn", "carryDestroyFn", "carrySenderProp",
+               "chestUiClass", "chestUiPath", "chestSlotsProp", "chestInvRefProp", "chestSyncFn",
+               "invSysClass", "invSysPath", "sysSizeProp", "sysInvProp", "sysReplaceFn",
+               "sysAmtFn", "sysTotalFn", "sysClearAtFn", "sysContainsFn",
+               "slotFactoryLibPath", "slotFactoryFn", "wblPath",
+               "gridSlotRowFn", "gridSlotColFn", "widgetSlotProp",
+               "backingSize", "backingIndex", "giClass", "dbItemsProp", "toggleInvFn",
+               "slotItemField", "slotQtyField", "slotSavedataField", "tint" },
 }
 
 M.profiles = {
@@ -690,6 +700,108 @@ M.profiles = {
         { r = 1.0,  g = 0.15, b = 0.1,  mat = "M_Preview_Red"  },  -- tomato red
         { r = 0.2,  g = 1.0,  b = 0.55, mat = "M_Energy_On"    },  -- powered green
       },
+    },
+    -- The trash-can slot (features/trash_slot.lua; offline RE 2026-07-28 of W_PlayerInventory,
+    -- W_InventorySlot, W_Inventory_MASTER, W_ClickAndDrop, W_ChestInventory, BC_InventorySystem,
+    -- BPL_UiFunctions -- this session's scratchpad re_trash/ dumps).
+    --
+    -- The load-bearing findings, in the order they matter:
+    --   * The game moves items with a CLICK-AND-CARRY model, not UMG drag-drop: clicking a slot
+    --     with an item calls CreateClickAndDropWidget(CurItem) and Clear Single SlotAtIndex --
+    --     while carried, the item exists ONLY in the W_ClickAndDrop widget's Item struct.
+    --     W_ClickAndDrop:Destroy() is RemoveFromParent + CallStopMoving: destroying a loaded
+    --     carry deletes the item outright (DropAndDestroy is the separate throw-to-ground path).
+    --     CreateClickAndDropWidget stamps SenderSlot = the slot it was picked from.
+    --   * A W_InventorySlot resolves its backing store per click through its ParentInventoryWidget
+    --     (BPI_Inventory_Widgets.GetSystemAndIndexForSlot), and W_ChestInventory's implementation
+    --     is Array_Contains(ChestSlots, slot) -> (ChestInventoryRef, slot.CurItemIndexInInventory).
+    --     So one W_ChestInventory instance turns any slot widget into a fully native slot over
+    --     any system. It must be PARKED IN THE VIEWPORT (Collapsed): the viewport's SObjectWidget
+    --     is the only GC root the pair gets -- a bare-created widget plus its detached system were
+    --     collected within a ~60s sweep live (the slot's factory-stamped interface ref did NOT
+    --     keep them alive). Its Construct runs on AddToViewport and rewrites ChestSlots with 12
+    --     fresh slots (plus benign anim/backpack-display work; ChestInventoryRef is only written
+    --     by OpenChest, offset 917) -- so ChestSlots/ChestInventoryRef are stamped strictly AFTER
+    --     parking, and any re-park retires + remakes the slot widget.
+    --   * A detached BC_InventorySystem (StaticConstructObject, never registered, BeginPlay never
+    --     run) works because every function the click path touches is pure array logic; its
+    --     SaveInventory routes to pc.Net_ApplyAndSaveInventory -> SaveManager.UpdateSavedInventory,
+    --     which is UPDATE-ONLY by GUID (the backpack-bug RE) -- a never-registered system has the
+    --     zero GUID, so its "saves" are structural no-ops on host AND clients. Trash contents
+    --     therefore CANNOT persist: exactly the feature's logout-forgets contract.
+    --   * backingIndex 51 in a 52-slot system: W_PlayerInventory.GetSystemAndIndexForSlot returns
+    --     (player system, slot.CurItemIndexInInventory) UNCONDITIONALLY, so a shift-click on a
+    --     foreign slot would SwapItemPosition(ourIndex, ...) on the PLAYER inventory. 51 is out of
+    --     range for every legal tier (max 50 slots), and Kismet's Array_Get returns a default /
+    --     Array_Set(bSizeToFit=false) refuses on OOB -- the whole gesture becomes a no-op.
+    --   * ChestSlots gets the SAME slot widget 52 times: FillInventoryInGridPanel walks the
+    --     INVENTORY's length indexing GridSlots[i] in lockstep, so index 51's display (and the
+    --     SetItemIndexInInventory(51) stamp) must land on our one widget LAST.
+    trash = {
+      invUiClass   = "W_PlayerInventory_C",
+      invUiProp    = "UI_PlayerInventory",   -- controller prop; pre-created by StartupUI
+      invGridProp  = "TestGrid",             -- the ONE UniformGridPanel with every bag slot
+                                             -- (dev name is really "TestGrid"); rebuilt only by
+                                             -- ExpandGrid, which only runs when ItemSlots is
+                                             -- smaller than the tier says (backpack upgrade)
+      invSlotsProp = "ItemSlots",            -- TArray<W_InventorySlot*> the fill loop walks; our
+                                             -- slot stays OUT of it, so GetExpectedSlotCount
+                                             -- never sees a wrong count
+      gridCols     = 7,                      -- bag rows are 7 wide on every tier
+      slotClass    = "W_InventorySlot_C",
+      slotMouseFn  = "OnMouseButtonDown",    -- native->BP override = ProcessEvent = hookable;
+                                             -- left AND right clicks funnel through it
+      slotIndexFn  = "SetItemIndexInInventory",
+      slotBgProp   = "Background",           -- UImage; DisplayItem only writes its OPACITY
+                                             -- (0.5 empty / 0.8 filled), never its colour, so a
+                                             -- SetColorAndOpacity tint survives every repaint
+      slotBorderProp = "BORDER_Selected",    -- UBorder the game shows on focus/hover
+      carryClass     = "W_ClickAndDrop_C",
+      carryGetFn     = "GetClickAndDropWidget",  -- slot fn: (out Success, out Widget)
+      carryDestroyFn = "Destroy",                -- deletes the carried item (no ground spawn)
+      carrySenderProp = "SenderSlot",
+      chestUiClass   = "W_ChestInventory_C",
+      chestUiPath    = "/Game/UI/Widgets/W_ChestInventory.W_ChestInventory_C",
+      chestSlotsProp = "ChestSlots",
+      chestInvRefProp = "ChestInventoryRef",
+      chestSyncFn    = "SyncAndFill_Chest",  -- mark-dirty + FillInventoryInGridPanel, nothing else
+      invSysClass    = "BC_InventorySystem_C",
+      invSysPath     = "/Game/Code/Inventory_Items/Framework_and_Data/BC_InventorySystem.BC_InventorySystem_C",
+      sysSizeProp    = "InventorySize",
+      sysInvProp     = "Inventory",          -- length reads only; element access wedges the VM
+      sysReplaceFn   = "ForceReplace Inventory",      -- (Inventory, SaveAfterDone) -- real spaces
+      sysAmtFn       = "GetAmtOfItem",                -- (slot struct, out Amount) -- matches by
+                                                      -- CLASS only (Is Item in Slot Class Equal)
+      sysTotalFn     = "GetTotalItemAmt",             -- (out TotalItems)
+      sysClearAtFn   = "Clear Single SlotAtIndex",    -- (index)
+      sysContainsFn  = "Contains one Of Given Items", -- (class array, out Contains) -- the bisect
+                                                      -- probe; degrades to linear sysAmtFn scans
+                                                      -- if the array param won't marshal
+      slotFactoryLibPath = "/Game/UI/Framework/BPL_UiFunctions.BPL_UiFunctions_C",
+      slotFactoryFn  = "CreateItemSlotGridForPlayer", -- (PARENTWIDGET, player, panel, rows, cols,
+                                                      -- __WorldContext, out slots): creates the
+                                                      -- slot, stamps ParentInventoryWidget from
+                                                      -- arg ONE, centers it in its grid cell.
+                                                      -- Live-burned 2026-07-28: guessing worldCtx
+                                                      -- first stamped the interface ref with the
+                                                      -- CONTROLLER -- clicks resolved to (None,0)
+                                                      -- and deposits silently no-op'd. UAssetAPI's
+                                                      -- LoadedProperties order IS the call order.
+      wblPath        = "/Script/UMG.Default__WidgetBlueprintLibrary",
+      gridSlotRowFn  = "SetRow",             -- UniformGridSlot (the widget's panel Slot object)
+      gridSlotColFn  = "SetColumn",
+      widgetSlotProp = "Slot",               -- UWidget -> its panel slot
+      backingSize    = 52,                   -- > 50 (the largest legal player inventory) so the
+      backingIndex   = 51,                   -- backing index can never alias a player slot
+      giClass        = "BP_SkyGameInstance_C",
+      dbItemsProp    = "DB_Items",           -- Map<item actor UClass, row struct>: the candidate
+                                             -- list for discovering what just landed in the trash
+      toggleInvFn    = "ToggleInventory",    -- controller input action; the re-ensure trigger
+      -- the slot struct's GUID-suffixed FNames (same values as wand.slot*Field)
+      slotItemField     = "Item_4_B9922CA845A5618A776EAFAB1A690E93",
+      slotQtyField      = "Quantity_5_A1813C42482CE5E7961C589A983BD034",
+      slotSavedataField = "AdditionalSavedata_12_7C875E564155FCA4AA2B4597ACB03361",
+      tint = { 1.0, 0.30, 0.30, 1.0 },       -- the red that marks the slot as the trash
     },
     -- The world save (offline RE 2026-07-26 of BPC_SaveManager + SkygameExtraFunctions --
     -- scratchpad re_save/ dumps). The manager is a component on the GAME STATE; the library's

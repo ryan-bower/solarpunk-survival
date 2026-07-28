@@ -412,6 +412,12 @@ M.defaults = {
   fishing_ui_own_widget = true,  -- probe a standalone viewport widget for the bar; false = go
                                  -- straight to the overlay-canvas fallback
 
+  -- trash-can slot (features/trash_slot.lua): a red extra slot right of the bag's bottom-right
+  -- cell. Items placed in it are queued for deletion -- the LAST one dropped in stays retrievable
+  -- until something replaces it (the previous one is destroyed) or the session ends (the backing
+  -- store is a detached inventory the save system cannot see, so logout forgets it by design).
+  trash_slot          = true,
+
   -- misc
   anim_tick_ms        = 8,       -- core/animator per-frame lane ticker interval. Hops drain once
                                  -- per engine tick, so 8ms converges on one update per rendered

@@ -929,5 +929,77 @@ do
   ok(not anim.active(), "animator: inactive after stop")
 end
 
+------------------------------------------------------------------ trash slot
+-- features/trash_slot.lua deletes player items on purpose, so the one decision that matters --
+-- "is the carried widget the swapped-out previous trash item?" -- is a pure function, tested
+-- against the full gesture table from the W_InventorySlot bytecode RE. A wrong "keep" is a
+-- cosmetic quirk; a wrong "destroy" eats an item the player still holds. Uncertainty must keep.
+do
+  local T = require("features.trash_slot")
+  local decide = T.decide
+  -- decide(carryExists, senderIsTrash, occupiedNow, hadPrev, stillHasPrev)
+  eq(decide(false, false, true,  false, false), "keep",
+     "trash: deposit into empty (carry consumed natively)")
+  eq(decide(false, false, true,  true,  true),  "keep",
+     "trash: full-stack merge (carry destroyed natively)")
+  eq(decide(true,  false, true,  true,  false), "destroy",
+     "trash: swap -- the carry holds the previous trash item")
+  eq(decide(true,  false, true,  true,  true),  "keep",
+     "trash: same-class stack leftover / right-click drip stays in the player's hand")
+  eq(decide(true,  true,  false, true,  false), "keep",
+     "trash: take-out -- the player is retrieving, never destroy")
+  eq(decide(true,  true,  true,  true,  true),  "keep",
+     "trash: right-click half-out keeps the carried half")
+  eq(decide(true,  false, true,  false, false), "keep",
+     "trash: deposit into empty then a fast next pickup -- nothing was replaced")
+  eq(decide(true,  false, false, true,  false), "keep",
+     "trash: refused drop (nothing landed) leaves the carry alone")
+  eq(decide(true,  false, true,  true,  true),  "keep",
+     "trash: failed probe reads as still-has-prev = uncertainty keeps")
+
+  -- the class-discovery bisection, driven by a fake Contains-one-Of oracle
+  local classes = {}
+  for i = 1, 300 do classes[i] = "cls" .. i end
+  local function oracleFor(target, failAfter)
+    local calls = 0
+    return function(list)
+      calls = calls + 1
+      if failAfter and calls > failAfter then return nil end
+      for _, c in ipairs(list) do if c == target then return true end end
+      return false
+    end, function() return calls end
+  end
+  local probe, calls = oracleFor("cls137")
+  local hit, alive = T.bisect(classes, probe)
+  eq(hit, "cls137", "trash: bisect finds the class")
+  ok(alive, "trash: bisect reports the probe path alive")
+  ok(calls() <= 11, "trash: bisect stays logarithmic (" .. calls() .. " probes for 300)")
+  local hit2, alive2 = T.bisect(classes, oracleFor("not-present"))
+  eq(hit2, nil, "trash: bisect on an absent class finds nothing")
+  ok(alive2, "trash: absent class is a clean no-hit, not a probe failure")
+  local probe3 = oracleFor("cls137", 2)
+  local hit3, alive3 = T.bisect(classes, probe3)
+  eq(hit3, nil, "trash: a mid-bisect marshal failure returns no class")
+  ok(not alive3, "trash: ...and reports the probe path dead so the caller goes linear")
+  local hit4, alive4 = T.bisect({}, function() return true end)
+  eq(hit4, nil, "trash: empty candidate list finds nothing")
+  ok(alive4, "trash: empty list is not a probe failure")
+  local hit5 = T.bisect({ "only" }, function(l) return l[1] == "only" end)
+  eq(hit5, "only", "trash: single-candidate list resolves without narrowing")
+
+  -- mapping invariants the whole design leans on
+  local m = mapping.resolve("24038177")
+  ok(m.trash ~= nil, "trash: mapping section present")
+  eq(m.trash.backingIndex, m.trash.backingSize - 1, "trash: backing index is the last slot")
+  ok(m.trash.backingSize > 50,
+     "trash: backing index must be out of range for every legal player inventory (max 50)")
+  eq(m.trash.slotItemField, m.wand.slotItemField, "trash: slot struct field GUIDs match wand's")
+  eq(m.trash.sysReplaceFn, "ForceReplace Inventory", "trash: bulk setter keeps its real spaces")
+  eq(#(m.trash.tint), 4, "trash: tint is RGBA")
+  ok((gate.check(m, { "trash.invUiProp", "trash.chestSyncFn", "trash.sysContainsFn" })),
+     "trash: gate sees the trash keys")
+  eq(config.get("trash_slot"), true, "trash: enabled by default")
+end
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)
