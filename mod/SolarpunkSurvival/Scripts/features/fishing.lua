@@ -962,7 +962,6 @@ local function finishWheel(pawn, slow)
   mgSlow = nil
   resumeBites()
   reelLine(pawn)
-  if slow.reelVanilla then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- space owed this reel
   lineOut = false
   UI.flash(slow.hit and "hit" or "miss")
   logBarStats()
@@ -1157,25 +1156,17 @@ end
 -- the hook body -- the physical click time, not this deferred body's run time. Four jobs, in
 -- priority order: resolve an active skillshot (fallback -- the animator usually beat us to it),
 -- honor a buzzer-beater stamp, reveal a pending bar, drive the diamond rod / stamp worn rods.
--- viaSpace: the click is the SPACE keybind, not a real game input -- the VANILLA rod then
--- needs its Interaction driven by us wherever a mouse click would have done it natively.
-local function onClick(pawn, clickAt, viaSpace)
+local function onClick(pawn, clickAt)
   if not ctx.uehelp.isValid(pawn) then return end
   clickAt = clickAt or os.clock()
   if clickAt - lastClickAt < (tonumber(cfg("fishing_click_debounce")) or 0.3) then return end
   lastClickAt = clickAt
-  local spaceVanilla = viaSpace and heldRodKind(pawn) == "vanilla"
 
   if mgActive then
     if mgKind == "wheel" then
-      if mgAwaitClick then
-        wheelClicked(pawn, clickAt)
-        -- a mouse click reels the vanilla line natively; space owes the same reel at the reveal
-        if spaceVanilla and mgSlow then mgSlow.reelVanilla = true end
-      end
+      if mgAwaitClick then wheelClicked(pawn, clickAt) end -- clicks during the slow-down are noise
     else
       resolveMinigame(pawn, clickAt)
-      if spaceVanilla then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end
     end
     return
   end
@@ -1200,7 +1191,7 @@ local function onClick(pawn, clickAt, viaSpace)
     end
     if hit then
       mgGroup, mgDiamond = late.group, late.diamond
-      if late.diamond or spaceVanilla then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
+      if late.diamond then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
       lineOut = false
       ctx.log.info("fishing: right at the buzzer -- the click counts")
       grantSoon(pawn)
@@ -1278,9 +1269,8 @@ local function onClick(pawn, clickAt, viaSpace)
   end
 
   local kind = heldRodKind(pawn)
-  if (kind == "diamond" or (viaSpace and kind == "vanilla")) and cfg("fishing_enabled") then
-    -- diamond: the game's switches don't know our row; space+vanilla: space is not a game
-    -- input -- either way, drive the rod's own event (cast/reel + durability)
+  if kind == "diamond" and cfg("fishing_enabled") then
+    -- the game's switches don't know our row -- drive its own event (cast/reel + durability)
     local m = ctx.map.fishing
     ctx.uehelp.call(pawn, m.useRodFn)
   end
@@ -1631,27 +1621,6 @@ function F.init(c)
       return true
     end)
   end)
-
-  -- SPACE = the fishing button (user ask): cast, reel, and play the skillshots without the
-  -- mouse. The keybind only OBSERVES -- the game still owns SPACE, so the pawn jumps too.
-  -- Body mirrors the click hooks: pure-Lua stamp at dispatch, full click deferred; the
-  -- vanilla rod additionally needs its Interaction driven (see onClick's viaSpace).
-  if cfg("fishing_space_cast") and RegisterKeyBind and Key and Key.SPACE then
-    local okK = pcall(RegisterKeyBind, Key.SPACE, ctx.log.guard("fishing.space", function()
-      local t = os.clock()
-      if mgActive and mgAwaitClick and mgClickAt == nil
-         and t - lastClickAt >= (tonumber(cfg("fishing_click_debounce")) or 0.3) then
-        mgClickAt = t
-      end
-      deferOnly(0, function() onGameThread(function()
-        local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
-        if not ctx.uehelp.isValid(pawn) then return end
-        if not heldRodKind(pawn) then return end -- no rod in hand: SPACE is not ours
-        onClick(pawn, t, true)
-      end) end)
-    end))
-    if okK then ctx.log.info("fishing: SPACE casts/reels/plays the skillshots (rod in hand)") end
-  end
 
   applyAll()
   ctx.log.info("fishing: ready -- new tables, twilight/diamond luck, wet-weather skillshots, worn rods")

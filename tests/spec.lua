@@ -750,7 +750,7 @@ do
   eq(config.get("fishing_splash_gain"), 3.0, "fishing: bite splash at 300%")
   eq(config.get("fishing_storm_mult"), nil, "fishing: storm no longer touches the loot bands")
   eq(config.get("fishing_minigame_weather_bonus"), 0.05, "fishing: rain/storm = +5pp skillshot chance")
-  eq(config.get("fishing_space_cast"), true, "fishing: SPACE is a fishing button by default")
+  eq(config.get("fishing_space_cast"), nil, "fishing: the SPACE binding was removed (user pass)")
   eq(config.get("fishing_twilight_mult"), 1.5, "fishing: dawn/dusk x1.5")
   eq(config.get("fishing_flash_secs"), 0.22, "fishing: resolve flash before the bar folds")
   eq(config.get("fishing_click_lead"), 0.0, "fishing: no click-lead -- the frozen frame IS the judge")
