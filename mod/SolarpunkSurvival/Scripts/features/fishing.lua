@@ -226,6 +226,16 @@ function F.zoneHit(pos, center, width)
   return math.abs(pos - center) <= width / 2 + 1e-9
 end
 
+-- Skillshot arm chance for this bite: the diamond-rod override wins while the diamond rod is
+-- held, unless it is negative (-1 = "follow the base chance"). Clamped to a probability.
+function F.miniChance(isDiamond, base, diamondChance)
+  local c = tonumber(base) or 0
+  local d = tonumber(diamondChance) or -1
+  if isDiamond and d >= 0 then c = d end
+  if c < 0 then c = 0 elseif c > 1 then c = 1 end
+  return c
+end
+
 -- A fished-up rod's remaining durability from a 0..1 roll.
 function F.wornDurability(r, maxDur, minFrac, maxFrac)
   local frac = (minFrac or 0.1) + r * ((maxFrac or 0.6) - (minFrac or 0.1))
@@ -867,7 +877,8 @@ local function onLootTick(rod)
   lastBiteAt = os.clock()
   playExtraSplash(rod)
   freshRodSlots = freshRods(pawn) -- pre-catch snapshot for the worn-rod stamp
-  local chance = tonumber(cfg("fishing_minigame_chance")) or 0
+  local chance = F.miniChance(diamondHeld, cfg("fishing_minigame_chance"),
+                              cfg("fishing_minigame_chance_diamond"))
   if (forceMini or (chance > 0 and math.random() < chance)) and not (mgPending or mgActive) then
     armMinigame(pawn)
   end

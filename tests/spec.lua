@@ -827,6 +827,14 @@ do
   ok(fishing.zoneHit(0.55, 0.5, 0.1), "fishing: zone edge counts")
   ok(not fishing.zoneHit(0.56, 0.5, 0.1), "fishing: just outside misses")
 
+  -- minigame arm chance: the diamond override applies only in-hand and only when >= 0
+  eq(fishing.miniChance(false, 0.05, -1), 0.05, "fishing: base chance without the diamond rod")
+  eq(fishing.miniChance(true, 0.05, -1), 0.05, "fishing: -1 override follows the base chance")
+  eq(fishing.miniChance(true, 0.05, 0.5), 0.5, "fishing: diamond override wins in-hand")
+  eq(fishing.miniChance(false, 0.05, 0.5), 0.05, "fishing: override ignored bare-handed")
+  eq(fishing.miniChance(true, 0.05, 1.5), 1, "fishing: chance clamps to a probability")
+  eq(fishing.miniChance(false, nil, nil), 0, "fishing: garbage config reads as never")
+
   -- worn-rod durability roll and the worn-vs-full diamond split
   eq(fishing.wornDurability(0, 200, 0.1, 0.6), 20, "fishing: worst fished rod keeps 10%")
   eq(fishing.wornDurability(1, 200, 0.1, 0.6), 120, "fishing: best fished rod keeps 60%")
