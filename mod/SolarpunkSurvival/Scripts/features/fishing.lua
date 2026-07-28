@@ -5,9 +5,10 @@
 --     from the generated spec below -- three island groups (starter/mid/late), per-10000 weights.
 --     The whole cast/bite/catch flow runs on the OWNING CLIENT, so each machine writing its own
 --     rivers IS per-player luck: your diamond rod doubles YOUR odds, not your co-op partner's.
---   * LUCK MULTIPLIERS: the rare+jackpot band scales by storm x2, dawn/dusk x1.5, diamond rod x2
---     (multiplicative, up to x6); commons shrink to keep the table at 10000. Tables are rebuilt
---     on every state flip (weather bus, IsDay watchdog, hand rebuild).
+--   * LUCK MULTIPLIERS: the rare+jackpot band scales by dawn/dusk x1.5 and diamond rod x2
+--     (multiplicative); commons shrink to keep the table at 10000. Tables are rebuilt on every
+--     state flip (IsDay watchdog, hand rebuild). Rain/storm do NOT touch the bands -- wet
+--     weather adds fishing_minigame_weather_bonus (+5pp) to the SKILLSHOT chance instead.
 --   * DIAMOND ROD: the content-pak row (10x durability) is T5-typed -- new cooked TOOL rows are
 --     the proven world-load crash -- so the game's two hardcoded class switches don't know it.
 --     The mod seats the real BP_HandItem_FishingRod_C on equip and routes clicks to the pawn's
@@ -151,12 +152,12 @@ local RIVERS = {
 F.RIVERS = RIVERS
 
 --------------------------------------------------------------------- pure logic (unit-tested)
--- Combined rare+jackpot multiplier for the current conditions.
-function F.luckMult(diamond, storm, twilight, cfg)
+-- Combined rare+jackpot multiplier for the current conditions. Weather is NOT in here:
+-- rain/storm moved off the loot bands onto the skillshot chance (user spec 2026-07-28).
+function F.luckMult(diamond, twilight, cfg)
   cfg = cfg or {}
   local m = 1.0
   if diamond then m = m * (cfg.diamond or 2.0) end
-  if storm then m = m * (cfg.storm or 2.0) end
   if twilight then m = m * (cfg.twilight or 1.5) end
   return m
 end
@@ -421,9 +422,8 @@ end
 --------------------------------------------------------------------- table writer
 local function currentMult()
   local twilight = os.clock() < twilightUntil
-  return F.luckMult(diamondHeld, stormNow, twilight, {
+  return F.luckMult(diamondHeld, twilight, {
     diamond = cfg("fishing_diamond_mult"),
-    storm = cfg("fishing_storm_mult"),
     twilight = cfg("fishing_twilight_mult"),
   }), twilight
 end
@@ -495,7 +495,7 @@ function F.applyTables(reason)
       end
     end
   end
-  lastAppliedKey = string.format("%s|%s|%s", tostring(diamondHeld), tostring(stormNow), tostring(twilight))
+  lastAppliedKey = string.format("%s|%s", tostring(diamondHeld), tostring(twilight))
   if wrote > 0 then
     ctx.log.info(string.format("fishing: %d/%d river tables set (%s, x%.1f luck band)",
       wrote, #rivers, tostring(reason), mult))
@@ -509,7 +509,7 @@ end
 
 local function checkMult(reason)
   local _, twilight = currentMult()
-  local key = string.format("%s|%s|%s", tostring(diamondHeld), tostring(stormNow), tostring(twilight))
+  local key = string.format("%s|%s", tostring(diamondHeld), tostring(twilight))
   if key ~= lastAppliedKey then onGameThread(function() F.applyTables(reason) end) end
 end
 
@@ -962,6 +962,7 @@ local function finishWheel(pawn, slow)
   mgSlow = nil
   resumeBites()
   reelLine(pawn)
+  if slow.reelVanilla then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- space owed this reel
   lineOut = false
   UI.flash(slow.hit and "hit" or "miss")
   logBarStats()
@@ -1097,6 +1098,24 @@ local function playExtraSplash(rod)
   pcall(function() gs:PlaySoundAtLocation(pc, splashWave, loc, rot, extra, 1.0) end)
 end
 
+-- Wet weather (rain OR storm) raises the SKILLSHOT chance instead of the loot bands (user
+-- spec). Storms come from the mod's own flag; rain is the day-night cycle's rain-transition
+-- TIMELINE position (see mapping.weather.rainTimelineProp -- the only readable wetness on
+-- this build), read fresh per bite (event-driven -- never polled on a timer).
+local function wetNow()
+  if stormNow then return true end
+  local w = ctx.map.weather
+  if not (w and w.rainTimelineProp) then return false end
+  local mgr = ctx.uehelp.findFirst(w.managerClass)
+  if not ctx.uehelp.isValid(mgr) then return false end
+  local pos
+  pcall(function()
+    local tl = mgr[w.rainTimelineProp]
+    if tl and tl:IsValid() then pos = tl:GetPlaybackPosition() end
+  end)
+  return (tonumber(pos) or 0) > 0.5
+end
+
 -- Deferred body of the ChanceForLoot hook: this rod just ticked its 1.5 s roll. A fresh
 -- PlayerCanCatch=true edge IS the bite -- the game played its splash this same frame.
 local function onLootTick(rod)
@@ -1125,6 +1144,9 @@ local function onLootTick(rod)
   freshRodSlots = freshRods(pawn) -- pre-catch snapshot for the worn-rod stamp
   local chance = F.miniChance(diamondHeld, cfg("fishing_minigame_chance"),
                               cfg("fishing_minigame_chance_diamond"))
+  if chance > 0 and wetNow() then
+    chance = math.min(1, chance + (tonumber(cfg("fishing_minigame_weather_bonus")) or 0.05))
+  end
   if (forceMini or (chance > 0 and math.random() < chance)) and not (mgPending or mgActive) then
     armMinigame(pawn)
   end
@@ -1135,17 +1157,25 @@ end
 -- the hook body -- the physical click time, not this deferred body's run time. Four jobs, in
 -- priority order: resolve an active skillshot (fallback -- the animator usually beat us to it),
 -- honor a buzzer-beater stamp, reveal a pending bar, drive the diamond rod / stamp worn rods.
-local function onClick(pawn, clickAt)
+-- viaSpace: the click is the SPACE keybind, not a real game input -- the VANILLA rod then
+-- needs its Interaction driven by us wherever a mouse click would have done it natively.
+local function onClick(pawn, clickAt, viaSpace)
   if not ctx.uehelp.isValid(pawn) then return end
   clickAt = clickAt or os.clock()
   if clickAt - lastClickAt < (tonumber(cfg("fishing_click_debounce")) or 0.3) then return end
   lastClickAt = clickAt
+  local spaceVanilla = viaSpace and heldRodKind(pawn) == "vanilla"
 
   if mgActive then
     if mgKind == "wheel" then
-      if mgAwaitClick then wheelClicked(pawn, clickAt) end -- clicks during the slow-down are noise
+      if mgAwaitClick then
+        wheelClicked(pawn, clickAt)
+        -- a mouse click reels the vanilla line natively; space owes the same reel at the reveal
+        if spaceVanilla and mgSlow then mgSlow.reelVanilla = true end
+      end
     else
       resolveMinigame(pawn, clickAt)
+      if spaceVanilla then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end
     end
     return
   end
@@ -1170,7 +1200,7 @@ local function onClick(pawn, clickAt)
     end
     if hit then
       mgGroup, mgDiamond = late.group, late.diamond
-      if late.diamond then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
+      if late.diamond or spaceVanilla then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
       lineOut = false
       ctx.log.info("fishing: right at the buzzer -- the click counts")
       grantSoon(pawn)
@@ -1248,8 +1278,9 @@ local function onClick(pawn, clickAt)
   end
 
   local kind = heldRodKind(pawn)
-  if kind == "diamond" and cfg("fishing_enabled") then
-    -- the game's switches don't know our row -- drive its own event (cast/reel + durability)
+  if (kind == "diamond" or (viaSpace and kind == "vanilla")) and cfg("fishing_enabled") then
+    -- diamond: the game's switches don't know our row; space+vanilla: space is not a game
+    -- input -- either way, drive the rod's own event (cast/reel + durability)
     local m = ctx.map.fishing
     ctx.uehelp.call(pawn, m.useRodFn)
   end
@@ -1540,8 +1571,8 @@ function F.init(c)
 
   -- luck-state feeds
   ctx.bus.on("weather.changed", function(ev)
+    -- storms no longer touch the loot bands -- wetNow() reads this flag for the skillshot bonus
     stormNow = ev and ev.storm == true
-    checkMult("storm")
   end)
   dayToken = dayToken + 1
   dayWatch(dayToken)
@@ -1601,8 +1632,29 @@ function F.init(c)
     end)
   end)
 
+  -- SPACE = the fishing button (user ask): cast, reel, and play the skillshots without the
+  -- mouse. The keybind only OBSERVES -- the game still owns SPACE, so the pawn jumps too.
+  -- Body mirrors the click hooks: pure-Lua stamp at dispatch, full click deferred; the
+  -- vanilla rod additionally needs its Interaction driven (see onClick's viaSpace).
+  if cfg("fishing_space_cast") and RegisterKeyBind and Key and Key.SPACE then
+    local okK = pcall(RegisterKeyBind, Key.SPACE, ctx.log.guard("fishing.space", function()
+      local t = os.clock()
+      if mgActive and mgAwaitClick and mgClickAt == nil
+         and t - lastClickAt >= (tonumber(cfg("fishing_click_debounce")) or 0.3) then
+        mgClickAt = t
+      end
+      deferOnly(0, function() onGameThread(function()
+        local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
+        if not ctx.uehelp.isValid(pawn) then return end
+        if not heldRodKind(pawn) then return end -- no rod in hand: SPACE is not ours
+        onClick(pawn, t, true)
+      end) end)
+    end))
+    if okK then ctx.log.info("fishing: SPACE casts/reels/plays the skillshots (rod in hand)") end
+  end
+
   applyAll()
-  ctx.log.info("fishing: ready -- new tables, storm/twilight/diamond luck, worn rods, skillshot")
+  ctx.log.info("fishing: ready -- new tables, twilight/diamond luck, wet-weather skillshots, worn rods")
   return true
 end
 

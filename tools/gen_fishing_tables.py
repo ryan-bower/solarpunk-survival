@@ -109,9 +109,10 @@ def check():
         total = sum(w for _, _, w, _ in tbl)
         assert total == 10000, f"{name} sums to {total}, not 10000"
         bonus = sum(w for _, _, w, t in tbl if t)
-        # the strongest stack (diamond rod x2 * storm x2 * twilight x1.5 = x6) must leave the
-        # non-bonus pool with weight (bonus band strictly < 1/6 of the table... actually < 10000/6)
-        assert bonus * 6 < 10000, f"{name} bonus band {bonus} cannot survive the full x6 stack"
+        # the strongest stack (diamond rod x2 * twilight x1.5 = x3; storm/rain moved off the
+        # bands onto the skillshot chance) must leave the non-bonus pool with weight. Keep the
+        # historical x6 headroom anyway so config tweaks can't starve the commons.
+        assert bonus * 6 < 10000, f"{name} bonus band {bonus} has no headroom (x6 guard)"
         # rod split: diamond (worn) must be exactly 10% of total rod-drop weight
         rods = {t: w for _, c, w, t in tbl if c in ("BP_FishingRod_Item_C",)}
         dia_worn = sum(w for _, c, w, t in tbl if c == "BP_DiamondFishingRod_Item_C" and t == "rare")
@@ -125,7 +126,7 @@ def check():
         gtru = sum(w for _, c, w, _ in tbl if c == "BP_GoldTruffle_Item_C")
         if tru or gtru:
             assert abs(gtru / (tru + gtru) - 0.05) < 0.005, f"{name} truffle gold split off"
-        print(f"{name}: total {total}, bonus band {bonus} ({bonus/100:.2f}%), max x6 -> {bonus*6/100:.1f}%")
+        print(f"{name}: total {total}, bonus band {bonus} ({bonus/100:.2f}%), max x3 -> {bonus*3/100:.1f}%")
 
 def lua():
     out = []
@@ -166,19 +167,21 @@ def md():
     L.append("(carrot), Land (wheat), both Worm rivers (algae), LowerNice's main river (sunflower).")
     L.append("**Late** = Start, WildWinter, UShape, SnowCave.\n")
     L.append("Multipliers (stack multiplicatively, applied to the rare+jackpot band; the balance")
-    L.append("is taken proportionally from everything else): diamond rod **x2**, storm (rain or")
-    L.append("lightning) **x2**, early morning / early night **x1.5**. Full stack = **x6**.")
+    L.append("is taken proportionally from everything else): diamond rod **x2**, early morning /")
+    L.append("early night **x1.5**. Full stack = **x3**. Rain and storms do NOT touch the loot")
+    L.append("bands -- wet weather adds **+5pp** to the skillshot chance instead")
+    L.append("(fishing_minigame_weather_bonus).")
     L.append("Bulk ores are deliberately outside the band -- see tools/gen_fishing_tables.py.\n")
     for name, tbl in GROUPS:
         L.append(f"\n## {name.capitalize()}\n")
-        L.append("| Item | Tier | Base | Diamond rod (x2) | Storm (x2) | Storm+rod (x4) | Full stack (x6) |")
-        L.append("|---|---|---|---|---|---|---|")
-        eff = {m: dict((i, e) for i, (lab, e) in enumerate(boosted(tbl, m))) for m in (2, 4, 6)}
+        L.append("| Item | Tier | Base | Diamond rod (x2) | Twilight (x1.5) | Full stack (x3) |")
+        L.append("|---|---|---|---|---|---|")
+        eff = {m: dict((i, e) for i, (lab, e) in enumerate(boosted(tbl, m))) for m in (1.5, 2, 3)}
         for i, (label, cls, w, t) in enumerate(tbl):
             tier = t or ("filler" if w >= 600 else "common")
-            L.append(f"| {label} | {tier} | {pct(w)} | {pct(eff[2][i])} | {pct(eff[2][i])} | {pct(eff[4][i])} | {pct(eff[6][i])} |")
+            L.append(f"| {label} | {tier} | {pct(w)} | {pct(eff[2][i])} | {pct(eff[1.5][i])} | {pct(eff[3][i])} |")
         bonus = sum(w for _, _, w, t in tbl if t)
-        L.append(f"\nRare+jackpot band: **{pct(bonus)}** base -> {pct(bonus*2)} (x2) -> {pct(bonus*4)} (x4) -> {pct(bonus*6)} (x6).")
+        L.append(f"\nRare+jackpot band: **{pct(bonus)}** base -> {pct(bonus*1.5)} (x1.5) -> {pct(bonus*2)} (x2) -> {pct(bonus*3)} (x3).")
     return "\n".join(L)
 
 if __name__ == "__main__":

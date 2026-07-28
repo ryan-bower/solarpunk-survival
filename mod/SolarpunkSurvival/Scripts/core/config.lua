@@ -366,8 +366,11 @@ M.defaults = {
                                  -- of the overhaul still runs)
   fishing_splash_gain = 3.0,     -- total loudness of the BITE splash vs stock ("300%" -- the mod
                                  -- layers gain-1 extra on top of the game's own 1.0 play)
-  fishing_storm_mult    = 2.0,   -- rare+jackpot band multiplier while a storm rages (ours or natural)
-  fishing_twilight_mult = 1.5,   -- ...during the dawn/dusk window below
+  fishing_minigame_weather_bonus = 0.05, -- +5pp SKILLSHOT chance while it rains or storms (weather
+                                 -- moved OFF the loot bands onto the minigame roll, user spec)
+  fishing_space_cast  = true,    -- SPACE also casts/reels/plays the skillshots while a rod is in
+                                 -- hand (restart-only; the pawn still jumps -- the game owns SPACE)
+  fishing_twilight_mult = 1.5,   -- rare+jackpot band multiplier during the dawn/dusk window below
   fishing_diamond_mult  = 2.0,   -- ...while the Diamond Fishing Rod is in hand ("2x luck")
   fishing_twilight_secs = 300.0, -- how long after an IsDay flip the sun still counts as transitioning
   fishing_daywatch_secs = 20.0,  -- IsDay sampling cadence (slow self-rechaining watchdog; the

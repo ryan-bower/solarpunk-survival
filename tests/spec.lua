@@ -386,6 +386,7 @@ do
   eq(config.get("evil_atkspeed_sheep"), 0.7, "evil: sheep attack at 70% speed")
   ok(config.get("evil_atkspeed_chicken") == 1.0, "evil: chicken attack speed baseline")
   eq(m.weather.isDayProp, "IsDay", "weather: daylight flag on the cycle manager")
+  eq(m.weather.rainTimelineProp, "TL_RainTransition", "weather: rain timeline = the wetness readout")
   eq(config.get("evil_hit_stun"), 0.5, "evil: tool hit stuns for 0.5 s")
   eq(config.get("evil_ram_recover"), 1.5, "evil: sheep ram recovery 1.5 s")
   eq(config.get("evil_light_block_big"), 2000.0, "evil: 20 m light block")
@@ -747,7 +748,9 @@ do
   -- config defaults
   eq(config.get("fishing_minigame_chance"), 0.05, "fishing: 5% of bites are the skillshot")
   eq(config.get("fishing_splash_gain"), 3.0, "fishing: bite splash at 300%")
-  eq(config.get("fishing_storm_mult"), 2.0, "fishing: storm doubles the rare band")
+  eq(config.get("fishing_storm_mult"), nil, "fishing: storm no longer touches the loot bands")
+  eq(config.get("fishing_minigame_weather_bonus"), 0.05, "fishing: rain/storm = +5pp skillshot chance")
+  eq(config.get("fishing_space_cast"), true, "fishing: SPACE is a fishing button by default")
   eq(config.get("fishing_twilight_mult"), 1.5, "fishing: dawn/dusk x1.5")
   eq(config.get("fishing_flash_secs"), 0.22, "fishing: resolve flash before the bar folds")
   eq(config.get("fishing_click_lead"), 0.0, "fishing: no click-lead -- the frozen frame IS the judge")
@@ -885,11 +888,10 @@ do
      "fishing: a fished vanilla rod is ALWAYS worn (no full entry exists)")
 
   -- luck multiplier ladder
-  eq(fishing.luckMult(false, false, false), 1.0, "fishing: calm daylight bare rod = x1")
-  eq(fishing.luckMult(false, true, false), 2.0, "fishing: storm = x2")
-  eq(fishing.luckMult(true, true, false), 4.0, "fishing: diamond in a storm = x4 (user spec)")
-  eq(fishing.luckMult(true, true, true), 6.0, "fishing: the full x6 stack")
-  eq(fishing.luckMult(false, false, true), 1.5, "fishing: twilight alone = x1.5")
+  eq(fishing.luckMult(false, false), 1.0, "fishing: calm daylight bare rod = x1")
+  eq(fishing.luckMult(true, false), 2.0, "fishing: diamond rod = x2")
+  eq(fishing.luckMult(true, true), 3.0, "fishing: diamond at twilight = the full x3 stack")
+  eq(fishing.luckMult(false, true), 1.5, "fishing: twilight alone = x1.5")
 end
 
 ------------------------------------------------------------------ animator (per-frame lane)

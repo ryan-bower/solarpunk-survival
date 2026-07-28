@@ -11,7 +11,7 @@ local M = {}
 -- Every symbol the mod can use, grouped by section. This schema drives the
 -- startup "what's still missing" report; keep it in sync with the profiles below.
 M.schema = {
-  weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "hardStopFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn", "isDayProp", "isNightProp" },
+  weather  = { "managerClass", "currentProp", "severityProp", "onChangedFn", "stormValue", "startStormFn", "stopStormFn", "hardStopFn", "thunderFn", "thunderLocXProp", "thunderLocYProp", "boltActorClass", "boltActorPath", "windIntensityProp", "setWindIntensityFn", "windAudioFn", "isDayProp", "isNightProp", "rainTimelineProp" },
   player   = { "controllerClass", "curHealthProp", "maxHealthProp", "addHealthFn", "reduceHealthFn", "dieFn", "respawnFn", "pingFn", "curThirstProp", "maxThirstProp", "addThirstFn", "clientAddThirstFn" },
   pawn     = { "class", "healthProp", "isShelteredFn", "worldLocationFn", "respawnFn", "dropInventoryFn", "playerIdProp" },
   build    = { "pieceClass", "stableIdProp", "demolishFn", "demolishRefund" },
@@ -160,6 +160,13 @@ M.profiles = {
       windIntensityProp  = "WindIntensityRealtime",
       setWindIntensityFn = "DEBUG_SetWindIntensity",
       windAudioFn        = "Set Wind Audio for Wind Intensity",
+      -- Wetness readout (fishing's wet-weather skillshot bonus). The DNC exposes NO readable
+      -- current-weather scalar (Weather/CurWeather/WeatherInt are function locals -- reads
+      -- return the truthy nothing-wrapper), and the FadeIn/OutRain events are VM-internal
+      -- (hooks never fire). PROBED LIVE 2026-07-28: this timeline component's playback
+      -- position runs 0 -> 15s as rain fades in, HOLDS 15 while rain or storm is up (storms
+      -- drive it too), and reverses to 0 on clear. position > 0.5 = wet.
+      rainTimelineProp   = "TL_RainTransition",
     },
     -- UniquePlayerID lives on BOTH the pawn and the controller (capture): the stable per-player
     -- key. identity.idOf's location-derived fallback drifts as a player walks -- never use it
