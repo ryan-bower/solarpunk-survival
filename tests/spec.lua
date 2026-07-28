@@ -722,5 +722,129 @@ do
   log.setLevel("info")
 end
 
+------------------------------------------------------------------ fishing overhaul
+-- Pure drop-table math + skillshot math from features/fishing.lua (no game objects involved).
+do
+  local fishing = require("features.fishing")
+  local m = mapping.resolve("24038177")
+
+  -- mapping symbols the feature stands on
+  eq(m.fishing.riverClass, "BP_River_C", "fishing: loot lives per BP_River instance")
+  eq(m.fishing.loottableProp, "Loottable", "fishing: the river's weighted table prop")
+  eq(m.fishing.lootItemField, "Item_2_1BBB738C4E44A3691F7D7FA72F18D942",
+     "fishing: S_WeightedLootItem item field (GUID-suffixed BP struct member)")
+  eq(m.fishing.lootWeightField, "Weight_5_FE32777043D4D4500ED27DB09FD53D95",
+     "fishing: S_WeightedLootItem weight field")
+  eq(m.fishing.lootTickFn, "ChanceForLoot", "fishing: the hookable 1.5s bite roll (SetTimer delegate)")
+  eq(m.fishing.useRodFn, "Interaction_FishingRod",
+     "fishing: diamond-rod clicks drive the game's own pawn event (durability drains free)")
+  eq(m.fishing.rodDurability, 200, "fishing: vanilla rod durability")
+  eq(m.fishing.diamondDurability, 2000, "fishing: diamond rod = 10x durability (user spec)")
+
+  -- config defaults
+  eq(config.get("fishing_minigame_chance"), 0.05, "fishing: 5% of bites are the skillshot")
+  eq(config.get("fishing_splash_gain"), 3.0, "fishing: bite splash at 300%")
+  eq(config.get("fishing_storm_mult"), 2.0, "fishing: storm doubles the rare band")
+  eq(config.get("fishing_twilight_mult"), 1.5, "fishing: dawn/dusk x1.5")
+
+  -- baked river registry: 12 rivers, the census's group split
+  eq(#fishing.RIVERS, 12, "fishing: 12 rivers baked")
+  local groups = { starter = 0, mid = 0, late = 0 }
+  for _, r in ipairs(fishing.RIVERS) do groups[r.group] = groups[r.group] + 1 end
+  eq(groups.starter, 3, "fishing: 3 starter rivers")
+  eq(groups.mid, 5, "fishing: 5 mid rivers (each with a specialty)")
+  eq(groups.late, 4, "fishing: 4 late rivers")
+  for _, r in ipairs(fishing.RIVERS) do
+    ok(r.group ~= "mid" or type(r.specialty) == "string", "fishing: every mid river names its specialty")
+  end
+
+  -- classification by position (river instance names are not stable; positions are level data)
+  eq(fishing.nearestRiver(3576, -7019).group, "starter", "fishing: NewStart river is starter")
+  local gm = fishing.nearestRiver(-137107, -44448)
+  eq(gm.group, "mid", "fishing: GoldenMid river is mid")
+  eq(gm.specialty, "BP_Carrot_Item_C", "fishing: GoldenMid's specialty is the carrot")
+  eq(fishing.nearestRiver(487688, 65143).group, "late", "fishing: SnowCave river is late")
+
+  -- generated spec invariants (the gen script asserts these too; keep the Lua copy honest)
+  for _, g in ipairs({ "starter", "mid", "late" }) do
+    local sum = 0
+    for _, e in ipairs(fishing.TABLES[g]) do sum = sum + e.w end
+    eq(sum, 10000, "fishing: " .. g .. " spec sums to 10000")
+  end
+
+  -- composition: totals hold at every multiplier, band scales exactly, commons shrink
+  for _, mult in ipairs({ 1, 1.5, 2, 3, 4, 6 }) do
+    for _, g in ipairs({ "starter", "mid", "late" }) do
+      local t = fishing.composeTable(g, "BP_Carrot_Item_C", mult)
+      local sum = 0
+      for _, e in ipairs(t) do sum = sum + e.w end
+      eq(sum, 10000, string.format("fishing: %s at x%.1f still sums to 10000", g, mult))
+    end
+  end
+  local late2 = fishing.composeTable("late", nil, 2)
+  local bandOk, algae2 = true, nil
+  for i, e in ipairs(fishing.TABLES.late) do
+    if e.tier and late2[i].w ~= e.w * 2 then bandOk = false end
+    if i == 1 then algae2 = late2[i].w end
+  end
+  ok(bandOk, "fishing: x2 doubles every rare/jackpot weight exactly")
+  ok(algae2 < fishing.TABLES.late[1].w, "fishing: the common base shrinks to pay for the band")
+
+  -- specialty substitution (mid) and clean drop without one
+  local midC = fishing.composeTable("mid", "BP_Wheat_Item_C", 1)
+  local foundWheat = false
+  for _, e in ipairs(midC) do
+    if e.cls == "BP_Wheat_Item_C" and e.w == 900 then foundWheat = true end
+    ok(e.cls ~= false and e.cls ~= nil, "fishing: no unresolved specialty slots survive composition")
+  end
+  ok(foundWheat, "fishing: the island specialty fills its 9% slot at x1")
+
+  -- skillshot reward pools
+  local poolAll = fishing.rewardPool("late", false)
+  local poolJack = fishing.rewardPool("late", true)
+  local hasBattery, jackClean, hasDrone = false, true, false
+  for _, e in ipairs(poolAll) do if e.cls == "BP_Battery_Item_C" then hasBattery = true end end
+  for _, e in ipairs(poolJack) do
+    if e.tier ~= "jackpot" then jackClean = false end
+    if e.cls == "BP_AutoFisher_Item_C" then hasDrone = true end
+  end
+  ok(hasBattery, "fishing: normal skillshot pool spans rare+jackpot")
+  ok(jackClean, "fishing: diamond skillshot pool is jackpot-only")
+  ok(hasDrone, "fishing: the algae drone sits in the jackpot pool")
+
+  -- weighted pick determinism
+  local pool = { { cls = "a", w = 10 }, { cls = "b", w = 30 }, { cls = "c", w = 60 } }
+  eq(fishing.weightedPick(pool, 0).cls, "a", "fishing: pick at r=0 is the first entry")
+  eq(fishing.weightedPick(pool, 0.5).cls, "c", "fishing: pick lands by cumulative weight")
+  eq(fishing.weightedPick(pool, 0.999).cls, "c", "fishing: pick at r~1 is the last entry")
+
+  -- marker math: ping-pong 0..1..0 over one period
+  eq(fishing.markerPos(0, 1.6), 0, "fishing: marker starts at 0")
+  eq(fishing.markerPos(0.8, 1.6), 1, "fishing: marker peaks at half period")
+  eq(fishing.markerPos(0.4, 1.6), 0.5, "fishing: marker mid-sweep")
+  eq(fishing.markerPos(1.6, 1.6), 0, "fishing: marker returns at full period")
+  ok(fishing.zoneHit(0.5, 0.5, 0.1), "fishing: dead-centre hits")
+  ok(fishing.zoneHit(0.55, 0.5, 0.1), "fishing: zone edge counts")
+  ok(not fishing.zoneHit(0.56, 0.5, 0.1), "fishing: just outside misses")
+
+  -- worn-rod durability roll and the worn-vs-full diamond split
+  eq(fishing.wornDurability(0, 200, 0.1, 0.6), 20, "fishing: worst fished rod keeps 10%")
+  eq(fishing.wornDurability(1, 200, 0.1, 0.6), 120, "fishing: best fished rod keeps 60%")
+  ok(fishing.wornDurability(0, 2000, 0.1, 0.6) == 200, "fishing: diamond wear scales off its own max")
+  eq(fishing.wornShare("starter", "BP_DiamondFishingRod_Item_C"), 0.5,
+     "fishing: starter diamond rods split worn/full 50/50 (5w vs 5w)")
+  ok(math.abs(fishing.wornShare("late", "BP_DiamondFishingRod_Item_C") - 1 / 3) < 1e-9,
+     "fishing: late diamond rods are full 2 times in 3 (10w worn vs 20w full)")
+  eq(fishing.wornShare("late", "BP_FishingRod_Item_C"), 1.0,
+     "fishing: a fished vanilla rod is ALWAYS worn (no full entry exists)")
+
+  -- luck multiplier ladder
+  eq(fishing.luckMult(false, false, false), 1.0, "fishing: calm daylight bare rod = x1")
+  eq(fishing.luckMult(false, true, false), 2.0, "fishing: storm = x2")
+  eq(fishing.luckMult(true, true, false), 4.0, "fishing: diamond in a storm = x4 (user spec)")
+  eq(fishing.luckMult(true, true, true), 6.0, "fishing: the full x6 stack")
+  eq(fishing.luckMult(false, false, true), 1.5, "fishing: twilight alone = x1.5")
+end
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

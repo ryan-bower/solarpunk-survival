@@ -360,6 +360,34 @@ M.defaults = {
                                  -- so the timer doesn't write again seconds after you just did.
                                  -- Skipped unless the game's own interval reads back sane.
 
+  -- fishing overhaul (features/fishing.lua) -- all live-tunable via `sps set`
+  fishing_enabled     = true,    -- master switch (tables + splash + diamond rod + minigame)
+  fishing_tables      = true,    -- rewrite the rivers' loot tables (off = vanilla loot, the rest
+                                 -- of the overhaul still runs)
+  fishing_splash_gain = 3.0,     -- total loudness of the BITE splash vs stock ("300%" -- the mod
+                                 -- layers gain-1 extra on top of the game's own 1.0 play)
+  fishing_storm_mult    = 2.0,   -- rare+jackpot band multiplier while a storm rages (ours or natural)
+  fishing_twilight_mult = 1.5,   -- ...during the dawn/dusk window below
+  fishing_diamond_mult  = 2.0,   -- ...while the Diamond Fishing Rod is in hand ("2x luck")
+  fishing_twilight_secs = 300.0, -- how long after an IsDay flip the sun still counts as transitioning
+  fishing_daywatch_secs = 20.0,  -- IsDay sampling cadence (slow self-rechaining watchdog; the
+                                 -- storms.lua naturalWatchdog shape -- free-running UObject timers
+                                 -- are the proven native crash)
+  fishing_rod_wear_min = 0.10,   -- a FISHED-UP rod keeps between these fractions of its max
+  fishing_rod_wear_max = 0.60,   -- durability ("random amount of durability remaining")
+  fishing_minigame_chance = 0.05,-- 5% of bites: the catch click yields a leaf and reveals the
+                                 -- skillshot bar; a second click in the golden zone = a rare/jackpot
+                                 -- guarantee (diamond rod: smaller zone, jackpot-only)
+  fishing_minigame_period = 1.6, -- seconds per full marker sweep (out and back)
+  fishing_minigame_zone   = 0.18,-- golden-zone width as a fraction of the bar
+  fishing_minigame_zone_diamond = 0.10, -- the diamond rod's harder zone
+  fishing_minigame_timeout = 6.0,-- seconds before an unanswered bar counts as "the fish escaped"
+  fishing_bar_x       = 750.0,   -- bar placement, absolute canvas px at 1080p design res (the
+  fishing_bar_y       = 700.0,   -- overlay canvas scales the whole tree; tune live via `sps set`)
+  fishing_bar_w       = 420.0,
+  fishing_bar_h       = 26.0,
+  fishing_click_debounce = 0.30, -- seconds between accepted rod clicks (input events multi-fire)
+
   -- misc
   friendly_fire       = true,
   imgui_key           = "F7",

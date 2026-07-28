@@ -48,17 +48,24 @@ def key32():
     return uuid.uuid4().hex.upper()
 
 # ---------------------------------------------------------------- 1. clone item BPs
-def clone_bp(new_name):
-    src = os.path.join(LEGACY, ITEMS_DIR, "ItemActors", "BP_Stick_Item.uasset")
-    j = os.path.join(OUT, "bp_stick.json")
+def clone_item_bp(src_name, new_name):
+    """Clone any flat ItemActors BP by JSON rename round-trip (imports keep the vanilla meshes/
+    materials, so nothing uncooked is ever referenced). src_name must not be a prefix of another
+    name the asset references (BP_Stick_Item, BP_FishingRod_Item, BP_Egg_Item, BP_Truffle_Item
+    all verified clean)."""
+    src = os.path.join(LEGACY, ITEMS_DIR, "ItemActors", f"{src_name}.uasset")
+    j = os.path.join(OUT, f"bp_{src_name.lower()}.json")
     tojson(src, j)
     text = open(j, encoding="utf-8").read()
-    text = text.replace("BP_Stick_Item", new_name)
+    text = text.replace(src_name, new_name)
     jout = os.path.join(OUT, f"{new_name}.json")
     open(jout, "w", encoding="utf-8").write(text)
     fromjson(jout, os.path.join(STAGED, ITEMS_DIR, "ItemActors", f"{new_name}.uasset"),
              preloads=MASTER_BP)
-    print(f"cloned {new_name}")
+    print(f"cloned {src_name} -> {new_name}")
+
+def clone_bp(new_name):
+    clone_item_bp("BP_Stick_Item", new_name)
 
 # ---------------------------------------------------------------- 1b. recolored stick icons
 # The wand states read as distinct sticks in the inventory: Mundane = dark brown, Electric = blue,
@@ -251,6 +258,85 @@ def make_icons():
     _stage_bgra_icon("Icon_TempestCodex", _indigo(_handbook_bgra256()))
     make_darkarts_icon()
 
+# ---------------------------------------------------------------- 1c. fishing icons
+# (fishing-overhaul, 2026-07-28) Three new item icons, each recolored from the vanilla art and
+# staged as a NEW 256x256 BGRA texture in the proven Icon_Stick container (never an override):
+#   Icon_FishingrodDiamond  diamond-blue rod        (from Icon_Fishingrod, PF_DXT5 256x256)
+#   Icon_EggGold            gilded egg              (from Icon_Egg,        PF_DXT5 256x256)
+#   Icon_TruffleGold        gilded truffle          (from Icon_Truffle,    PF_B8G8R8A8 292x251!)
+# The truffle icon is NON-SQUARE uncompressed -- the only one of its kind met so far -- so the
+# loader below reads dims from the mip footer instead of assuming squares, and _fit256 letterboxes
+# into the stick container. Formats are sniffed from the platform header (the Icon_Handbook DXT5
+# gotcha: byte length alone cannot distinguish DXT5 512 from BGRA 256).
+
+def _load_icon_bgra(src_dir, src_name):
+    """Any icon -> (BGRA bytearray, W, H). Handles PF_B8G8R8A8 (any dims) and PF_DXT5."""
+    src = os.path.join(LEGACY, src_dir, src_name + ".uasset")
+    j = os.path.join(OUT, f"icon_src_{src_name}.json")
+    if not os.path.exists(j):
+        tojson(src, j)
+    d = json.load(open(j, encoding="utf-8"))
+    raw = base64.b64decode(d["Exports"][0]["Extras"])
+    W, H, Z = struct.unpack_from("<III", raw, len(raw) - MIP_FOOTER)
+    if Z != 1 or not (4 <= W <= 4096 and 4 <= H <= 4096):
+        sys.exit(f"{src_name}: mip footer reads ({W},{H},{Z}) -- layout assumption broken")
+    if b"PF_B8G8R8A8" in raw[:200]:
+        need = W * H * 4
+        return bytearray(raw[len(raw) - MIP_FOOTER - need:len(raw) - MIP_FOOTER]), W, H
+    if b"PF_DXT5" in raw[:200]:
+        if W % 4 or H % 4:
+            sys.exit(f"{src_name}: DXT5 dims ({W},{H}) not block-aligned")
+        need = (W // 4) * (H // 4) * 16
+        return _dxt5_decode(raw[len(raw) - MIP_FOOTER - need:len(raw) - MIP_FOOTER], W, H), W, H
+    sys.exit(f"{src_name}: pixel format not PF_B8G8R8A8/PF_DXT5 -- teach _load_icon_bgra first")
+
+def _fit256(bgra, W, H):
+    """Nearest-neighbour fit into a centred 256x256 canvas (transparent letterbox)."""
+    if (W, H) == (256, 256):
+        return bgra
+    out = bytearray(256 * 256 * 4)
+    scale = max(W, H) / 256.0
+    ox = (256 - W / scale) / 2.0
+    oy = (256 - H / scale) / 2.0
+    for y in range(256):
+        sy = int((y - oy) * scale)
+        if sy < 0 or sy >= H:
+            continue
+        for x in range(256):
+            sx = int((x - ox) * scale)
+            if sx < 0 or sx >= W:
+                continue
+            o, s = (y * 256 + x) * 4, (sy * W + sx) * 4
+            out[o:o + 4] = bgra[s:s + 4]
+    return out
+
+def _tint_bgra(bgra, tint):
+    """Apply a TINTS-style luminance ramp in place (alpha carries the silhouette)."""
+    for i in range(0, len(bgra), 4):
+        B, G, R, A = bgra[i], bgra[i + 1], bgra[i + 2], bgra[i + 3]
+        if A == 0:
+            continue
+        L = 0.299 * R + 0.587 * G + 0.114 * B
+        b, g, r = tint(L)
+        bgra[i]     = min(255, max(0, int(b)))
+        bgra[i + 1] = min(255, max(0, int(g)))
+        bgra[i + 2] = min(255, max(0, int(r)))
+    return bgra
+
+FISHING_TINTS = {
+    # (B, G, R) ramps: gold = warm high-R/high-G, diamond = pale ice blue
+    "gold":    lambda L: (L * 0.18, L * 0.66 + 40, L * 0.92 + 64),
+    "diamond": lambda L: (L * 1.00 + 55, L * 0.82 + 35, L * 0.55 + 15),
+}
+
+def make_fishing_icons():
+    for new_name, src_name, tint in (
+            ("Icon_FishingrodDiamond", "Icon_Fishingrod", FISHING_TINTS["diamond"]),
+            ("Icon_EggGold",           "Icon_Egg",        FISHING_TINTS["gold"]),
+            ("Icon_TruffleGold",       "Icon_Truffle",    FISHING_TINTS["gold"])):
+        bgra, W, H = _load_icon_bgra(ART_ICONS_DIR, src_name)
+        _stage_bgra_icon(new_name, _fit256(_tint_bgra(bgra, tint), W, H))
+
 # ---------------------------------------------------------------- 2. patch DB_Items
 def field(row, prefix):
     for p in row["Value"]:
@@ -435,6 +521,27 @@ def base_text(name, s):
         "PropertyTagExtensions": "NoExtension", "Value": key32(),
     }
 
+def clone_item_row(d, rows, src_name, row_name, display, desc, icon_idx, actor_idx,
+                   recycler=None):
+    """Clone an EXISTING game row wholesale (keeps its ItemType/interaction/stack -- the gold
+    variants must behave exactly like their base items everywhere but price and look)."""
+    src = next(r for r in rows if r["Name"] == src_name)
+    row = copy.deepcopy(src)
+    row["Name"] = row_name
+    di = next(i for i, p in enumerate(row["Value"]) if p["Name"].split("_")[0] == "DisplayName")
+    row["Value"][di] = base_text(row["Value"][di]["Name"], display)
+    de = next(i for i, p in enumerate(row["Value"]) if p["Name"].split("_")[0] == "Description")
+    row["Value"][de] = base_text(row["Value"][de]["Name"], desc)
+    field(row, "Icon")["Value"] = icon_idx
+    field(row, "ItemActor")["Value"] = actor_idx
+    if recycler is not None:
+        f = field(row, "RecyclerValue")
+        f["Value"], f["IsZero"] = recycler, recycler == 0
+    rows.append(row)
+    add_rowkey_name(d, row_name)
+    print(f"row {row_name} (clone of {src_name}) -> icon {icon_idx} actor {actor_idx}"
+          + (f" recycler {recycler}" if recycler is not None else ""))
+
 def make_codex_row(d, rows, icon_idx, actor_idx):
     """TempestCodex item row: a Handbook-shaped placeable book (T10 place-to-read + T0), so the
     game's own placement system handles it -- DB_Buildables maps the row to our placeable clone."""
@@ -496,6 +603,30 @@ def patch_db_items():
              icon_yellow, chg_cls, durability=3)
     make_codex_row(d, rows, icon_codex, codex_cls)
 
+    # ---- fishing-overhaul items (2026-07-28) ----
+    icon_diarod  = add_texture_import(d, "Icon_Stick", "Icon_FishingrodDiamond")
+    icon_goldegg = add_texture_import(d, "Icon_Stick", "Icon_EggGold")
+    icon_goldtru = add_texture_import(d, "Icon_Stick", "Icon_TruffleGold")
+    diarod_cls  = add_bp_imports(d, "BP_DiamondFishingRod_Item")
+    goldegg_cls = add_bp_imports(d, "BP_GoldEgg_Item")
+    goldtru_cls = add_bp_imports(d, "BP_GoldTruffle_Item")
+    # The diamond rod row deliberately does NOT copy FishingRod's tool taxonomy (ItemType [T1,T0]
+    # + durability on a NEW row = the proven world-load crash, commit 109fcd9): make_row's
+    # wand-proven shape (T5 primary + T1 appended for the Tools tab + durability bar) loads clean,
+    # and features/fishing.lua seats the REAL BP_HandItem_FishingRod on equip so it fishes like
+    # the vanilla rod. Durability 2000 = 10x the vanilla rod's 200.
+    make_row(d, rows, "DiamondFishingRod", "Diamond Fishing Rod",
+             "Two cut diamonds crown the reel. Ten times the endurance of a plain rod, and the"
+             " deep things rise to meet it: twice the luck for rare and precious catches."
+             " Its skillshot demands a finer touch, and pays only in jackpots.",
+             icon_diarod, diarod_cls, durability=2000, tools_tab=True)
+    clone_item_row(d, rows, "Egg", "GoldEgg", "Gold Egg",
+                   "One egg in twenty comes out gilded. Worth ten times the usual to the recycler.",
+                   icon_goldegg, goldegg_cls, recycler=200)
+    clone_item_row(d, rows, "Truffle", "GoldTruffle", "Gold Truffle",
+                   "A truffle veined with gold. Worth ten times the usual to the recycler.",
+                   icon_goldtru, goldtru_cls, recycler=200)
+
     fix_name_count(d)
     jout = os.path.join(OUT, "db_items_patched.json")
     json.dump(d, open(jout, "w", encoding="utf-8"), indent=1)
@@ -545,6 +676,33 @@ def patch_db_smeltables():
     fromjson(jout, os.path.join(STAGED, ITEMS_DIR, "Framework_and_Data", "DB_Smeltables.uasset"),
              preloads=";".join([S_SMELT, S_SLOT]))
     print(f"DB_Smeltables patched: {len(rows)} rows (+ElectricWand furnace recipe)")
+
+def patch_db_consumables():
+    """DB_Consumables: GoldTruffle eats exactly like a Truffle (same food/drink values). The
+    table matches consumables by ItemActor CLASS, so the gold clone needs its own row or eating
+    it would be a silent no-op."""
+    src = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "DB_Consumables.uasset")
+    j = os.path.join(OUT, "db_consumables_src.json")
+    tojson(src, j)
+    d = json.load(open(j, encoding="utf-8"))
+    rows = d["Exports"][0]["Table"]["Data"]
+    row = copy.deepcopy(next(r for r in rows if r["Name"] == "Truffle"))
+    row["Name"] = "GoldTruffle"
+    for p in row["Value"]:
+        if p["Name"].split("_")[0] == "ItemActor":
+            p["Value"] = add_import_pair(
+                d, "/Game/Code/Inventory_Items/ItemActors/BP_GoldTruffle_Item",
+                "BP_GoldTruffle_Item_C", "BlueprintGeneratedClass")
+    rows.append(row)
+    add_rowkey(d, "GoldTruffle", "DB_Consumables")
+    fix_name_count(d)
+    jout = os.path.join(OUT, "db_consumables_patched.json")
+    json.dump(d, open(jout, "w", encoding="utf-8"), indent=1)
+    fromjson(jout, os.path.join(STAGED, ITEMS_DIR, "Framework_and_Data", "DB_Consumables.uasset"),
+             preloads=";".join([
+                 os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "S_Consumable.uasset"),
+                 os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "EConsumableType.uasset")]))
+    print(f"DB_Consumables patched: {len(rows)} rows (+GoldTruffle)")
 
 # ---------------------------------------------------------------- 4. the Tempest Codex
 # A REAL in-game book, cloned wholesale from the survival guide's data-driven chain (RE 2026-07-21,
@@ -1016,7 +1174,7 @@ def patch_db_recipes():
         row = copy.deepcopy(guide)
         row["Name"] = row_name
         rid = field(row, "RecipyID")
-        rid["Value"] = next_id + (0 if row_name == "TempestCodex" else 1)
+        rid["Value"] = next_id + len(recipe_ids)   # sequential in add order
         rid["IsZero"] = False
         recipe_ids[row_name] = rid["Value"]
         # research-gated: not known from the start, made at the crafting bench only
@@ -1044,6 +1202,12 @@ def patch_db_recipes():
     # the mundane implement: an honest stick sealed with beeswax
     add_recipe("MundaneWand", "BP_MundaneWand_Item_C",
                [("BP_Stick_Item_C", 1), ("BP_Beeswax_Item_C", 1)])
+    # the diamond rod: the vanilla FishingRod recipe (5 stick + 2 stone + 4 iron, bench) plus two
+    # cut diamonds; unlocked by the game's existing AutoMagnetFisher research card (see
+    # patch_db_researchables), per the fishing-overhaul spec
+    add_recipe("DiamondFishingRod", "BP_DiamondFishingRod_Item_C",
+               [("BP_Stick_Item_C", 5), ("BP_Stone_Item_C", 2), ("BP_Iron_Item_C", 4),
+                ("BP_Diamond_Item_C", 2)])
 
     # The keeper: a hidden row whose one "ingredient" slot holds the W_TempestCodex_C class ref.
     # Purpose is GC ROOTING, not crafting: DataTable row object refs are GC-visible (this is how
@@ -1059,7 +1223,7 @@ def patch_db_recipes():
     keeper = copy.deepcopy(guide)
     keeper["Name"] = "TempestCodexKeeper"
     rid = field(keeper, "RecipyID")
-    rid["Value"], rid["IsZero"] = next_id + 2, False
+    rid["Value"], rid["IsZero"] = next_id + len(recipe_ids), False
     sr = field(keeper, "StartingRecipy")
     sr["Value"], sr["IsZero"] = False, True
     field(keeper, "CraftingLocations")["Value"] = []
@@ -1156,6 +1320,21 @@ def patch_db_researchables(recipe_ids):
 
     rows.append(row)
     add_rowkey(d, "TempestCodex", "DB_Researchables")
+
+    # Diamond Fishing Rod rides the EXISTING "AutoMagnetFisher" card (the magnet-rod research,
+    # id 22): append our recipe id to its UnlockingRecepieIDs -- researching the magnet fisher
+    # then also teaches the diamond rod, exactly as the fishing-overhaul spec asks. Saves that
+    # already own the card get the recipe the same way every UnlockingRecepieIDs entry is read:
+    # at recipe-list build time, not at research-complete time -- no save migration needed.
+    if "DiamondFishingRod" in recipe_ids:
+        magnet = next(r for r in rows if r["Name"] == "AutoMagnetFisher")
+        mur = field(magnet, "UnlockingRecepieIDs")
+        entry = copy.deepcopy(mur["Value"][0])
+        entry["Name"] = str(len(mur["Value"]))
+        entry["Value"], entry["IsZero"] = recipe_ids["DiamondFishingRod"], False
+        mur["Value"].append(entry)
+        print(f"research AutoMagnetFisher also unlocks recipe {recipe_ids['DiamondFishingRod']}"
+              " (DiamondFishingRod)")
     fix_name_count(d)
     jout = os.path.join(OUT, "db_research_patched.json")
     json.dump(d, open(jout, "w", encoding="utf-8"), indent=1)
@@ -1246,6 +1425,10 @@ def verify_pak():
                  os.path.join(OUT, "db_items_patched.json"), "DB_Items")
     check_prefix("Solarpunk/Content/Code/Crafting/Framework_and_Data/DB_CraftingRecipes.uasset",
                  os.path.join(OUT, "db_recipes_patched.json"), "DB_CraftingRecipes")
+    check_prefix(ITEMS_DIR + "/Framework_and_Data/DB_Consumables.uasset",
+                 os.path.join(OUT, "db_consumables_patched.json"), "DB_Consumables")
+    check_prefix(ITEMS_DIR + "/Framework_and_Data/DB_Smeltables.uasset",
+                 os.path.join(OUT, "db_smeltables_patched.json"), "DB_Smeltables")
     check_prefix("Solarpunk/Content/Code/Building_Placing/Framework_and_Data/DB_Buildables.uasset",
                  os.path.join(OUT, "db_buildables_patched.json"), "DB_Buildables")
     check_prefix("Solarpunk/Content/Code/Research/Framework/DB_Researchables.uasset",
@@ -1285,10 +1468,16 @@ if __name__ == "__main__":
     clone_bp("BP_HydrationWand_Item")
     clone_bp("BP_ElectricWand_Item")
     clone_bp("BP_ChargedElectricWand_Item")
+    # fishing-overhaul: the diamond rod + the gilded catches
+    clone_item_bp("BP_FishingRod_Item", "BP_DiamondFishingRod_Item")
+    clone_item_bp("BP_Egg_Item", "BP_GoldEgg_Item")
+    clone_item_bp("BP_Truffle_Item", "BP_GoldTruffle_Item")
     make_icons()
+    make_fishing_icons()
     build_codex()
     patch_db_items()
     patch_db_smeltables()
+    patch_db_consumables()
     pack()
     verify_pak()
     print("DONE")

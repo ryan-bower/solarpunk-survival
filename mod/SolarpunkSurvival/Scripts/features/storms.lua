@@ -725,6 +725,7 @@ function F.init(c)
   ctx.services.strikeAt       = F.strikeAt
   ctx.services.castBolt       = F.castBolt
   ctx.services.damagePlayerBy = F.damagePlayerBy
+  ctx.services.isStormy       = stormy   -- fishing reads the live flag; bus emits mark the flips
 
   ctx.log.info("storms: ready -- " .. tostring(kname) .. " toggles storm on/off.")
   return true

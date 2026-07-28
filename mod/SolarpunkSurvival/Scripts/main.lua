@@ -51,6 +51,8 @@ local ok, err = pcall(function()
     "features.strike_world",
     "features.storms",
     "features.wand",         -- after storms: consumes services.castBolt; provides chargeWands
+    "features.fishing",      -- after storms: consumes services.isStormy (storm luck); rewrites
+                             -- river loot tables per-machine, diamond rod, splash, skillshot
     "features.ritual",       -- after storms/wand: consumes services.strikeAt + chargeWands
     "features.evil_animals", -- after storms/ritual: consumes services.damagePlayerBy + the
                              -- ritual.completed unlock; provides services.isEvilAnimal

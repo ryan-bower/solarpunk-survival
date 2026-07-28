@@ -8,6 +8,8 @@ ignore = { "631" }           -- line length in comment-heavy files
 read_globals = {
   "print",
   "RegisterHook",
+  "UnregisterHook",
+  "StaticConstructObject",
   "NotifyOnNewObject",
   "RegisterKeyBind",
   "RegisterConsoleCommandHandler",

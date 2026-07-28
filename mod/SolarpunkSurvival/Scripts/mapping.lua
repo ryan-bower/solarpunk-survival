@@ -46,6 +46,12 @@ M.schema = {
   fx       = { "clientDamageRpcFn", "buzzSoundProp" },
   furnace  = { "classHints", "fuelPropCandidates", "fuelFnCandidates" },
   rod      = { "stationClassCandidates", "copperItemRow" },
+  fishing  = { "riverClass", "loottableProp", "lootItemField", "lootWeightField",
+               "rodHandClass", "rodHandPath", "lootTickFn", "canCatchProp", "swimmerProp",
+               "splashWavePath", "useRodFn", "equipModeFn", "rodItemClass", "diamondRow",
+               "rodDurability", "diamondDurability", "invArrayProp",
+               "handsMeshProp", "animItemEnumProp", "animItemEnumValue",
+               "imagePath", "canvasAddFn" },
   wand     = { "castFnExact", "castFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
                "diamondMesh", "meshPaths", "niagaraCandidates", "handMeshFn", "handSlot1P",
                "handSlot3P", "handBlueprintFn", "handItemProp", "handItemMeshProps",
@@ -729,6 +735,55 @@ M.profiles = {
       -- Fallback counter-rotation, used only if BTN2_Resume's own RenderTransform can't be read.
       -- Every BTN2_ directly in BOX_MenuButtons ships RenderTransform {Angle = 180}.
       buttonAngle      = 180.0,
+    },
+    -- The fishing overhaul (features/fishing.lua; offline RE 2026-07-27/28 of
+    -- BP_HandItem_FishingRod + BP_MainPlayerCharacter -- scratchpad rod_uber/char_uber dumps).
+    -- Loot is a per-BP_River-instance TArray<S_WeightedLootItem> (NO DataTable): GetLootFromWater
+    -- line-traces the bobber to a BP_River_C and reads ITS Loottable. The whole cast/bite/catch
+    -- flow runs on the OWNING CLIENT (every getter in the rod's ubergraph is local-player based),
+    -- so each machine rewrites its own rivers' tables = per-player luck without replication.
+    fishing = {
+      riverClass    = "BP_River_C",
+      loottableProp = "Loottable",
+      -- S_WeightedLootItem members (BP struct -> GUID-suffixed FNames, read from the cooked
+      -- BP_River dump; the SLOT-side struct fields are reused from the wand section):
+      lootItemField   = "Item_2_1BBB738C4E44A3691F7D7FA72F18D942",     -- UClass of the item actor
+      lootWeightField = "Weight_5_FE32777043D4D4500ED27DB09FD53D95",   -- int weight
+      -- The rod HAND ACTOR (spawned by the game's equip path). ChanceForLoot is the 1.5 s looping
+      -- bite roll -- a SetTimer delegate, so it dispatches via ProcessEvent = hookable. Catch(),
+      -- GetLootFromWater and SpawnLootRandom are VM-internal from there -- NOT hookable.
+      rodHandClass = "BP_HandItem_FishingRod_C",
+      rodHandPath  = "/Game/Code/Character/HandItems/BP_HandItem_FishingRod.BP_HandItem_FishingRod_C",
+      lootTickFn   = "ChanceForLoot",
+      canCatchProp = "PlayerCanCatch",   -- true during the 1 s reel window after a bite
+      swimmerProp  = "throw_swimmer",    -- the bobber component; splash/VFX play at its location
+      -- The bite splash the game plays at volume 1.0 (rod ubergraph, PlaySoundAtLocation of
+      -- import -227). The mod layers extra gain on top at the same spot -- an asset patch would
+      -- also boost the cast-landing and reel-in splashes, which the user did not ask for.
+      splashWavePath = "/Game/Audio/SFX/Player/S_FishingRod_Splash.S_FishingRod_Splash",
+      -- Character-side: the interaction switch routes a left click to Interaction_FishingRod()
+      -- when the held ItemActor == BP_FishingRod_Item_C (bytecode: EqualEqual_ClassClass chain).
+      -- It is a plain pawn CustomEvent (ProcessEvent-callable): casts CurHandItemFirstPerson to
+      -- the hand rod -> UseFishingRod() -> DecreaseCurItemDurability(RandomIntegerInRange(1,3)).
+      -- The DIAMOND rod row is unknown to both hardcoded switches (new cooked tool-typed rows are
+      -- the proven world-load crash, so the row ships T5-typed like the wands) -- the mod seats
+      -- the real hand actor itself and calls this event from its own click hook.
+      useRodFn    = "Interaction_FishingRod",
+      equipModeFn = "EnterDefaultMode",       -- pawn fn; the game's fishing equip branch passes 0
+      rodItemClass = "BP_FishingRod_Item_C",  -- the vanilla rod's DB_Items actor class
+      diamondRow   = "DiamondFishingRod",     -- content-pak row (tools/pakkit); absent = no pak
+      rodDurability     = 200,                -- vanilla rod durability (DB_Items)
+      diamondDurability = 2000,               -- the pak row's durability (10x, user spec)
+      invArrayProp = "Inventory",             -- BC_InventorySystem's slot array (offline RE re_qol);
+                                              -- elements are S_InventorySlotSlim -- field names
+                                              -- reused from wand.slotItemField/QtyField/SavedataField
+      -- Anim pose for the mod-seated rod (harmless if these move on an update -- pcall'd):
+      handsMeshProp    = "SKM_Hands",         -- pawn's first-person hands skeletal mesh comp
+      animItemEnumProp = "ENUMItemInHand",    -- on its anim instance; 3 = the fishing pose
+      animItemEnumValue = 3,
+      -- Skillshot bar visuals: raw UMG Images constructed onto the player overlay's root canvas.
+      imagePath   = "/Script/UMG.Image",
+      canvasAddFn = "AddChildToCanvas",       -- UCanvasPanel -> the new CanvasPanelSlot
     },
     rod = {
       stationClassCandidates = {
