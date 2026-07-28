@@ -38,17 +38,23 @@ local LOOK = {
   missTrack = { 0.55, 0.08, 0.08, 0.95 },
   missMark = { 1.00, 0.60, 0.60, 1.00 },
   timeoutTrack = { 0.30, 0.30, 0.32, 0.90 },
+  -- the spinner wheel (same tones, dial-shaped)
+  rimTick  = { 0.75, 0.82, 0.90, 0.80 },
+  hub      = { 1.00, 1.00, 1.00, 0.90 },
 }
 local MARK_W, GLOW_W = 4, 12
+local RIM_STEP, ZONE_STEP, GLOW_STEP = 15, 4, 8 -- wheel tick spacing, degrees
 
 local VIS_SHOWN, VIS_HIDDEN = 4, 1 -- SelfHitTestInvisible / Collapsed (the qol-proven pair)
 
 local mode = nil    -- nil = unprobed this world; "own" | "group" | "flat" | false = give up
 local shell = {}    -- own: { w, cv }  group: { cv }  flat: {}
-local parts = nil   -- built bar widgets, reverse-fold order; nil = no bar up
-local mark = nil    -- { group } (own/group) or { glow, line, glowSlot, lineSlot } (flat)
-local geom = nil    -- cached at show: { x, y, w, h }
+local parts = nil   -- built widgets (bar OR wheel), reverse-fold order; nil = nothing up
+local mark = nil    -- bar: marker refs; wheel: { group = needle canvas, line }
+local refs = nil    -- named flash targets: {kind="bar",...} | {kind="wheel", rim={}, zone={},...}
+local geom = nil    -- bar only, cached at show: { x, y, w, h }
 local slotFallback = false -- SetRenderTranslation died once -> per-frame slot:SetPosition
+local wheelBroken = false  -- SetRenderTransformAngle failed on raw widgets -> bar-only session
 local statsBuf = {}
 
 local function cfgn(k, d) return tonumber(ctx.config.get(k)) or d end
@@ -225,7 +231,7 @@ function F.fold()
       pcall(function() parts[i]:RemoveFromParent() end)
     end
   end
-  parts, mark, geom = nil, nil, nil
+  parts, mark, refs, geom = nil, nil, nil, nil
   shellVisible(false)
 end
 
@@ -245,11 +251,11 @@ function F.show(opts)
     return img
   end
   add(X - 3, Y - 3, W + 6, H + 6, LOOK.frame, 60)
-  add(X, Y, W, H, LOOK.track, 61)
+  local track = add(X, Y, W, H, LOOK.track, 61)
   add(X, Y, W, math.floor(H * 0.35), LOOK.sheen, 62)
   add(X + (c - zw / 2) * W - 5, Y - 2, zw * W + 10, H + 4, LOOK.zoneGlow[tone], 63)
-  add(X + (c - zw / 2) * W, Y, zw * W, H, LOOK.zoneCore[tone], 64)
-  add(X + (c - 0.2 * zw) * W, Y + math.floor(H * 0.22), 0.4 * zw * W, math.floor(H * 0.56), LOOK.zoneHot[tone], 65)
+  local zoneCore = add(X + (c - zw / 2) * W, Y, zw * W, H, LOOK.zoneCore[tone], 64)
+  local zoneHot = add(X + (c - 0.2 * zw) * W, Y + math.floor(H * 0.22), 0.4 * zw * W, math.floor(H * 0.56), LOOK.zoneHot[tone], 65)
 
   -- the marker: one nested canvas group when the surface can nest, two loose images when not
   mark = nil
@@ -292,11 +298,136 @@ function F.show(opts)
     F.fold()
     return false
   end
+  refs = { kind = "bar", track = track, zoneCore = zoneCore, zoneHot = zoneHot, line = mark.line }
   geom = { x = X, y = Y, w = W, h = H }
   statsBuf = {}
   shellVisible(true)
   return true
 end
+
+--------------------------------------------------------------------- the wheel
+-- The spinner: a dial of radial tick rects (statics, each rotated once at build) with the zone
+-- as a denser arc of gold/ice ticks, and the needle = line+glow inside a nested canvas group
+-- rotated about its own center per frame (RenderTransformPivot defaults to 0.5,0.5). Rotation
+-- rides UWidget:SetRenderTransformAngle -- proven on game widgets (savemenu matchFlip); its
+-- first-ever call on OUR raw widgets sits under a poison latch, and a failure latches
+-- wheelBroken so the session falls back to bar-only skillshots.
+-- opts: { diamond = bool, centerDeg = 0..360, widthDeg = degrees }
+function F.showWheel(opts)
+  F.fold()
+  if wheelBroken then return false end
+  local canvas, outer = F.ensureShell()
+  if not canvas then return false end
+  if mode == "flat" then return false end -- no nested groups on the flat surface: bar-only
+  local CX, CY = cfgn("fishing_wheel_x", 960), cfgn("fishing_wheel_y", 540)
+  local R = cfgn("fishing_wheel_r", 90)
+  local zc, zw = opts.centerDeg or 0, opts.widthDeg or 40
+  local tone = opts.diamond and "ice" or "gold"
+  local m = ctx.map.fishing
+  local built, ok = {}, true
+  local function add(x, y, w, h, color, z)
+    local img = makeImage(canvas, outer, x, y, w, h, color, z)
+    if img then built[#built + 1] = img else ok = false end
+    return img
+  end
+  -- a tick whose CENTER sits at `rad` from the wheel center, rotated to lie radially
+  local function tick(deg, rad, w, h, color, z)
+    local rd = math.rad(deg)
+    local img = add(CX + rad * math.sin(rd) - w / 2, CY - rad * math.cos(rd) - h / 2, w, h, color, z)
+    if img and not pcall(function() img:SetRenderTransformAngle(deg) end) then
+      ok = false
+    end
+    return img
+  end
+  local function inArc(deg, center, width)
+    local d = ((deg - center + 540) % 360) - 180
+    return math.abs(d) <= width / 2
+  end
+
+  -- the hub carries the FIRST rotation call, latched: if this build can't rotate raw widgets,
+  -- one wheel dies cleanly and every later skillshot rolls the bar instead
+  local hub
+  local okHub = select(1, ctx.log.risky("fishingui.angle", function()
+    hub = makeImage(canvas, outer, CX - 6, CY - 6, 12, 12, LOOK.hub, 68)
+    if not hub then error("hub image failed") end
+    hub:SetRenderTransformAngle(45.0)
+  end))
+  if not (okHub and hub) then
+    if hub then pcall(function() hub:RemoveFromParent() end) end
+    wheelBroken = true
+    ctx.log.warn("fishing_ui: widget rotation unavailable -- wheel skillshot disabled (bar-only)")
+    return false
+  end
+  built[#built + 1] = hub
+
+  local rim = {}
+  for deg = 0, 359, RIM_STEP do
+    if not inArc(deg, zc, zw + 6) then -- the zone arc replaces the rim underneath it
+      rim[#rim + 1] = tick(deg, R, 4, 14, LOOK.rimTick, 63)
+    end
+  end
+  -- tick centers inset by half a step so the tick BODIES tile the wedge edge-to-edge --
+  -- the drawn arc must match the judged arc (what looks in, IS in)
+  local zone = {}
+  local half = zw / 2
+  for off = -half + GLOW_STEP / 2, half - GLOW_STEP / 2 + 0.001, GLOW_STEP do
+    tick((zc + off) % 360, R, 10, 22, LOOK.zoneGlow[tone], 64)
+  end
+  for off = -half + ZONE_STEP / 2, half - ZONE_STEP / 2 + 0.001, ZONE_STEP do
+    zone[#zone + 1] = tick((zc + off) % 360, R, 6, 18, LOOK.zoneCore[tone], 65)
+  end
+  if #zone == 0 then -- a config-narrowed arc below one tick step still needs to be visible
+    zone[1] = tick(zc % 360, R, 6, 18, LOOK.zoneCore[tone], 65)
+  end
+
+  -- the needle: a 2R square group centered on the hub; line+glow point up from the center,
+  -- one SetRenderTransformAngle on the group per frame sweeps them like a clock hand
+  mark = nil
+  local cvCls = StaticFindObject and StaticFindObject(m.canvasPanelPath)
+  if ok and valid(cvCls) then
+    local g
+    local okG = pcall(function()
+      g = StaticConstructObject(cvCls, outer)
+      local gs = canvas[m.canvasAddFn](canvas, g)
+      gs:SetPosition({ X = CX - R, Y = CY - R })
+      gs:SetSize({ X = 2 * R, Y = 2 * R })
+      gs:SetZOrder(66)
+      g:SetVisibility(VIS_SHOWN)
+    end)
+    if okG and valid(g) then
+      built[#built + 1] = g
+      local glow = makeImage(g, outer, R - 5, R * 0.10, 10, R * 0.92, LOOK.markGlow, 1)
+      local line = makeImage(g, outer, R - 2, R * 0.14, 4, R * 0.88, LOOK.markLine, 2)
+      if glow and line then
+        built[#built + 1] = glow
+        built[#built + 1] = line
+        mark = { group = g, line = line }
+      else ok = false end
+    else ok = false end
+  else ok = false end
+
+  parts = built
+  if not (ok and mark) then
+    F.fold()
+    return false
+  end
+  refs = { kind = "wheel", rim = rim, zone = zone, line = mark.line, hub = hub }
+  statsBuf = {}
+  shellVisible(true)
+  return true
+end
+
+-- PER-FRAME (animator hop): rotate the needle group to `deg`. False when the wheel died.
+function F.setNeedle(deg)
+  local mk = mark
+  if not (mk and mk.group) then return false end
+  if not valid(mk.group) then return false end
+  local okR = pcall(function() mk.group:SetRenderTransformAngle(deg) end)
+  if okR then statsBuf[#statsBuf + 1] = os.clock() end
+  return okR
+end
+
+function F.wheelOK() return not wheelBroken end
 
 -- PER-FRAME (animator hop). Returns false when the bar's widgets died under us.
 function F.setMarker(p)
@@ -329,18 +460,35 @@ end
 
 -- kind: "hit" | "miss" | "timeout" -- recolors only; fishing.lua folds after fishing_flash_secs
 function F.flash(kind)
-  if not parts then return end
+  local r = refs
+  if not r then return end
   local function tint(w, c)
     if valid(w) then pcall(function() w:SetColorAndOpacity({ R = c[1], G = c[2], B = c[3], A = c[4] }) end) end
   end
-  if kind == "hit" then
-    tint(parts[5], LOOK.hitZone)
-    tint(parts[6], LOOK.hitZone)
-  elseif kind == "miss" then
-    tint(parts[2], LOOK.missTrack)
-    if mark then tint(mark.line, LOOK.missMark) end
-  elseif kind == "timeout" then
-    tint(parts[2], LOOK.timeoutTrack)
+  local function tintAll(list, c)
+    for _, w in ipairs(list or {}) do tint(w, c) end
+  end
+  if r.kind == "bar" then
+    if kind == "hit" then
+      tint(r.zoneCore, LOOK.hitZone)
+      tint(r.zoneHot, LOOK.hitZone)
+    elseif kind == "miss" then
+      tint(r.track, LOOK.missTrack)
+      tint(r.line, LOOK.missMark)
+    elseif kind == "timeout" then
+      tint(r.track, LOOK.timeoutTrack)
+    end
+  else -- wheel
+    if kind == "hit" then
+      tintAll(r.zone, LOOK.hitZone)
+      tint(r.hub, LOOK.hitZone)
+    elseif kind == "miss" then
+      tintAll(r.rim, LOOK.missTrack)
+      tint(r.line, LOOK.missMark)
+    elseif kind == "timeout" then
+      tintAll(r.rim, LOOK.timeoutTrack)
+      tintAll(r.zone, LOOK.timeoutTrack)
+    end
   end
 end
 

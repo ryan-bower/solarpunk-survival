@@ -753,6 +753,12 @@ do
   eq(config.get("fishing_click_lead"), 0.0, "fishing: click-lead trim defaults off")
   eq(config.get("fishing_ui_own_widget"), true, "fishing: own viewport widget preferred")
   eq(config.get("anim_tick_ms"), 8, "animator: per-frame lane ticks at 8ms")
+  eq(config.get("fishing_bar_speed_max_mult"), 2.0, "fishing: bar speed rolls up to 2x (user spec)")
+  eq(config.get("fishing_wheel_share"), 0.5, "fishing: wheel vs bar is a coin flip (user spec)")
+  eq(config.get("fishing_wheel_speed"), 360.0, "wheel: constant spin speed")
+  eq(config.get("fishing_wheel_decel"), 360.0, "wheel: constant decel (learnable 180deg offset)")
+  eq(config.get("fishing_wheel_zone"), 40.0, "wheel: golden arc width")
+  eq(config.get("fishing_wheel_zone_diamond"), 24.0, "wheel: diamond arc is harder")
 
   -- baked river registry: 12 rivers, the census's group split
   eq(#fishing.RIVERS, 12, "fishing: 12 rivers baked")
@@ -833,6 +839,31 @@ do
   ok(fishing.zoneHit(0.5, 0.5, 0.1), "fishing: dead-centre hits")
   ok(fishing.zoneHit(0.55, 0.5, 0.1), "fishing: zone edge counts")
   ok(not fishing.zoneHit(0.56, 0.5, 0.1), "fishing: just outside misses")
+
+  -- per-bar speed roll: uniform 1x..maxMult x, expressed as the shared period
+  eq(fishing.rollPeriod(1.6, 2, 0), 1.6, "fishing: speed roll r=0 keeps the base period")
+  eq(fishing.rollPeriod(1.6, 2, 1), 0.8, "fishing: speed roll r=1 is 2x speed = half period")
+  eq(fishing.rollPeriod(1.6, 2, 0.5), 1.6 / 1.5, "fishing: speed roll mid = 1.5x speed")
+  eq(fishing.rollPeriod(1.6, 1, 1), 1.6, "fishing: maxMult 1 disables the roll")
+
+  -- wheel math: constant spin, constant decel, fixed learnable stopping offset
+  eq(fishing.wheelAngle(0, 360), 0, "wheel: needle starts up")
+  eq(fishing.wheelAngle(0.25, 360), 90, "wheel: quarter second = quarter turn at 360deg/s")
+  eq(fishing.wheelAngle(1.5, 360), 180, "wheel: angle wraps mod 360")
+  eq(fishing.wheelStopOffset(360, 360), 180, "wheel: default physics stop 180deg past the click")
+  eq(fishing.wheelFinal(0.25, 360, 360), 270, "wheel: click at 90 rests at 270")
+  local th0, done0 = fishing.wheelSlowdownPos(0, 90, 360, 360)
+  eq(th0, 90, "wheel: slowdown starts at the click angle")
+  ok(not done0, "wheel: slowdown not done at t=0")
+  local thEnd, doneEnd = fishing.wheelSlowdownPos(1.0, 90, 360, 360)
+  eq(thEnd, 270, "wheel: slowdown ends exactly at click+offset")
+  ok(doneEnd, "wheel: slowdown done at speed/decel seconds")
+  local thPast = fishing.wheelSlowdownPos(5.0, 90, 360, 360)
+  eq(thPast, 270, "wheel: past the stop the needle stays put")
+  ok(fishing.angleHit(350, 0, 40), "wheel: zone straddling 0/360 hits from the left")
+  ok(fishing.angleHit(10, 0, 40), "wheel: and from the right")
+  ok(not fishing.angleHit(21, 0, 40), "wheel: just outside the wrapped zone misses")
+  ok(fishing.angleHit(180, 180, 24), "wheel: plain mid-dial zone hits")
 
   -- minigame arm chance: the diamond override applies only in-hand and only when >= 0
   eq(fishing.miniChance(false, 0.05, -1), 0.05, "fishing: base chance without the diamond rod")

@@ -14,12 +14,15 @@
 --     own Interaction_FishingRod(), which drains OUR item's durability through the shared path.
 --   * BITE SPLASH: the game plays S_FishingRod_Splash at 1.0 exactly when a fish bites; the mod
 --     layers (fishing_splash_gain - 1) more on top at the bobber -- "300% splash when you hook".
---   * SKILLSHOT: 5% of bites, the catch click reveals a sliding-marker bar; a second click
---     inside the golden zone guarantees a rare/jackpot roll (diamond rod: smaller zone,
---     jackpot-only). Rendering lives in features/fishing_ui.lua (our own viewport widget),
---     driven per rendered frame by core/animator; the click is judged at the os.clock() STAMPED
---     IN THE HOOK BODY against the same clock+formula that draws, so what the player saw when
---     they clicked is what is judged -- no scheduler latency in either direction.
+--   * SKILLSHOT: 5% of bites, the catch click reveals one of TWO minigames (50/50 roll): the
+--     sliding-marker BAR (sweep speed rolled 1x..2x per bar) or the spinner WHEEL (constant
+--     spin + constant deceleration, so the click->rest offset is fixed at 180 degrees -- a
+--     skill the player learns; only the zone's angle is random). Winning either guarantees a
+--     rare/jackpot roll (diamond rod: smaller zone/arc, jackpot-only). Rendering lives in
+--     features/fishing_ui.lua (our own viewport widget), driven per rendered frame by
+--     core/animator; the click is judged at the os.clock() STAMPED IN THE HOOK BODY against
+--     the same clock+formula that draws, so what the player saw when they clicked is what is
+--     judged -- no scheduler latency in either direction.
 --     Vanilla rod: the game's own Catch() is VM-internal (unhookable), so its unavoidable
 --     reveal-catch is fed a worthless leaf by swapping the bobber's river to an all-leaf table,
 --     then restoring. Diamond rod: the game ignores the click entirely, so the bar reveals with
@@ -236,6 +239,51 @@ function F.zoneHit(pos, center, width)
   return math.abs(pos - center) <= width / 2 + 1e-9
 end
 
+-- Per-bar speed roll (user spec): uniform between the configured speed and maxMult x it.
+-- Returned as the PERIOD the renderer and judge both use (faster = shorter period).
+function F.rollPeriod(base, maxMult, r)
+  base = tonumber(base) or 1.6
+  local m = 1 + (r or 0) * ((tonumber(maxMult) or 2) - 1)
+  if m < 1 then m = 1 end
+  return base / m
+end
+
+-- The spinner wheel. Constant spin speed and constant deceleration (both config, never rolled),
+-- so the click->rest offset speed^2/(2*decel) is FIXED -- the learnable skill the user asked
+-- for. Only the zone's angle is random per wheel. All angles in degrees, needle starts at 0 (up).
+function F.wheelAngle(elapsed, speed)
+  return ((elapsed or 0) * (speed or 360)) % 360
+end
+
+function F.wheelStopOffset(speed, decel)
+  speed = tonumber(speed) or 360
+  decel = tonumber(decel) or 360
+  if decel < 30 then decel = 30 end -- a near-zero decel would spin ~forever; clamp keeps it a game
+  return speed * speed / (2 * decel)
+end
+
+-- Where the needle comes to rest for a click at clickElapsed seconds after the wheel started.
+function F.wheelFinal(clickElapsed, speed, decel)
+  return (F.wheelAngle(clickElapsed, speed) + F.wheelStopOffset(speed, decel)) % 360
+end
+
+-- The slow-down animation: needle angle `since` seconds after the click, plus a done flag.
+function F.wheelSlowdownPos(since, thetaClick, speed, decel)
+  speed = tonumber(speed) or 360
+  decel = tonumber(decel) or 360
+  if decel < 30 then decel = 30 end
+  local stopT = speed / decel
+  local t = since
+  if t >= stopT then t = stopT end
+  return (thetaClick + speed * t - 0.5 * decel * t * t) % 360, since >= stopT
+end
+
+-- Angular zone test with wrap-around (zone may straddle 0/360).
+function F.angleHit(angle, center, width)
+  local d = ((angle - center + 540) % 360) - 180
+  return math.abs(d) <= (width or 0) / 2 + 1e-9
+end
+
 -- Skillshot arm chance for this bite: the diamond-rod override wins while the diamond rod is
 -- held, unless it is negative (-1 = "follow the base chance"). Clamped to a probability.
 function F.miniChance(isDiamond, base, diamondChance)
@@ -343,6 +391,13 @@ local mgClickAt = nil    -- os.clock() stamped in the click-hook BODY while a ba
 local mgLate = nil       -- timeout grace: a click STAMPED before the bar timed out still counts
                          -- even when its deferred processing lands after the fold
 local mgJob = nil        -- core/animator token for the live bar's marker job
+local mgKind = "bar"     -- which skillshot this is: "bar" | "wheel" (50/50 roll at reveal)
+local mgPeriod = 1.6     -- the bar's ROLLED sweep period (speed 1x..2x base, per bar); the judge
+                         -- and the renderer must share it, so it is state, not a config read
+local mgAwaitClick = false -- pure-Lua gate the hook body reads: the decisive click is still owed
+                         -- (false during the wheel's slow-down so extra clicks don't re-stamp)
+local mgSlow = nil       -- wheel slow-down in flight: { clickAt, thetaClick, final, hit }
+local mgWheel = nil      -- wheel params fixed at reveal: { speed, decel, zc, zw }
 local UI = require("features.fishing_ui") -- the renderer; this module never touches a widget
 local forceMini = false  -- sps_fish_mini: arm on every bite (live testing)
 
@@ -788,66 +843,110 @@ end
 local function logBarStats()
   local s = UI.stats()
   if s and s.n and s.n > 1 then
-    -- the smoothness receipt; demote to debug once the rewrite has feel-verified
-    ctx.log.info(string.format("fishing: bar frames n=%d min=%.1f avg=%.1f p95=%.1f max=%.1f ms",
+    ctx.log.debug(string.format("fishing: bar frames n=%d min=%.1f avg=%.1f p95=%.1f max=%.1f ms",
       s.n, s.min, s.avg, s.p95, s.max))
   end
 end
 
--- Second click: judged at the os.clock() STAMPED IN THE HOOK BODY (clickAt), through the same
+-- The decisive click also reels the line in: the game's own input already does it for the
+-- vanilla rod (line out, no catch window = reel), the seated diamond rod only moves when we
+-- drive it. Inside the bite's ~1 s catch window that same call would CATCH instead -- wait it out.
+local function reelLine(pawn)
+  if not mgDiamond then return end
+  local m = ctx.map.fishing
+  local rod
+  pcall(function() rod = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
+  local okC, cc = ctx.uehelp.get(rod, m.canCatchProp)
+  if okC and cc == true then
+    defer(600, ctx.log.guard("fishing.mgreel", function()
+      onGameThread(function()
+        if ctx.uehelp.isValid(pawn) then ctx.uehelp.call(pawn, m.useRodFn) end
+      end)
+    end))
+  else
+    ctx.uehelp.call(pawn, m.useRodFn)
+  end
+end
+
+local function grantSoon(pawn)
+  -- the prize lands as the reel-in finishes, not before it starts
+  defer(400, ctx.log.guard("fishing.mgprize", function()
+    onGameThread(function() grantReward(pawn) end)
+  end))
+end
+
+-- BAR resolve: judged at the os.clock() STAMPED IN THE HOOK BODY (clickAt), through the same
 -- pure markerPos(clock) the renderer draws -- so the judged position is what was on screen at
 -- the physical click, no matter which path (animator fast lane or deferred fallback) got here.
 -- fishing_click_lead trims the residual render/display latency by feel.
 local function resolveMinigame(pawn, clickAt)
   if not mgActive then return end
   mgActive = false
-  mgClickAt = nil
+  mgClickAt, mgAwaitClick = nil, false
   lastClickAt = clickAt
   local lead = tonumber(cfg("fishing_click_lead")) or 0
-  local p = F.markerPos(math.max(0, clickAt - lead - mgStart),
-    tonumber(cfg("fishing_minigame_period")) or 1.6)
+  local p = F.markerPos(math.max(0, clickAt - lead - mgStart), mgPeriod)
   resumeBites()
-  -- the resolve click reels the line in: the game's own input already does it for the vanilla
-  -- rod (line out, no catch window = reel), the seated diamond rod only moves when we drive it.
-  -- Inside the bite's ~1 s catch window that same call would CATCH instead -- wait it out.
-  if mgDiamond then
-    local m = ctx.map.fishing
-    local rod
-    pcall(function() rod = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
-    local okC, cc = ctx.uehelp.get(rod, m.canCatchProp)
-    if okC and cc == true then
-      defer(600, ctx.log.guard("fishing.mgreel", function()
-        onGameThread(function()
-          if ctx.uehelp.isValid(pawn) then ctx.uehelp.call(pawn, m.useRodFn) end
-        end)
-      end))
-    else
-      ctx.uehelp.call(pawn, m.useRodFn)
-    end
-  end
+  reelLine(pawn)
   lineOut = false
   local hit = F.zoneHit(p, mgCenter, mgWidth)
   UI.flash(hit and "hit" or "miss")
   logBarStats()
   foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)
   if hit then
-    -- the prize lands as the reel-in finishes, not before it starts
-    defer(400, ctx.log.guard("fishing.mgprize", function()
-      onGameThread(function() grantReward(pawn) end)
-    end))
+    grantSoon(pawn)
   else
     ctx.log.info(string.format("fishing: missed the %s zone (%.0f%% vs %.0f%%) -- it got away",
       mgDiamond and "diamond" or "golden", p * 100, mgCenter * 100))
   end
 end
 
--- The 6 s timeout. mgLate keeps the bar's parameters warm for a 0.4 s grace window: a click
--- STAMPED before the timeout but processed after it (the deferred fallback path) still judges.
+-- WHEEL click: the outcome is sealed HERE (the rest position is a pure function of the stamped
+-- click), but it stays secret while the needle visibly spins down -- the reveal is the stop.
+local function wheelClicked(pawn, clickAt)
+  if not mgActive or mgSlow or not mgWheel then return end
+  mgAwaitClick = false
+  lastClickAt = clickAt
+  local lead = tonumber(cfg("fishing_click_lead")) or 0
+  local el = math.max(0, clickAt - lead - mgStart)
+  local final = F.wheelFinal(el, mgWheel.speed, mgWheel.decel)
+  mgSlow = {
+    clickAt = clickAt,
+    thetaClick = F.wheelAngle(el, mgWheel.speed),
+    final = final,
+    hit = F.angleHit(final, mgWheel.zc, mgWheel.zw),
+  }
+  reelLine(pawn)
+  lineOut = false
+end
+
+-- WHEEL stop: the needle has rested -- reveal, pay out, fold. Water wakes here (it stayed
+-- parked through the slow-down, same as while the bar was up).
+local function finishWheel(pawn, slow)
+  if not mgActive then return end
+  mgActive = false
+  mgSlow = nil
+  resumeBites()
+  UI.flash(slow.hit and "hit" or "miss")
+  logBarStats()
+  foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)
+  if slow.hit then
+    grantSoon(pawn)
+  else
+    ctx.log.info(string.format("fishing: the wheel rests at %.0f (zone %.0f) -- it got away",
+      slow.final, mgWheel and mgWheel.zc or 0))
+  end
+end
+
+-- The 6 s timeout. mgLate keeps this skillshot's parameters warm for a 0.4 s grace window: a
+-- click STAMPED before the timeout but processed after it (the deferred fallback path) still
+-- judges. The wheel's slow-down phase never times out -- it resolves itself in under a second.
 local function timeoutMinigame()
   if not mgActive then return end
   mgActive = false
-  mgClickAt = nil
-  mgLate = { untilT = os.clock() + 0.4, start = mgStart, center = mgCenter, width = mgWidth,
+  mgClickAt, mgAwaitClick, mgSlow = nil, false, nil
+  mgLate = { untilT = os.clock() + 0.4, kind = mgKind, start = mgStart,
+             center = mgCenter, width = mgWidth, period = mgPeriod, wheel = mgWheel,
              diamond = mgDiamond, group = mgGroup }
   UI.flash("timeout")
   logBarStats()
@@ -856,7 +955,7 @@ local function timeoutMinigame()
   ctx.log.info("fishing: too slow -- the big one slips away")
 end
 
--- The per-frame marker job (core/animator, game thread, ~once per rendered frame). Built ONCE
+-- The per-frame BAR job (core/animator, game thread, ~once per rendered frame). Built ONCE
 -- per bar -- the animator contract forbids per-frame allocations. Checks the stamped click
 -- BEFORE the timeout so a buzzer-beater stamp inside the window always counts.
 local function makeMarkerJob(tok, pawn)
@@ -872,12 +971,56 @@ local function makeMarkerJob(tok, pawn)
       timeoutMinigame()
       return "stop"
     end
-    if not UI.setMarker(F.markerPos(now - mgStart, tonumber(cfg("fishing_minigame_period")) or 1.6)) then
+    if not UI.setMarker(F.markerPos(now - mgStart, mgPeriod)) then
       -- the world ate the widgets mid-bar: fold what is left and wake the water back up
       mgActive = false
-      mgClickAt = nil
+      mgClickAt, mgAwaitClick = nil, false
       UI.fold()
       resumeBites()
+      return "stop"
+    end
+  end
+end
+
+-- The per-frame WHEEL job: constant spin until the stamped click, then the fixed-decel
+-- slow-down, then the reveal. Same token/timeout/widget-death contracts as the bar job.
+local function makeWheelJob(tok, pawn)
+  return function(now)
+    if tok ~= mgToken or not mgActive then return "stop" end
+    local wl = mgWheel
+    if not wl then return "stop" end
+    local slow = mgSlow
+    if not slow then
+      local t = mgClickAt
+      if t then
+        mgClickAt = nil
+        wheelClicked(pawn, t)
+        slow = mgSlow
+        if not slow then return "stop" end
+      elseif now - mgStart > (tonumber(cfg("fishing_minigame_timeout")) or 6) then
+        timeoutMinigame()
+        return "stop"
+      else
+        if not UI.setNeedle(F.wheelAngle(now - mgStart, wl.speed)) then
+          mgActive = false
+          mgClickAt, mgAwaitClick = nil, false
+          UI.fold()
+          resumeBites()
+          return "stop"
+        end
+        return
+      end
+    end
+    local theta, done = F.wheelSlowdownPos(now - slow.clickAt, slow.thetaClick, wl.speed, wl.decel)
+    if not UI.setNeedle(theta) then
+      mgActive = false
+      mgSlow = nil
+      UI.fold()
+      resumeBites()
+      return "stop"
+    end
+    if done then
+      finishWheel(pawn, slow)
       return "stop"
     end
   end
@@ -958,28 +1101,40 @@ local function onClick(pawn, clickAt)
   lastClickAt = clickAt
 
   if mgActive then
-    resolveMinigame(pawn, clickAt)
+    if mgKind == "wheel" then
+      if mgAwaitClick then wheelClicked(pawn, clickAt) end -- clicks during the slow-down are noise
+    else
+      resolveMinigame(pawn, clickAt)
+    end
     return
   end
   if mgLate and os.clock() < mgLate.untilT
      and clickAt <= mgLate.start + (tonumber(cfg("fishing_minigame_timeout")) or 6) then
-    -- stamped before the bar timed out, processed after: the click still counts
+    -- stamped before the skillshot timed out, processed after: the click still counts
     local late = mgLate
     mgLate = nil
     local lead = tonumber(cfg("fishing_click_lead")) or 0
-    local p = F.markerPos(math.max(0, clickAt - lead - late.start),
-      tonumber(cfg("fishing_minigame_period")) or 1.6)
-    if F.zoneHit(p, late.center, late.width) then
+    local el = math.max(0, clickAt - lead - late.start)
+    local hit, missLine
+    if late.kind == "wheel" and late.wheel then
+      local final = F.wheelFinal(el, late.wheel.speed, late.wheel.decel)
+      hit = F.angleHit(final, late.wheel.zc, late.wheel.zw)
+      missLine = string.format("fishing: the wheel rests at %.0f (zone %.0f) -- it got away",
+        final, late.wheel.zc)
+    else
+      local p = F.markerPos(el, late.period or 1.6)
+      hit = F.zoneHit(p, late.center, late.width)
+      missLine = string.format("fishing: missed the %s zone (%.0f%% vs %.0f%%) -- it got away",
+        late.diamond and "diamond" or "golden", p * 100, late.center * 100)
+    end
+    if hit then
       mgGroup, mgDiamond = late.group, late.diamond
       if late.diamond then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
       lineOut = false
       ctx.log.info("fishing: right at the buzzer -- the click counts")
-      defer(400, ctx.log.guard("fishing.mgprize", function()
-        onGameThread(function() grantReward(pawn) end)
-      end))
+      grantSoon(pawn)
     else
-      ctx.log.info(string.format("fishing: missed the %s zone (%.0f%% vs %.0f%%) -- it got away",
-        late.diamond and "diamond" or "golden", p * 100, late.center * 100))
+      ctx.log.info(missLine)
     end
     return
   end
@@ -993,29 +1148,60 @@ local function onClick(pawn, clickAt)
       -- another leaf, never a real-table catch
       onGameThread(restoreMgRiver)
     end))
-    mgWidth = tonumber(cfg(mgDiamond and "fishing_minigame_zone_diamond" or "fishing_minigame_zone"))
-              or (mgDiamond and 0.10 or 0.18)
-    mgCenter = 0.22 + math.random() * 0.56
-    if UI.show({ diamond = mgDiamond, center = mgCenter, width = mgWidth }) then
+    -- 50/50 which skillshot this catch is (user spec); the wheel needs widget rotation, so a
+    -- build that can't rotate quietly serves bars every time
+    mgKind = (math.random() < (tonumber(cfg("fishing_wheel_share")) or 0.5)) and "wheel" or "bar"
+    if mgKind == "wheel" and not UI.wheelOK() then mgKind = "bar" end
+    local shown = false
+    if mgKind == "wheel" then
+      mgWheel = {
+        speed = tonumber(cfg("fishing_wheel_speed")) or 360,
+        decel = tonumber(cfg("fishing_wheel_decel")) or 360,
+        zw = tonumber(cfg(mgDiamond and "fishing_wheel_zone_diamond" or "fishing_wheel_zone"))
+             or (mgDiamond and 24 or 40),
+        zc = math.random() * 360,
+      }
+      shown = UI.showWheel({ diamond = mgDiamond, centerDeg = mgWheel.zc, widthDeg = mgWheel.zw })
+      if not shown then mgKind = "bar" end -- rotation just broke: same skillshot, bar clothes
+    end
+    if mgKind == "bar" then
+      mgWheel = nil
+      mgWidth = tonumber(cfg(mgDiamond and "fishing_minigame_zone_diamond" or "fishing_minigame_zone"))
+                or (mgDiamond and 0.10 or 0.18)
+      mgCenter = 0.22 + math.random() * 0.56
+      -- per-bar speed roll: 1x..maxMult x the configured sweep speed (user spec)
+      mgPeriod = F.rollPeriod(tonumber(cfg("fishing_minigame_period")) or 1.6,
+        tonumber(cfg("fishing_bar_speed_max_mult")) or 2.0, math.random())
+      shown = UI.show({ diamond = mgDiamond, center = mgCenter, width = mgWidth })
+    end
+    if shown then
       mgActive = true
-      mgClickAt, mgLate = nil, nil
+      mgClickAt, mgLate, mgSlow = nil, nil, nil
+      mgAwaitClick = true
       suppressBites(pawn)
       mgStart = os.clock()
       mgToken = mgToken + 1
-      mgJob = ctx.anim.start(makeMarkerJob(mgToken, pawn))
-      if not mgJob then -- animator died since the probe: no marker, no game
+      mgJob = ctx.anim.start(mgKind == "wheel" and makeWheelJob(mgToken, pawn)
+                                               or makeMarkerJob(mgToken, pawn))
+      if not mgJob then -- animator died since the probe: no motion, no game
         mgActive = false
+        mgAwaitClick = false
         UI.fold()
         resumeBites()
         mgReady = false
         ctx.log.warn("fishing: animator unavailable -- minigame disabled")
         return
       end
-      ctx.log.info(mgDiamond and "fishing: something HUGE -- hit the diamond zone!"
-                             or "fishing: something big -- hit the golden zone!")
+      if mgKind == "wheel" then
+        ctx.log.info(mgDiamond and "fishing: something HUGE -- stop the wheel on the diamond arc!"
+                               or "fishing: something big -- stop the wheel on the golden arc!")
+      else
+        ctx.log.info(mgDiamond and "fishing: something HUGE -- hit the diamond zone!"
+                               or "fishing: something big -- hit the golden zone!")
+      end
     else
       mgReady = false
-      ctx.log.warn("fishing: skillshot bar failed to build -- minigame disabled")
+      ctx.log.warn("fishing: skillshot failed to build -- minigame disabled")
     end
     return
   end
@@ -1119,10 +1305,17 @@ local function onHandRebuilt(pawn)
     -- the rebuild tore the rod out from under the skillshot: fold the bar, salvage the real
     -- pity value we parked, and put the leaf river back
     mgActive, mgPending = false, false
-    mgClickAt, mgLate = nil, nil
+    mgClickAt, mgLate, mgAwaitClick = nil, nil, false
     mgToken = mgToken + 1
     if mgJob then ctx.anim.stop(mgJob); mgJob = nil end
     UI.fold()
+    if mgSlow and mgSlow.hit then
+      -- the wheel's outcome was sealed at the click; the rebuild only ate the reveal animation.
+      -- The player won it -- pay out anyway.
+      ctx.log.info("fishing: the wheel had already landed -- the prize is yours")
+      grantSoon(pawn)
+    end
+    mgSlow = nil
     if mgSavedBonus ~= nil then lastBonus = mgSavedBonus end
     mgRod, mgSavedBonus = nil, nil
     restoreMgRiver()
@@ -1213,7 +1406,7 @@ local function armClickHooks()
         local p
         pcall(function() p = Context:get() end)
         if not p then return end
-        if mgActive and mgClickAt == nil
+        if mgActive and mgAwaitClick and mgClickAt == nil
            and t - lastClickAt >= (tonumber(cfg("fishing_click_debounce")) or 0.3) then
           mgClickAt = t
         end
@@ -1252,7 +1445,7 @@ local function applyAll()
     structMembers, structMemberTries = nil, 0
     tablesBroken = false
     mgReady, mgPending, mgActive, mgRiver = nil, false, false, nil
-    mgClickAt, mgLate = nil, nil
+    mgClickAt, mgLate, mgAwaitClick, mgSlow, mgWheel = nil, nil, false, nil, nil
     if mgJob then ctx.anim.stop(mgJob); mgJob = nil end
     UI.reset() -- the old world's widgets are dead; the surface mode survives (a build fact)
     mgRod, mgSavedBonus = nil, nil -- the old world's rod actor died and took its bonus with it

@@ -389,6 +389,18 @@ M.defaults = {
   fishing_bar_w       = 420.0,
   fishing_bar_h       = 26.0,
   fishing_click_debounce = 0.30, -- seconds between accepted rod clicks (input events multi-fire)
+  fishing_bar_speed_max_mult = 2.0, -- each bar's sweep speed rolls uniform 1x..this x the base
+                                 -- speed (fishing_minigame_period is the 1x sweep)
+  fishing_wheel_share = 0.5,     -- chance a triggered skillshot is the WHEEL instead of the bar
+  fishing_wheel_speed = 360.0,   -- wheel spin, deg/s -- constant on purpose (learnable)
+  fishing_wheel_decel = 360.0,   -- wheel slow-down, deg/s^2 -- constant on purpose; with speed
+                                 -- these fix the click->rest offset at speed^2/(2*decel) = 180
+                                 -- degrees, the skill the player learns over time
+  fishing_wheel_zone  = 40.0,    -- golden arc width in degrees
+  fishing_wheel_zone_diamond = 24.0, -- the diamond rod's harder arc
+  fishing_wheel_x     = 960.0,   -- wheel center, canvas px at 1080p design res (screen center:
+  fishing_wheel_y     = 540.0,   -- the needle sweeps around the crosshair)
+  fishing_wheel_r     = 90.0,    -- dial radius
   fishing_flash_secs  = 0.22,    -- hit/miss/timeout color flash shown before the bar folds
   fishing_click_lead  = 0.0,     -- seconds subtracted from the click stamp when judging (display-
                                  -- latency feel trim; raise to ~0.03 if zone-edge clicks feel late)
