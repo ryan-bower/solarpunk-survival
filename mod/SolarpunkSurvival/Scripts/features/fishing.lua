@@ -451,9 +451,33 @@ local function writeRiver(river, entries)
 end
 
 -- Rewrite EVERY resident river from the spec at the current multiplier. Idempotent and cheap
--- (12 assignments); called on world entry and every luck-state flip.
+-- (12 assignments); called on world entry and every luck-state flip. NEVER while a skillshot
+-- window is live: the 30s world-entry retry once fired 215ms into a spinning wheel and the
+-- process aborted (fatal, 2026-07-28 14:48) -- a 12-river struct-array rewrite stalls the
+-- game thread under the ~86Hz animator lane AND reallocates the bite's leaf-swapped
+-- Loottable out from under the rod's in-flight evaluation. Park the pass, retry when calm
+-- (this also stops the pass silently un-leafing the minigame river mid-game).
+local tablesDeferred = nil
+local function minigameHot()
+  return mgRiver ~= nil or mgActive or mgPending
+    or ((ctx.anim and ctx.anim.active and ctx.anim.active()) or false)
+end
+
 function F.applyTables(reason)
   if tablesBroken or not (cfg("fishing_enabled") and cfg("fishing_tables")) then return end
+  if minigameHot() then
+    if not tablesDeferred then
+      tablesDeferred = reason or "deferred"
+      defer(1000, ctx.log.guard("fishing.tablesdefer", function()
+        local r = tablesDeferred
+        tablesDeferred = nil
+        if r then onGameThread(function() F.applyTables(r) end) end
+      end))
+    else
+      tablesDeferred = reason or tablesDeferred
+    end
+    return
+  end
   local m = ctx.map.fishing
   local rivers = ctx.uehelp.findAll(m.riverClass)
   if #rivers == 0 then return end
@@ -1469,6 +1493,7 @@ local function applyAll()
     lineOut, lastBonus = false, nil
     mgToken = mgToken + 1
     lastAppliedKey = nil
+    tablesDeferred = nil
     diamondHeld = false
     lastIsDay = nil
     stormNow = (ctx.services.isStormy and ctx.services.isStormy()) or false
