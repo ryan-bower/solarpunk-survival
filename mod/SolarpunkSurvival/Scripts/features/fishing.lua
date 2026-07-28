@@ -912,6 +912,9 @@ end
 
 -- WHEEL click: the outcome is sealed HERE (the rest position is a pure function of the stamped
 -- click), but it stays secret while the needle visibly spins down -- the reveal is the stop.
+-- The line stays in the water through the spin-down (player ask): the reel rides the REVEAL,
+-- so the suspense holds until the needle rests. (Vanilla rod: the game's own input reels at
+-- the click natively -- only the mod-driven diamond reel can be held back.)
 local function wheelClicked(pawn, clickAt)
   if not mgActive or mgSlow or not mgWheel then return end
   mgAwaitClick = false
@@ -925,17 +928,17 @@ local function wheelClicked(pawn, clickAt)
     final = final,
     hit = F.angleHit(final, mgWheel.zc, mgWheel.zw),
   }
-  reelLine(pawn)
-  lineOut = false
 end
 
--- WHEEL stop: the needle has rested -- reveal, pay out, fold. Water wakes here (it stayed
--- parked through the slow-down, same as while the bar was up).
+-- WHEEL stop: the needle has rested -- reveal, reel the line, pay out, fold. Water wakes here
+-- (it stayed parked through the slow-down, same as while the bar was up).
 local function finishWheel(pawn, slow)
   if not mgActive then return end
   mgActive = false
   mgSlow = nil
   resumeBites()
+  reelLine(pawn)
+  lineOut = false
   UI.flash(slow.hit and "hit" or "miss")
   logBarStats()
   foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)
