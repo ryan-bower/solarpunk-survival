@@ -740,12 +740,19 @@ do
      "fishing: diamond-rod clicks drive the game's own pawn event (durability drains free)")
   eq(m.fishing.rodDurability, 200, "fishing: vanilla rod durability")
   eq(m.fishing.diamondDurability, 2000, "fishing: diamond rod = 10x durability (user spec)")
+  eq(m.fishing.userWidgetPath, "/Script/UMG.UserWidget", "fishing: own-widget shell class")
+  eq(m.fishing.canvasPanelPath, "/Script/UMG.CanvasPanel", "fishing: raw canvas class")
+  eq(m.fishing.wblPath, "/Script/UMG.Default__WidgetBlueprintLibrary", "fishing: widget library CDO")
 
   -- config defaults
   eq(config.get("fishing_minigame_chance"), 0.05, "fishing: 5% of bites are the skillshot")
   eq(config.get("fishing_splash_gain"), 3.0, "fishing: bite splash at 300%")
   eq(config.get("fishing_storm_mult"), 2.0, "fishing: storm doubles the rare band")
   eq(config.get("fishing_twilight_mult"), 1.5, "fishing: dawn/dusk x1.5")
+  eq(config.get("fishing_flash_secs"), 0.22, "fishing: resolve flash before the bar folds")
+  eq(config.get("fishing_click_lead"), 0.0, "fishing: click-lead trim defaults off")
+  eq(config.get("fishing_ui_own_widget"), true, "fishing: own viewport widget preferred")
+  eq(config.get("anim_tick_ms"), 8, "animator: per-frame lane ticks at 8ms")
 
   -- baked river registry: 12 rivers, the census's group split
   eq(#fishing.RIVERS, 12, "fishing: 12 rivers baked")
@@ -852,6 +859,41 @@ do
   eq(fishing.luckMult(true, true, false), 4.0, "fishing: diamond in a storm = x4 (user spec)")
   eq(fishing.luckMult(true, true, true), 6.0, "fishing: the full x6 stack")
   eq(fishing.luckMult(false, false, true), 1.5, "fishing: twilight alone = x1.5")
+end
+
+------------------------------------------------------------------ animator (per-frame lane)
+-- Drives core/animator with a hand-cranked ticker + hop: the one-job-slot, one-outstanding-hop
+-- and stop-before-hop contracts that the skillshot marker stands on.
+do
+  local anim = require("core.animator")
+  local log = require("core.log")
+  local ticker
+  _G.LoopAsync = function(_, fn) ticker = fn end
+  local posted = {}
+  ok(anim.init(log, function(fn) posted[#posted + 1] = fn end, 8), "animator: init ok")
+  ok(anim.ok, "animator: flagged ready")
+  ticker()
+  eq(#posted, 0, "animator: idle ticks arm no hops")
+
+  local calls = 0
+  local tok = anim.start(function() calls = calls + 1; if calls >= 2 then return "stop" end end)
+  ok(tok ~= nil, "animator: start returns a token")
+  ticker()
+  eq(#posted, 1, "animator: active job arms a hop")
+  ticker()
+  eq(#posted, 1, "animator: only one hop outstanding at a time")
+  posted[1]()
+  eq(calls, 1, "animator: the hop ran the job")
+  ticker(); posted[2]()
+  eq(calls, 2, "animator: second frame ran and the job stopped itself")
+  ticker()
+  eq(#posted, 2, "animator: a stopped job arms nothing")
+
+  local tok2 = anim.start(function() calls = calls + 1 end)
+  anim.stop(tok2)
+  ticker()
+  eq(#posted, 2, "animator: stop() before the tick drops the job")
+  ok(not anim.active(), "animator: inactive after stop")
 end
 
 print(string.format("\n%d passed, %d failed", passed, failed))

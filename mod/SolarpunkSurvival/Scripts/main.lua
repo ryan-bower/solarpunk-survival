@@ -11,10 +11,17 @@ local ok, err = pcall(function()
   local log       = require("core.log")
   -- FIRST, before anything can schedule: shadow ExecuteWithDelay/ExecuteInGameThread with the
   -- queue-backed dispatcher (hook-thread function refs abort the process -- see the module).
-  require("core.scheduler").init(log)
+  local sched     = require("core.scheduler")
+  sched.init(log)
   local bus       = require("core.eventbus")
   local gate      = require("core.gate")
   local config    = require("core.config").init(modRoot)
+  -- The per-frame lane (fishing skillshot marker). sched.postGameThread is the real engine
+  -- primitive captured before shadowing; if scheduler init bailed, the global was never shadowed
+  -- so the fallback is equally real.
+  local animator  = require("core.animator")
+  animator.init(log, sched.postGameThread or ExecuteInGameThread,
+                tonumber(config.get("anim_tick_ms")) or 8)
   -- Breadcrumbs BEFORE any feature arms a hook: a native AV leaves nothing behind but this file,
   -- and its last line is the name of whatever was running when the process died.
   log.armSteps(modRoot, config.get("step_log") == true, config.get("step_log_notify") == true)
@@ -39,6 +46,7 @@ local ok, err = pcall(function()
     map = buildinfo.map, config = config, log = log, bus = bus, gate = gate,
     net = net, health = health, identity = identity, save = save, items = items,
     uehelp = uehelp, buildinfo = buildinfo, services = {}, modRoot = modRoot,
+    anim = animator,
   }
 
   -- Load features before storms so their subscriptions/services exist when strikes fire. UI last.

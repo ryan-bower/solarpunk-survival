@@ -14,10 +14,20 @@
 --     own Interaction_FishingRod(), which drains OUR item's durability through the shared path.
 --   * BITE SPLASH: the game plays S_FishingRod_Splash at 1.0 exactly when a fish bites; the mod
 --     layers (fishing_splash_gain - 1) more on top at the bobber -- "300% splash when you hook".
---   * SKILLSHOT: 5% of bites, the catch click lands a leaf instead and a sliding-marker bar
---     appears; a second click inside the golden zone guarantees a rare/jackpot roll (diamond rod:
---     smaller zone, jackpot-only). Since Catch() is VM-internal (unhookable), "instead" is done
---     by swapping the bobber's river to an all-leaf table for that one catch, then restoring.
+--   * SKILLSHOT: 5% of bites, the catch click reveals a sliding-marker bar; a second click
+--     inside the golden zone guarantees a rare/jackpot roll (diamond rod: smaller zone,
+--     jackpot-only). Rendering lives in features/fishing_ui.lua (our own viewport widget),
+--     driven per rendered frame by core/animator; the click is judged at the os.clock() STAMPED
+--     IN THE HOOK BODY against the same clock+formula that draws, so what the player saw when
+--     they clicked is what is judged -- no scheduler latency in either direction.
+--     Vanilla rod: the game's own Catch() is VM-internal (unhookable), so its unavoidable
+--     reveal-catch is fed a worthless leaf by swapping the bobber's river to an all-leaf table,
+--     then restoring. Diamond rod: the game ignores the click entirely, so the bar reveals with
+--     no drop at all. While the bar is up the water sits still (the rod's bite roll is parked,
+--     see suppressBites) and the resolve click reels the line in -- win reels in the prize.
+--   * The TAB inventory (any hand rebuild) kills the rod actor, uncasting a thrown line. The mod
+--     tracks the line via the rod's own RodInUse?/roll ticks and re-throws it after the rebuild,
+--     pity ramp included -- opening/closing the inventory does not affect fishing.
 --
 -- Fished-up rods arrive "worn": a fresh rod item appearing in the inventory right after a catch
 -- click is stamped a random durability via the game's own OverwriteAndSaveItemAtIndex (the wand's
@@ -323,7 +333,17 @@ local mgCenter, mgWidth = 0.5, 0.18
 local mgDiamond = false
 local mgGroup = "starter"
 local mgRiver = nil      -- the leaf-swapped river actor (restored on resolve)
-local mgW = {}           -- widget refs { bg, zone, mark, markSlot }
+local mgRod = nil        -- the rod actor whose bite roll we parked (see suppressBites)
+local mgSavedBonus = nil -- the player's real pity bonus, put back on resume
+local lineOut = false    -- the local rod's line is in the water (survives the actor's death)
+local lastBonus = nil    -- last seen unsuppressed pity bonus, handed to a recast rod
+local lastRecastAt = 0   -- rebuilds echo; one recast per line lost
+local mgClickAt = nil    -- os.clock() stamped in the click-hook BODY while a bar is up; the
+                         -- animator job consumes it next frame (resolve ~1 frame after the click)
+local mgLate = nil       -- timeout grace: a click STAMPED before the bar timed out still counts
+                         -- even when its deferred processing lands after the fold
+local mgJob = nil        -- core/animator token for the live bar's marker job
+local UI = require("features.fishing_ui") -- the renderer; this module never touches a widget
 local forceMini = false  -- sps_fish_mini: arm on every bite (live testing)
 
 --------------------------------------------------------------------- class resolution
@@ -625,109 +645,44 @@ local function scheduleSweeps(pawn, group)
 end
 
 --------------------------------------------------------------------- skillshot bar (UI)
-local function teardownBar()
-  for _, k in ipairs({ "mark", "zone", "bg" }) do
-    local w = mgW[k]
-    if w then pcall(function() w:RemoveFromParent() end) end
-  end
-  mgW = {}
+-- While the bar is up the water must sit still. The rod's looping 1.5 s roll weighs
+-- clamp(0.3 + RandomCatchBonus, 0, 1) -- splash particle, splash sound and the catch window all
+-- live inside the success branch (rod ubergraph), so parking the bonus at -1000 silences the
+-- whole bite without touching the timer. resumeBites puts the player's real pity value back.
+local function suppressBites(pawn)
+  local prop = ctx.map.fishing.biteBonusProp
+  if not prop then return end
+  local rod
+  pcall(function() rod = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
+  if not ctx.uehelp.isValid(rod) then return end
+  local ok, bonus = ctx.uehelp.get(rod, prop)
+  if not ok then return end
+  mgRod, mgSavedBonus = rod, tonumber(bonus) or 0
+  ctx.uehelp.set(rod, prop, -1000)
 end
 
-local function overlayCanvas()
-  local q = ctx.map.qol or {}
-  local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
-  if not ctx.uehelp.isValid(pc) then return nil end
-  local overlay
-  pcall(function() overlay = pc[q.overlayProp or "PlayerOverlay"] end)
-  if not ctx.uehelp.isValid(overlay) then return nil end
-  local root
-  pcall(function() root = overlay.WidgetTree.RootWidget end)
-  if not ctx.uehelp.isValid(root) then return nil end
-  return root, overlay
+local function resumeBites()
+  local rod, bonus = mgRod, mgSavedBonus
+  mgRod, mgSavedBonus = nil, nil
+  if bonus == nil or not ctx.uehelp.isValid(rod) then return end
+  ctx.uehelp.set(rod, ctx.map.fishing.biteBonusProp, bonus)
 end
 
-local function makeImage(canvas, overlay, x, y, w, h, color, z)
-  local m = ctx.map.fishing
-  local imgCls = StaticFindObject and StaticFindObject(m.imagePath)
-  if not ctx.uehelp.isValid(imgCls) then return nil end
-  local img, slot
-  local ok = pcall(function()
-    img = StaticConstructObject(imgCls, overlay)
-    slot = canvas[m.canvasAddFn](canvas, img)
-    slot:SetPosition({ X = x, Y = y })
-    slot:SetSize({ X = w, Y = h })
-    slot:SetZOrder(z or 60)
-    img:SetColorAndOpacity({ R = color[1], G = color[2], B = color[3], A = color[4] })
-  end)
-  if not (ok and ctx.uehelp.isValid(img)) then
-    if img then pcall(function() img:RemoveFromParent() end) end
-    return nil
-  end
-  return img, slot
-end
-
--- One-time capability probe: construct + place + remove an invisible Image. StaticConstructObject
--- of raw UMG onto a live canvas is unproven on this build -- if it can't work, the minigame never
--- arms (no leaf-swaps, no lost bites) instead of failing with the bar already owed to the player.
-local function probeBar()
+-- One-time capability probe, now delegated: fishing_ui tries its surface ladder (own viewport
+-- widget -> overlay group -> flat images) and this just records the verdict. The animator must
+-- also be alive -- a bar with a frozen marker is worse than no bar. nil = no world surface yet,
+-- re-probed by the next deferred world pass (no leaf-swaps, no lost bites in the meantime).
+local function probeUI()
   if mgReady ~= nil then return end
-  local canvas, overlay = overlayCanvas()
-  if not canvas then return end -- menu / early; re-probed next applyAll
-  local img = makeImage(canvas, overlay, 0, 0, 2, 2, { 0, 0, 0, 0 }, 1)
-  if img then
-    pcall(function() img:RemoveFromParent() end)
-    mgReady = true
-    ctx.log.debug("fishing: skillshot bar probe OK")
+  local probed = UI.probe()
+  if probed == nil then return end
+  mgReady = ((probed == true) and (ctx.anim and ctx.anim.ok == true)) or false
+  if mgReady then
+    ctx.log.debug("fishing: skillshot surface ready (" .. tostring(UI.mode()) .. " mode)")
   else
-    mgReady = false
-    ctx.log.warn("fishing: raw-widget construction failed -- the skillshot minigame is disabled")
+    ctx.log.warn("fishing: skillshot disabled (surface=" .. tostring(probed) ..
+      " animator=" .. tostring(ctx.anim and ctx.anim.ok) .. ")")
   end
-end
-
-local function markerLoop(tok)
-  pcall(ExecuteWithDelay, 33, ctx.log.guard("fishing.marker", function()
-    if tok ~= mgToken or not mgActive then return end
-    onGameThread(function()
-      if tok ~= mgToken or not mgActive then return end
-      if os.clock() - mgStart > (tonumber(cfg("fishing_minigame_timeout")) or 6) then
-        mgActive = false
-        teardownBar()
-        ctx.log.info("fishing: too slow -- the big one slips away")
-        return
-      end
-      local slot = mgW.markSlot
-      if slot then
-        local barX, barY = tonumber(cfg("fishing_bar_x")) or 750, tonumber(cfg("fishing_bar_y")) or 700
-        local barW = tonumber(cfg("fishing_bar_w")) or 420
-        local p = F.markerPos(os.clock() - mgStart, tonumber(cfg("fishing_minigame_period")) or 1.6)
-        pcall(function() slot:SetPosition({ X = barX + p * (barW - 6), Y = barY - 4 }) end)
-      end
-      markerLoop(tok)
-    end)
-  end))
-end
-
-local function buildBar()
-  local canvas, overlay = overlayCanvas()
-  if not canvas then return false end
-  local barX, barY = tonumber(cfg("fishing_bar_x")) or 750, tonumber(cfg("fishing_bar_y")) or 700
-  local barW, barH = tonumber(cfg("fishing_bar_w")) or 420, tonumber(cfg("fishing_bar_h")) or 26
-  mgWidth = tonumber(cfg(mgDiamond and "fishing_minigame_zone_diamond" or "fishing_minigame_zone"))
-            or (mgDiamond and 0.10 or 0.18)
-  mgCenter = 0.22 + math.random() * 0.56
-  local zoneColor = mgDiamond and { 0.65, 0.9, 1.0, 0.98 } or { 1.0, 0.78, 0.10, 0.95 }
-  local bg = makeImage(canvas, overlay, barX, barY, barW, barH, { 0.06, 0.42, 0.10, 0.92 }, 60)
-  if not bg then return false end
-  local zone = makeImage(canvas, overlay, barX + (mgCenter - mgWidth / 2) * barW, barY,
-    mgWidth * barW, barH, zoneColor, 61)
-  local mark, markSlot = makeImage(canvas, overlay, barX, barY - 4, 6, barH + 8, { 1, 1, 1, 1 }, 62)
-  if not (zone and mark) then
-    mgW = { bg = bg, zone = zone, mark = mark }
-    teardownBar()
-    return false
-  end
-  mgW = { bg = bg, zone = zone, mark = mark, markSlot = markSlot }
-  return true
 end
 
 --------------------------------------------------------------------- skillshot flow
@@ -747,8 +702,10 @@ local function restoreMgRiver()
   end
 end
 
--- The 5% bite: swap the bobber's river to all-leaf so the imminent catch click lands a leaf
--- ("clicking to catch INSTEAD reveals the bar"), remember it for the restore.
+-- The bite that arms the skillshot. VANILLA rod: the game's own input will catch on the next
+-- click no matter what, so the bobber's river is swapped to all-leaf -- the "catch" lands a
+-- worthless leaf and the bar reveals. DIAMOND rod: the game ignores its clicks entirely (we
+-- drive them), so nothing needs swapping and NOTHING drops when the bar appears.
 local function armMinigame(pawn)
   if not mgReady then return end
   local m = ctx.map.fishing
@@ -758,26 +715,29 @@ local function armMinigame(pawn)
   if not loc then return end
   local baked = F.nearestRiver(loc.X, loc.Y)
   if not baked then return end
-  local river
-  local bestD
-  for _, r in ipairs(ctx.uehelp.findAll(m.riverClass)) do
-    local rl
-    pcall(function() rl = r:K2_GetActorLocation() end)
-    rl = ctx.uehelp.vec(rl)
-    if rl then
-      local d = (rl.X - loc.X) ^ 2 + (rl.Y - loc.Y) ^ 2
-      if not bestD or d < bestD then river, bestD = r, d end
+  local isDiamond = (heldRodKind(pawn) == "diamond")
+  local river = nil
+  if not isDiamond then
+    local bestD
+    for _, r in ipairs(ctx.uehelp.findAll(m.riverClass)) do
+      local rl
+      pcall(function() rl = r:K2_GetActorLocation() end)
+      rl = ctx.uehelp.vec(rl)
+      if rl then
+        local d = (rl.X - loc.X) ^ 2 + (rl.Y - loc.Y) ^ 2
+        if not bestD or d < bestD then river, bestD = r, d end
+      end
     end
-  end
-  if not river then return end
-  local leaf = resolveClass("BP_Leaf_Item_C")
-  if not leaf then return end
-  if not ctx.uehelp.set(river, m.loottableProp, { { [m.lootItemField] = leaf, [m.lootWeightField] = 1 } }) then
-    return
+    if not river then return end
+    local leaf = resolveClass("BP_Leaf_Item_C")
+    if not leaf then return end
+    if not ctx.uehelp.set(river, m.loottableProp, { { [m.lootItemField] = leaf, [m.lootWeightField] = 1 } }) then
+      return
+    end
   end
   mgRiver = river
   mgGroup = baked.group
-  mgDiamond = (heldRodKind(pawn) == "diamond")
+  mgDiamond = isDiamond
   mgPending = true
   mgToken = mgToken + 1
   local tok = mgToken
@@ -814,18 +774,112 @@ local function grantReward(pawn)
   end
 end
 
--- Second click: freeze the marker where it is and judge it. Pure math -- the position is
--- recomputed from the same clock the render loop uses, so what you see is what is judged.
-local function resolveMinigame(pawn)
+-- The bar folds a beat after the resolve flash; token-guarded so a delayed fold can never tear
+-- down the NEXT bar (UI.show also folds leftovers first -- this is belt and braces).
+local function foldSoon(ms)
+  local tok = mgToken
+  defer(ms, ctx.log.guard("fishing.mgfold", function()
+    onGameThread(function()
+      if tok == mgToken then UI.fold() end
+    end)
+  end))
+end
+
+local function logBarStats()
+  local s = UI.stats()
+  if s and s.n and s.n > 1 then
+    -- the smoothness receipt; demote to debug once the rewrite has feel-verified
+    ctx.log.info(string.format("fishing: bar frames n=%d min=%.1f avg=%.1f p95=%.1f max=%.1f ms",
+      s.n, s.min, s.avg, s.p95, s.max))
+  end
+end
+
+-- Second click: judged at the os.clock() STAMPED IN THE HOOK BODY (clickAt), through the same
+-- pure markerPos(clock) the renderer draws -- so the judged position is what was on screen at
+-- the physical click, no matter which path (animator fast lane or deferred fallback) got here.
+-- fishing_click_lead trims the residual render/display latency by feel.
+local function resolveMinigame(pawn, clickAt)
   if not mgActive then return end
   mgActive = false
-  local p = F.markerPos(os.clock() - mgStart, tonumber(cfg("fishing_minigame_period")) or 1.6)
-  teardownBar()
-  if F.zoneHit(p, mgCenter, mgWidth) then
-    grantReward(pawn)
+  mgClickAt = nil
+  lastClickAt = clickAt
+  local lead = tonumber(cfg("fishing_click_lead")) or 0
+  local p = F.markerPos(math.max(0, clickAt - lead - mgStart),
+    tonumber(cfg("fishing_minigame_period")) or 1.6)
+  resumeBites()
+  -- the resolve click reels the line in: the game's own input already does it for the vanilla
+  -- rod (line out, no catch window = reel), the seated diamond rod only moves when we drive it.
+  -- Inside the bite's ~1 s catch window that same call would CATCH instead -- wait it out.
+  if mgDiamond then
+    local m = ctx.map.fishing
+    local rod
+    pcall(function() rod = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
+    local okC, cc = ctx.uehelp.get(rod, m.canCatchProp)
+    if okC and cc == true then
+      defer(600, ctx.log.guard("fishing.mgreel", function()
+        onGameThread(function()
+          if ctx.uehelp.isValid(pawn) then ctx.uehelp.call(pawn, m.useRodFn) end
+        end)
+      end))
+    else
+      ctx.uehelp.call(pawn, m.useRodFn)
+    end
+  end
+  lineOut = false
+  local hit = F.zoneHit(p, mgCenter, mgWidth)
+  UI.flash(hit and "hit" or "miss")
+  logBarStats()
+  foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)
+  if hit then
+    -- the prize lands as the reel-in finishes, not before it starts
+    defer(400, ctx.log.guard("fishing.mgprize", function()
+      onGameThread(function() grantReward(pawn) end)
+    end))
   else
     ctx.log.info(string.format("fishing: missed the %s zone (%.0f%% vs %.0f%%) -- it got away",
       mgDiamond and "diamond" or "golden", p * 100, mgCenter * 100))
+  end
+end
+
+-- The 6 s timeout. mgLate keeps the bar's parameters warm for a 0.4 s grace window: a click
+-- STAMPED before the timeout but processed after it (the deferred fallback path) still judges.
+local function timeoutMinigame()
+  if not mgActive then return end
+  mgActive = false
+  mgClickAt = nil
+  mgLate = { untilT = os.clock() + 0.4, start = mgStart, center = mgCenter, width = mgWidth,
+             diamond = mgDiamond, group = mgGroup }
+  UI.flash("timeout")
+  logBarStats()
+  foldSoon(150)
+  resumeBites() -- they let it slip; the water wakes back up
+  ctx.log.info("fishing: too slow -- the big one slips away")
+end
+
+-- The per-frame marker job (core/animator, game thread, ~once per rendered frame). Built ONCE
+-- per bar -- the animator contract forbids per-frame allocations. Checks the stamped click
+-- BEFORE the timeout so a buzzer-beater stamp inside the window always counts.
+local function makeMarkerJob(tok, pawn)
+  return function(now)
+    if tok ~= mgToken or not mgActive then return "stop" end
+    local t = mgClickAt
+    if t then
+      mgClickAt = nil
+      resolveMinigame(pawn, t)
+      return "stop"
+    end
+    if now - mgStart > (tonumber(cfg("fishing_minigame_timeout")) or 6) then
+      timeoutMinigame()
+      return "stop"
+    end
+    if not UI.setMarker(F.markerPos(now - mgStart, tonumber(cfg("fishing_minigame_period")) or 1.6)) then
+      -- the world ate the widgets mid-bar: fold what is left and wake the water back up
+      mgActive = false
+      mgClickAt = nil
+      UI.fold()
+      resumeBites()
+      return "stop"
+    end
   end
 end
 
@@ -871,11 +925,19 @@ local function onLootTick(rod)
   local held
   pcall(function() held = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
   if not ctx.uehelp.sameObject(rod, held) then return end
+  -- every roll tick = the line is in the water; remember it (and the pity ramp) so a hand
+  -- rebuild that kills this actor can put both back (see recastAfterRebuild)
+  lineOut = true
+  if mgRod == nil then
+    local okB, b = ctx.uehelp.get(rod, m.biteBonusProp)
+    if okB then lastBonus = tonumber(b) end
+  end
   local ok, canCatch = ctx.uehelp.get(rod, m.canCatchProp)
   if not (ok and canCatch == true) then return end
   if os.clock() - lastBiteAt < 1.2 then return end -- one bite, one splash
   lastBiteAt = os.clock()
-  playExtraSplash(rod)
+  -- no splash layering while a skillshot is pending/up -- the water is supposed to be still
+  if not (mgPending or mgActive) then playExtraSplash(rod) end
   freshRodSlots = freshRods(pawn) -- pre-catch snapshot for the worn-rod stamp
   local chance = F.miniChance(diamondHeld, cfg("fishing_minigame_chance"),
                               cfg("fishing_minigame_chance_diamond"))
@@ -885,28 +947,70 @@ local function onLootTick(rod)
 end
 
 --------------------------------------------------------------------- clicks
--- Debounced, deferred body of the IA_HandInteract hooks. Three jobs, in priority order:
--- resolve an active skillshot, reveal a pending one, drive the diamond rod / stamp worn rods.
-local function onClick(pawn)
+-- Debounced, deferred body of the IA_HandInteract hooks. clickAt is the os.clock() STAMPED in
+-- the hook body -- the physical click time, not this deferred body's run time. Four jobs, in
+-- priority order: resolve an active skillshot (fallback -- the animator usually beat us to it),
+-- honor a buzzer-beater stamp, reveal a pending bar, drive the diamond rod / stamp worn rods.
+local function onClick(pawn, clickAt)
   if not ctx.uehelp.isValid(pawn) then return end
-  if os.clock() - lastClickAt < (tonumber(cfg("fishing_click_debounce")) or 0.3) then return end
-  lastClickAt = os.clock()
+  clickAt = clickAt or os.clock()
+  if clickAt - lastClickAt < (tonumber(cfg("fishing_click_debounce")) or 0.3) then return end
+  lastClickAt = clickAt
 
   if mgActive then
-    resolveMinigame(pawn)
+    resolveMinigame(pawn, clickAt)
     return
   end
-  if mgPending and os.clock() - lastBiteAt < 1.4 then
-    -- this click is the game's own Catch() -- it lands the placeholder leaf. Reveal the bar.
+  if mgLate and os.clock() < mgLate.untilT
+     and clickAt <= mgLate.start + (tonumber(cfg("fishing_minigame_timeout")) or 6) then
+    -- stamped before the bar timed out, processed after: the click still counts
+    local late = mgLate
+    mgLate = nil
+    local lead = tonumber(cfg("fishing_click_lead")) or 0
+    local p = F.markerPos(math.max(0, clickAt - lead - late.start),
+      tonumber(cfg("fishing_minigame_period")) or 1.6)
+    if F.zoneHit(p, late.center, late.width) then
+      mgGroup, mgDiamond = late.group, late.diamond
+      if late.diamond then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
+      lineOut = false
+      ctx.log.info("fishing: right at the buzzer -- the click counts")
+      defer(400, ctx.log.guard("fishing.mgprize", function()
+        onGameThread(function() grantReward(pawn) end)
+      end))
+    else
+      ctx.log.info(string.format("fishing: missed the %s zone (%.0f%% vs %.0f%%) -- it got away",
+        late.diamond and "diamond" or "golden", p * 100, late.center * 100))
+    end
+    return
+  end
+  if mgPending and clickAt - lastBiteAt < 1.4 then
+    -- vanilla rod: this click is the game's own Catch() and it lands the placeholder leaf.
+    -- Diamond rod: the game ignores the click and we deliberately do NOT drive it -- the bar
+    -- reveals with no drop at all; the bite's catch window shuts itself.
     mgPending = false
-    defer(250, ctx.log.guard("fishing.mgrestore", function()
-      onGameThread(restoreMgRiver)  -- the leaf is already caught; put the real table back
+    defer(1200, ctx.log.guard("fishing.mgrestore", function()
+      -- linger past the ~1 s catch window so a lightning second click can only ever land
+      -- another leaf, never a real-table catch
+      onGameThread(restoreMgRiver)
     end))
-    if buildBar() then
+    mgWidth = tonumber(cfg(mgDiamond and "fishing_minigame_zone_diamond" or "fishing_minigame_zone"))
+              or (mgDiamond and 0.10 or 0.18)
+    mgCenter = 0.22 + math.random() * 0.56
+    if UI.show({ diamond = mgDiamond, center = mgCenter, width = mgWidth }) then
       mgActive = true
+      mgClickAt, mgLate = nil, nil
+      suppressBites(pawn)
       mgStart = os.clock()
       mgToken = mgToken + 1
-      markerLoop(mgToken)
+      mgJob = ctx.anim.start(makeMarkerJob(mgToken, pawn))
+      if not mgJob then -- animator died since the probe: no marker, no game
+        mgActive = false
+        UI.fold()
+        resumeBites()
+        mgReady = false
+        ctx.log.warn("fishing: animator unavailable -- minigame disabled")
+        return
+      end
       ctx.log.info(mgDiamond and "fishing: something HUGE -- hit the diamond zone!"
                              or "fishing: something big -- hit the golden zone!")
     else
@@ -922,7 +1026,17 @@ local function onClick(pawn)
     local m = ctx.map.fishing
     ctx.uehelp.call(pawn, m.useRodFn)
   end
-  if kind and os.clock() - lastBiteAt < 1.4 then
+  if kind then
+    -- the toggle has settled by now (the game ran first, or we just drove it): the actor's own
+    -- RodInUse? is the truth of whether the line is out
+    local rodActor
+    pcall(function() rodActor = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
+    if ctx.uehelp.isValid(rodActor) then
+      local okU, inUse = ctx.uehelp.get(rodActor, ctx.map.fishing.rodInUseProp)
+      if okU then lineOut = (inUse == true) end
+    end
+  end
+  if kind and clickAt - lastBiteAt < 1.4 then
     -- a catch attempt inside the reel window: whatever it landed may be a factory-fresh rod
     scheduleSweeps(pawn, (function()
       local loc
@@ -961,10 +1075,58 @@ local function seatDiamond(pawn)
   defer(200, armRodHook)
 end
 
+-- Every hand rebuild hands the player a fresh rod actor with its line reeled in. If the line
+-- was in the water when the old actor died (closing the TAB inventory is the big one), throw it
+-- straight back and re-apply the pity ramp -- opening/closing the inventory doesn't cost the
+-- player their cast. RodInUse? on the fresh actor guards the toggle: already-out never re-drives.
+local function recastAfterRebuild(pawn, kind, attempt)
+  if not (ctx.uehelp.isValid(pawn) and lineOut and cfg("fishing_enabled")) then return end
+  if heldRodKind(pawn) ~= kind then return end
+  local m = ctx.map.fishing
+  local rod
+  pcall(function() rod = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
+  if not (ctx.uehelp.isValid(rod) and ctx.uehelp.className(rod) == m.rodHandClass) then
+    if (attempt or 1) < 3 then -- the diamond seat is itself deferred; give it another beat
+      defer(600, ctx.log.guard("fishing.recast", function()
+        onGameThread(function() recastAfterRebuild(pawn, kind, (attempt or 1) + 1) end)
+      end))
+    end
+    return
+  end
+  local okU, inUse = ctx.uehelp.get(rod, m.rodInUseProp)
+  if not okU or inUse == true then return end
+  if os.clock() - lastRecastAt < 1.5 then return end -- rebuilds echo; one throw per lost line
+  lastRecastAt = os.clock()
+  ctx.uehelp.call(pawn, m.useRodFn)
+  local bonus = lastBonus
+  if bonus and bonus > 0 then
+    -- the bobber's water-landing zeroes RandomCatchBonus (rod ubergraph); restore it after
+    defer(2500, ctx.log.guard("fishing.recastpity", function()
+      onGameThread(function()
+        if not (ctx.uehelp.isValid(rod) and lineOut) then return end
+        local okA, again = ctx.uehelp.get(rod, m.rodInUseProp)
+        if okA and again == true then ctx.uehelp.set(rod, m.biteBonusProp, bonus) end
+      end)
+    end))
+  end
+end
+
 -- Deferred body of the UpdateHandMeshesAndModes hook -- the ONE equip chokepoint (hotbar
 -- switches AND every UI close funnel through it).
 local function onHandRebuilt(pawn)
   if not ctx.uehelp.isValid(pawn) then return end
+  if mgActive or mgPending then
+    -- the rebuild tore the rod out from under the skillshot: fold the bar, salvage the real
+    -- pity value we parked, and put the leaf river back
+    mgActive, mgPending = false, false
+    mgClickAt, mgLate = nil, nil
+    mgToken = mgToken + 1
+    if mgJob then ctx.anim.stop(mgJob); mgJob = nil end
+    UI.fold()
+    if mgSavedBonus ~= nil then lastBonus = mgSavedBonus end
+    mgRod, mgSavedBonus = nil, nil
+    restoreMgRiver()
+  end
   local kind = heldRodKind(pawn)
   local was = diamondHeld
   diamondHeld = (kind == "diamond")
@@ -972,6 +1134,13 @@ local function onHandRebuilt(pawn)
     seatDiamond(pawn)
   elseif kind == "vanilla" then
     defer(200, armRodHook) -- the game seats its own rod actor; hook its ChanceForLoot
+  else
+    lineOut = false -- bare hands / another tool: stowing the rod is the deliberate uncast
+  end
+  if kind and lineOut then
+    defer(450, ctx.log.guard("fishing.recast", function()
+      onGameThread(function() recastAfterRebuild(pawn, kind, 1) end)
+    end))
   end
   if diamondHeld ~= was then
     ctx.log.info(diamondHeld and "fishing: x2 luck while the diamond rod is in hand"
@@ -1035,10 +1204,20 @@ local function armClickHooks()
   for _, path in ipairs(paths) do
     if not hooked["click:" .. path] then
       local ok, pre, post = pcall(RegisterHook, path, ctx.log.guard("fishing.click", function(Context)
+        -- hook bodies run synchronously at input dispatch: t IS the physical click time. The
+        -- stamp write is pure Lua (sanctioned in a body); the animator job consumes it on the
+        -- next frame, so an active bar resolves ~1 frame after the click instead of 2 scheduler
+        -- hops later. The deferred onClick below is the fallback for the same click -- it
+        -- self-cancels on the stamped debounce when the animator got there first.
+        local t = os.clock()
         local p
         pcall(function() p = Context:get() end)
         if not p then return end
-        deferOnly(0, function() onGameThread(function() onClick(p) end) end)
+        if mgActive and mgClickAt == nil
+           and t - lastClickAt >= (tonumber(cfg("fishing_click_debounce")) or 0.3) then
+          mgClickAt = t
+        end
+        deferOnly(0, function() onGameThread(function() onClick(p, t) end) end)
       end))
       if ok then hooked["click:" .. path] = { pre, post, path = path } end
     end
@@ -1072,7 +1251,12 @@ local function applyAll()
     splashWave = nil
     structMembers, structMemberTries = nil, 0
     tablesBroken = false
-    mgReady, mgPending, mgActive, mgRiver, mgW = nil, false, false, nil, {}
+    mgReady, mgPending, mgActive, mgRiver = nil, false, false, nil
+    mgClickAt, mgLate = nil, nil
+    if mgJob then ctx.anim.stop(mgJob); mgJob = nil end
+    UI.reset() -- the old world's widgets are dead; the surface mode survives (a build fact)
+    mgRod, mgSavedBonus = nil, nil -- the old world's rod actor died and took its bonus with it
+    lineOut, lastBonus = false, nil
     mgToken = mgToken + 1
     lastAppliedKey = nil
     diamondHeld = false
@@ -1086,7 +1270,7 @@ local function applyAll()
       onGameThread(function()
         armHooks()
         F.applyTables("world")
-        probeBar()
+        probeUI()
       end)
     end))
   end
@@ -1117,6 +1301,7 @@ function F.init(c)
         "fishing.lootWeightField", "fishing.rodHandClass", "fishing.lootTickFn" }) then
     return false
   end
+  UI.init(ctx) -- the renderer degrades on its own (surface ladder); never gates the feature
 
   -- luck-state feeds
   ctx.bus.on("weather.changed", function(ev)
@@ -1153,6 +1338,30 @@ function F.init(c)
     RegisterConsoleCommandHandler("sps_fish_mini", function()
       forceMini = not forceMini
       ctx.log.info("fishing: skillshot on EVERY bite " .. (forceMini and "ON (testing)" or "off"))
+      return true
+    end)
+    RegisterConsoleCommandHandler("sps_anim_test", function()
+      -- 3 s dummy job through the REAL animator path (touches only a Lua table): the cadence
+      -- proof that the per-frame lane actually runs at frame rate on this machine
+      local buf, t0 = {}, os.clock()
+      local tok
+      tok = ctx.anim.start(function(now)
+        buf[#buf + 1] = now
+        if now - t0 > 3.0 then
+          local ds = {}
+          for i = 2, #buf do ds[#ds + 1] = (buf[i] - buf[i - 1]) * 1000 end
+          table.sort(ds)
+          local sum = 0
+          for _, d in ipairs(ds) do sum = sum + d end
+          if #ds > 0 then
+            ctx.log.info(string.format(
+              "fishing: anim cadence n=%d min=%.1f avg=%.1f p95=%.1f max=%.1f ms",
+              #buf, ds[1], sum / #ds, ds[math.max(1, math.floor(#ds * 0.95))], ds[#ds]))
+          end
+          return "stop"
+        end
+      end)
+      ctx.log.info("fishing: anim cadence test " .. (tok and "running (3s)" or "FAILED -- animator down"))
       return true
     end)
   end)

@@ -48,10 +48,11 @@ M.schema = {
   rod      = { "stationClassCandidates", "copperItemRow" },
   fishing  = { "riverClass", "loottableProp", "lootItemField", "lootWeightField",
                "rodHandClass", "rodHandPath", "lootTickFn", "canCatchProp", "swimmerProp",
+               "biteBonusProp", "rodInUseProp",
                "splashWavePath", "useRodFn", "equipModeFn", "rodItemClass", "diamondRow",
                "rodDurability", "diamondDurability", "invArrayProp",
                "handsMeshProp", "animItemEnumProp", "animItemEnumValue",
-               "imagePath", "canvasAddFn" },
+               "imagePath", "canvasAddFn", "userWidgetPath", "canvasPanelPath", "wblPath" },
   wand     = { "castFnExact", "castFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
                "diamondMesh", "meshPaths", "niagaraCandidates", "handMeshFn", "handSlot1P",
                "handSlot3P", "handBlueprintFn", "handItemProp", "handItemMeshProps",
@@ -757,6 +758,12 @@ M.profiles = {
       lootTickFn   = "ChanceForLoot",
       canCatchProp = "PlayerCanCatch",   -- true during the 1 s reel window after a bite
       swimmerProp  = "throw_swimmer",    -- the bobber component; splash/VFX play at its location
+      -- The bite roll's pity ramp: each 1.5 s tick rolls RandomBoolWithWeight(clamp(0.3 + this,
+      -- 0, 1)), +0.1 per miss, and the splash + catch window only exist inside the success
+      -- branch. Parking it at -1000 is the mod's "hold the water still" switch (skillshot).
+      -- The bobber's water-landing resets it to 0 (each cast starts pity fresh).
+      biteBonusProp = "RandomCatchBonus",
+      rodInUseProp  = "RodInUse?",       -- true while the line is thrown; the cast/reel truth
       -- The bite splash the game plays at volume 1.0 (rod ubergraph, PlaySoundAtLocation of
       -- import -227). The mod layers extra gain on top at the same spot -- an asset patch would
       -- also boost the cast-landing and reel-in splashes, which the user did not ask for.
@@ -781,9 +788,14 @@ M.profiles = {
       handsMeshProp    = "SKM_Hands",         -- pawn's first-person hands skeletal mesh comp
       animItemEnumProp = "ENUMItemInHand",    -- on its anim instance; 3 = the fishing pose
       animItemEnumValue = 3,
-      -- Skillshot bar visuals: raw UMG Images constructed onto the player overlay's root canvas.
+      -- Skillshot bar visuals (features/fishing_ui.lua): raw UMG Images layered into a canvas.
+      -- Preferred shell is our OWN viewport widget (bare UserWidget + CanvasPanel root); the
+      -- overlay's root canvas is the fallback surface when that construction fails the probe.
       imagePath   = "/Script/UMG.Image",
       canvasAddFn = "AddChildToCanvas",       -- UCanvasPanel -> the new CanvasPanelSlot
+      userWidgetPath  = "/Script/UMG.UserWidget",
+      canvasPanelPath = "/Script/UMG.CanvasPanel",
+      wblPath = "/Script/UMG.Default__WidgetBlueprintLibrary", -- same object codex/savemenu use
     },
     rod = {
       stationClassCandidates = {

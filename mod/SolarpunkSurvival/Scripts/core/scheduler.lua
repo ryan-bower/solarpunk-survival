@@ -45,6 +45,9 @@ function M.init(log)
     if log then log.warn("scheduler: LoopAsync/ExecuteInGameThread missing -- engine primitives kept") end
     return false
   end
+  -- The captured engine primitive, for the one consumer allowed to bypass the 50ms queue:
+  -- core/animator.lua's per-frame hop. nil when init bailed above (then the global is still real).
+  M.postGameThread = realEIGT
 
   ExecuteWithDelay = function(ms, fn)
     if type(fn) ~= "function" then return end
