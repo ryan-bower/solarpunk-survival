@@ -1323,9 +1323,12 @@ def patch_db_researchables(recipe_ids):
 
     # Diamond Fishing Rod rides the EXISTING "AutoMagnetFisher" card (the magnet-rod research,
     # id 22): append our recipe id to its UnlockingRecepieIDs -- researching the magnet fisher
-    # then also teaches the diamond rod, exactly as the fishing-overhaul spec asks. Saves that
-    # already own the card get the recipe the same way every UnlockingRecepieIDs entry is read:
-    # at recipe-list build time, not at research-complete time -- no save migration needed.
+    # then also teaches the diamond rod, exactly as the fishing-overhaul spec asks. Recipe ids
+    # ARE persisted into Playerdata.UnlockedRecipys once, at research-complete time
+    # (UnlockResearch), but saves that owned the card before this row grew the extra id still
+    # heal themselves: every crafting-bench interact runs
+    # SkygameExtraFunctions.FixMissingCraftingRecipies, which re-derives missing ids from the
+    # (patched) research map -- so no save migration is needed here either way.
     if "DiamondFishingRod" in recipe_ids:
         magnet = next(r for r in rows if r["Name"] == "AutoMagnetFisher")
         mur = field(magnet, "UnlockingRecepieIDs")
