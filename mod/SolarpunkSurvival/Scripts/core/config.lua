@@ -403,9 +403,11 @@ M.defaults = {
   fishing_wheel_y     = 540.0,   -- the needle sweeps around the crosshair)
   fishing_wheel_r     = 90.0,    -- dial radius
   fishing_flash_secs  = 0.22,    -- hit/miss/timeout color flash shown before the bar folds
-  fishing_click_lead  = 0.03,    -- seconds subtracted from the click stamp when judging (display-
-                                 -- latency trim: player-reported far-edge misses at 0.0; raise
-                                 -- if edge clicks still judge late, 0 = judge at raw stamp)
+  fishing_click_lead  = 0.0,     -- seconds subtracted from the click stamp on the DEGRADED
+                                 -- judge paths only (deferred fallback, wheel seal). The bar's
+                                 -- normal judge is the frozen frame itself (screenshot rule) --
+                                 -- a time lead scales with bar speed and outgrew the diamond
+                                 -- zone (dead-center freeze judged a miss at 0.03)
   fishing_ui_own_widget = true,  -- probe a standalone viewport widget for the bar; false = go
                                  -- straight to the overlay-canvas fallback
 

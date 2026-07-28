@@ -875,25 +875,29 @@ local function grantSoon(pawn)
   end))
 end
 
--- BAR resolve: judged at the os.clock() STAMPED IN THE HOOK BODY (clickAt), through the same
--- pure markerPos(clock) the renderer draws -- so the judged position is what was on screen at
--- the physical click, no matter which path (animator fast lane or deferred fallback) got here.
--- fishing_click_lead trims the residual render/display latency by feel. Returns the judged p.
--- viaJob = the marker is already frozen at the last drawn frame and STAYS there (any
--- post-click move back to the judged p reads as jank -- player-rejected twice); the lead
--- guarantees the judge looked behind that freeze, so freeze-inside always means hit.
-local function resolveMinigame(pawn, clickAt, viaJob)
+-- BAR resolve: THE SCREENSHOT RULE -- the judged position IS the frame the marker froze on
+-- (pDrawn, the job's last drawn p). Frozen and judged are the same number by construction, so
+-- "it stopped inside but missed" cannot happen, at any speed, in either direction. Earlier
+-- schemes judged the stamped clock through markerPos and diverged from the freeze by lead or
+-- frame gap -- a time-based lead scales with bar speed and outgrew the diamond zone (a
+-- dead-center freeze judged a miss; player-reported). Prediction, not reaction, times clicks
+-- on a periodic sweep, so no latency trim belongs here. The deferred fallback path (no drawn
+-- frame to trust) still judges the stamped clock minus fishing_click_lead and freezes there.
+local function resolveMinigame(pawn, clickAt, pDrawn)
   if not mgActive then return end
   mgActive = false
   mgClickAt, mgAwaitClick = nil, false
   lastClickAt = clickAt
-  local lead = tonumber(cfg("fishing_click_lead")) or 0
-  local p = F.markerPos(math.max(0, clickAt - lead - mgStart), mgPeriod)
+  local p = pDrawn
+  if p == nil then
+    local lead = tonumber(cfg("fishing_click_lead")) or 0
+    p = F.markerPos(math.max(0, clickAt - lead - mgStart), mgPeriod)
+    UI.setMarker(p) -- degraded path: freeze at the judged spot outright
+  end
   resumeBites()
   reelLine(pawn)
   lineOut = false
   local hit = F.zoneHit(p, mgCenter, mgWidth)
-  if not viaJob then UI.setMarker(p) end -- degraded path: freeze at the judged spot outright
   UI.flash(hit and "hit" or "miss")
   logBarStats()
   foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)
@@ -964,23 +968,24 @@ end
 -- per bar -- the animator contract forbids per-frame allocations. Checks the stamped click
 -- BEFORE the timeout so a buzzer-beater stamp inside the window always counts. On the click
 -- the marker freezes exactly where the last frame drew it -- NO post-click correction (both a
--- teleport and an eased settle back to the judged position were player-rejected as "go back"
--- jank). Fairness holds anyway: the judge looks fishing_click_lead BEHIND the freeze, so a
--- marker frozen inside the far edge is always a hit; only the flash tells the outcome.
+-- teleport and an eased settle were player-rejected as "go back" jank) -- and that same
+-- frozen p is what gets judged (the screenshot rule; see resolveMinigame).
 local function makeMarkerJob(tok, pawn)
+  local lastP = nil
   return function(now)
     if tok ~= mgToken or not mgActive then return "stop" end
     local t = mgClickAt
     if t then
       mgClickAt = nil
-      resolveMinigame(pawn, t, true)
+      resolveMinigame(pawn, t, lastP)
       return "stop"
     end
     if now - mgStart > (tonumber(cfg("fishing_minigame_timeout")) or 6) then
       timeoutMinigame()
       return "stop"
     end
-    if not UI.setMarker(F.markerPos(now - mgStart, mgPeriod)) then
+    lastP = F.markerPos(now - mgStart, mgPeriod)
+    if not UI.setMarker(lastP) then
       -- the world ate the widgets mid-bar: fold what is left and wake the water back up
       mgActive = false
       mgClickAt, mgAwaitClick = nil, false
