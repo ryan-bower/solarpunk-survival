@@ -1203,8 +1203,8 @@ def patch_db_recipes():
     add_recipe("MundaneWand", "BP_MundaneWand_Item_C",
                [("BP_Stick_Item_C", 1), ("BP_Beeswax_Item_C", 1)])
     # the diamond rod: the vanilla FishingRod recipe (5 stick + 2 stone + 4 iron, bench) plus two
-    # cut diamonds; unlocked by the game's existing AutoMagnetFisher research card (see
-    # patch_db_researchables), per the fishing-overhaul spec
+    # cut diamonds; unlocked by the game's existing basic FishingRod research card (see
+    # patch_db_researchables)
     add_recipe("DiamondFishingRod", "BP_DiamondFishingRod_Item_C",
                [("BP_Stick_Item_C", 5), ("BP_Stone_Item_C", 2), ("BP_Iron_Item_C", 4),
                 ("BP_Diamond_Item_C", 2)])
@@ -1321,22 +1321,21 @@ def patch_db_researchables(recipe_ids):
     rows.append(row)
     add_rowkey(d, "TempestCodex", "DB_Researchables")
 
-    # Diamond Fishing Rod rides the EXISTING "AutoMagnetFisher" card (the magnet-rod research,
-    # id 22): append our recipe id to its UnlockingRecepieIDs -- researching the magnet fisher
-    # then also teaches the diamond rod, exactly as the fishing-overhaul spec asks. Recipe ids
-    # ARE persisted into Playerdata.UnlockedRecipys once, at research-complete time
-    # (UnlockResearch), but saves that owned the card before this row grew the extra id still
-    # heal themselves: every crafting-bench interact runs
+    # Diamond Fishing Rod rides the EXISTING basic "FishingRod" card (id 28, LvL_3 tier):
+    # append our recipe id to its UnlockingRecepieIDs -- researching the fishing rod then also
+    # teaches the diamond rod. Recipe ids ARE persisted into Playerdata.UnlockedRecipys once, at
+    # research-complete time (UnlockResearch), but saves that owned the card before this row
+    # grew the extra id still heal themselves: every crafting-bench interact runs
     # SkygameExtraFunctions.FixMissingCraftingRecipies, which re-derives missing ids from the
     # (patched) research map -- so no save migration is needed here either way.
     if "DiamondFishingRod" in recipe_ids:
-        magnet = next(r for r in rows if r["Name"] == "AutoMagnetFisher")
-        mur = field(magnet, "UnlockingRecepieIDs")
-        entry = copy.deepcopy(mur["Value"][0])
-        entry["Name"] = str(len(mur["Value"]))
+        rod = next(r for r in rows if r["Name"] == "FishingRod")
+        rur = field(rod, "UnlockingRecepieIDs")
+        entry = copy.deepcopy(rur["Value"][0])
+        entry["Name"] = str(len(rur["Value"]))
         entry["Value"], entry["IsZero"] = recipe_ids["DiamondFishingRod"], False
-        mur["Value"].append(entry)
-        print(f"research AutoMagnetFisher also unlocks recipe {recipe_ids['DiamondFishingRod']}"
+        rur["Value"].append(entry)
+        print(f"research FishingRod also unlocks recipe {recipe_ids['DiamondFishingRod']}"
               " (DiamondFishingRod)")
     fix_name_count(d)
     jout = os.path.join(OUT, "db_research_patched.json")
