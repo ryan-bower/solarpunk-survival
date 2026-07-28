@@ -878,9 +878,10 @@ end
 -- BAR resolve: judged at the os.clock() STAMPED IN THE HOOK BODY (clickAt), through the same
 -- pure markerPos(clock) the renderer draws -- so the judged position is what was on screen at
 -- the physical click, no matter which path (animator fast lane or deferred fallback) got here.
--- fishing_click_lead trims the residual render/display latency by feel. Returns the judged p;
--- viaJob = the caller animates the marker's settle to p itself (a raw redraw here would read
--- as a backward TELEPORT of exactly the lead -- the animator job eases it instead).
+-- fishing_click_lead trims the residual render/display latency by feel. Returns the judged p.
+-- viaJob = the marker is already frozen at the last drawn frame and STAYS there (any
+-- post-click move back to the judged p reads as jank -- player-rejected twice); the lead
+-- guarantees the judge looked behind that freeze, so freeze-inside always means hit.
 local function resolveMinigame(pawn, clickAt, viaJob)
   if not mgActive then return end
   mgActive = false
@@ -961,44 +962,25 @@ end
 
 -- The per-frame BAR job (core/animator, game thread, ~once per rendered frame). Built ONCE
 -- per bar -- the animator contract forbids per-frame allocations. Checks the stamped click
--- BEFORE the timeout so a buzzer-beater stamp inside the window always counts. After the
--- click the judged position sits fishing_click_lead BEHIND the freshest frame, so the marker
--- SETTLES back to it with a short ease instead of teleporting (the flash already marked the
--- click instant; the settle just parks the marker where the judge looked).
-local SETTLE_S = 0.09
+-- BEFORE the timeout so a buzzer-beater stamp inside the window always counts. On the click
+-- the marker freezes exactly where the last frame drew it -- NO post-click correction (both a
+-- teleport and an eased settle back to the judged position were player-rejected as "go back"
+-- jank). Fairness holds anyway: the judge looks fishing_click_lead BEHIND the freeze, so a
+-- marker frozen inside the far edge is always a hit; only the flash tells the outcome.
 local function makeMarkerJob(tok, pawn)
-  local lastP, settle = nil, nil
   return function(now)
-    if tok ~= mgToken then return "stop" end
-    if settle then
-      local k = (now - settle.t0) / SETTLE_S
-      if k >= 1 then
-        UI.setMarker(settle.to)
-        return "stop"
-      end
-      local e = 1 - (1 - k) * (1 - k)
-      if not UI.setMarker(settle.from + (settle.to - settle.from) * e) then return "stop" end
-      return
-    end
-    if not mgActive then return "stop" end
+    if tok ~= mgToken or not mgActive then return "stop" end
     local t = mgClickAt
     if t then
       mgClickAt = nil
-      local p = resolveMinigame(pawn, t, true)
-      if p == nil then return "stop" end
-      if lastP == nil then
-        UI.setMarker(p)
-        return "stop"
-      end
-      settle = { from = lastP, to = p, t0 = now }
-      return
+      resolveMinigame(pawn, t, true)
+      return "stop"
     end
     if now - mgStart > (tonumber(cfg("fishing_minigame_timeout")) or 6) then
       timeoutMinigame()
       return "stop"
     end
-    lastP = F.markerPos(now - mgStart, mgPeriod)
-    if not UI.setMarker(lastP) then
+    if not UI.setMarker(F.markerPos(now - mgStart, mgPeriod)) then
       -- the world ate the widgets mid-bar: fold what is left and wake the water back up
       mgActive = false
       mgClickAt, mgAwaitClick = nil, false
