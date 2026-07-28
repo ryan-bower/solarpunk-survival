@@ -890,6 +890,7 @@ local function resolveMinigame(pawn, clickAt)
   reelLine(pawn)
   lineOut = false
   local hit = F.zoneHit(p, mgCenter, mgWidth)
+  UI.setMarker(p) -- freeze exactly where the judge looked, not at the last animator frame
   UI.flash(hit and "hit" or "miss")
   logBarStats()
   foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)

@@ -254,7 +254,8 @@ function F.show(opts)
   add(X - 3, Y - 3, W + 6, H + 6, LOOK.frame, 60)
   local track = add(X, Y, W, H, LOOK.track, 61)
   add(X, Y, W, math.floor(H * 0.35), LOOK.sheen, 62)
-  add(X + (c - zw / 2) * W - 5, Y - 2, zw * W + 10, H + 4, LOOK.zoneGlow[tone], 63)
+  -- glow bleeds only VERTICALLY: sideways feathering read as "in the zone" but judged out
+  add(X + (c - zw / 2) * W, Y - 2, zw * W, H + 4, LOOK.zoneGlow[tone], 63)
   local zoneCore = add(X + (c - zw / 2) * W, Y, zw * W, H, LOOK.zoneCore[tone], 64)
   local zoneHot = add(X + (c - 0.2 * zw) * W, Y + math.floor(H * 0.22), 0.4 * zw * W, math.floor(H * 0.56), LOOK.zoneHot[tone], 65)
 
@@ -434,7 +435,8 @@ function F.wheelOK() return not wheelBroken end
 function F.setMarker(p)
   local g, m = geom, mark
   if not (g and m) then return false end
-  local tx = p * (g.w - MARK_W)
+  -- the line's CENTER sits at the judged pixel p*W (it straddles the track ends at 0 and 1)
+  local tx = p * g.w - MARK_W / 2
   if m.group then
     if not valid(m.group) then return false end
     if not slotFallback then

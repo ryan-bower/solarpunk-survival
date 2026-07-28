@@ -750,7 +750,7 @@ do
   eq(config.get("fishing_storm_mult"), 2.0, "fishing: storm doubles the rare band")
   eq(config.get("fishing_twilight_mult"), 1.5, "fishing: dawn/dusk x1.5")
   eq(config.get("fishing_flash_secs"), 0.22, "fishing: resolve flash before the bar folds")
-  eq(config.get("fishing_click_lead"), 0.0, "fishing: click-lead trim defaults off")
+  eq(config.get("fishing_click_lead"), 0.03, "fishing: click-lead trims display latency by default")
   eq(config.get("fishing_ui_own_widget"), true, "fishing: own viewport widget preferred")
   eq(config.get("anim_tick_ms"), 8, "animator: per-frame lane ticks at 8ms")
   eq(config.get("fishing_bar_speed_max_mult"), 2.0, "fishing: bar speed rolls up to 2x (user spec)")

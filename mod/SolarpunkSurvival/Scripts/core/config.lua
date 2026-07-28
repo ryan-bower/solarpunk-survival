@@ -403,8 +403,9 @@ M.defaults = {
   fishing_wheel_y     = 540.0,   -- the needle sweeps around the crosshair)
   fishing_wheel_r     = 90.0,    -- dial radius
   fishing_flash_secs  = 0.22,    -- hit/miss/timeout color flash shown before the bar folds
-  fishing_click_lead  = 0.0,     -- seconds subtracted from the click stamp when judging (display-
-                                 -- latency feel trim; raise to ~0.03 if zone-edge clicks feel late)
+  fishing_click_lead  = 0.03,    -- seconds subtracted from the click stamp when judging (display-
+                                 -- latency trim: player-reported far-edge misses at 0.0; raise
+                                 -- if edge clicks still judge late, 0 = judge at raw stamp)
   fishing_ui_own_widget = true,  -- probe a standalone viewport widget for the bar; false = go
                                  -- straight to the overlay-canvas fallback
 
