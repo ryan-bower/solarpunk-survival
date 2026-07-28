@@ -16,7 +16,7 @@
 --     layers (fishing_splash_gain - 1) more on top at the bobber -- "300% splash when you hook".
 --   * SKILLSHOT: 5% of bites, the catch click reveals one of TWO minigames (50/50 roll): the
 --     sliding-marker BAR (sweep speed rolled 1x..2x per bar) or the spinner WHEEL (constant
---     spin + constant deceleration, so the click->rest offset is fixed at 180 degrees -- a
+--     spin + constant deceleration, so the click->rest offset is fixed (450 deg at defaults) -- a
 --     skill the player learns; only the zone's angle is random). Winning either guarantees a
 --     rare/jackpot roll (diamond rod: smaller zone/arc, jackpot-only). Rendering lives in
 --     features/fishing_ui.lua (our own viewport widget), driven per rendered frame by

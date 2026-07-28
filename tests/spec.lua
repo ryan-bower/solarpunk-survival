@@ -756,7 +756,7 @@ do
   eq(config.get("fishing_bar_speed_max_mult"), 2.0, "fishing: bar speed rolls up to 2x (user spec)")
   eq(config.get("fishing_wheel_share"), 0.5, "fishing: wheel vs bar is a coin flip (user spec)")
   eq(config.get("fishing_wheel_speed"), 360.0, "wheel: constant spin speed")
-  eq(config.get("fishing_wheel_decel"), 360.0, "wheel: constant decel (learnable 180deg offset)")
+  eq(config.get("fishing_wheel_decel"), 144.0, "wheel: constant decel (learnable 450deg offset)")
   eq(config.get("fishing_wheel_zone"), 40.0, "wheel: golden arc width")
   eq(config.get("fishing_wheel_zone_diamond"), 24.0, "wheel: diamond arc is harder")
 

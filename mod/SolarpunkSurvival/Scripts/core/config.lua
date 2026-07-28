@@ -393,9 +393,10 @@ M.defaults = {
                                  -- speed (fishing_minigame_period is the 1x sweep)
   fishing_wheel_share = 0.5,     -- chance a triggered skillshot is the WHEEL instead of the bar
   fishing_wheel_speed = 360.0,   -- wheel spin, deg/s -- constant on purpose (learnable)
-  fishing_wheel_decel = 360.0,   -- wheel slow-down, deg/s^2 -- constant on purpose; with speed
-                                 -- these fix the click->rest offset at speed^2/(2*decel) = 180
-                                 -- degrees, the skill the player learns over time
+  fishing_wheel_decel = 144.0,   -- wheel slow-down, deg/s^2 -- constant on purpose; with speed
+                                 -- these fix the click->rest offset at speed^2/(2*decel) = 450
+                                 -- degrees (a lap and a quarter over 2.5s), the skill the
+                                 -- player learns over time
   fishing_wheel_zone  = 40.0,    -- golden arc width in degrees
   fishing_wheel_zone_diamond = 24.0, -- the diamond rod's harder arc
   fishing_wheel_x     = 960.0,   -- wheel center, canvas px at 1080p design res (screen center:

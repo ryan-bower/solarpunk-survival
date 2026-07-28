@@ -38,12 +38,13 @@ local LOOK = {
   missTrack = { 0.55, 0.08, 0.08, 0.95 },
   missMark = { 1.00, 0.60, 0.60, 1.00 },
   timeoutTrack = { 0.30, 0.30, 0.32, 0.90 },
-  -- the spinner wheel (same tones, dial-shaped)
-  rimTick  = { 0.75, 0.82, 0.90, 0.80 },
+  -- the spinner wheel (dial-shaped; red rim = lose, gold/ice arc = win)
+  rimTick  = { 0.82, 0.16, 0.12, 0.85 },
   hub      = { 1.00, 1.00, 1.00, 0.90 },
 }
 local MARK_W, GLOW_W = 4, 12
-local RIM_STEP, ZONE_STEP, GLOW_STEP = 15, 4, 8 -- wheel tick spacing, degrees
+local RIM_STEP, ZONE_STEP, GLOW_STEP = 15, 2, 4 -- wheel tick spacing, degrees (zone ticks
+-- overlap at radius 90 -- 2deg is ~3px of arc vs a 6px tick -- so the wedge reads solid)
 
 local VIS_SHOWN, VIS_HIDDEN = 4, 1 -- SelfHitTestInvisible / Collapsed (the qol-proven pair)
 
