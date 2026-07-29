@@ -249,8 +249,10 @@ local function dispatch(line)
     else emit("unknown cmd: " .. tostring(c)) end
   end)
   if not ok then emit("ERROR: " .. tostring(err)) end
-  writeFile((ctx.modRoot or "") .. "dump/result.txt", table.concat(out, "\n") .. "\n")
-  ctx.log.info("remote: ran '" .. c .. "' -> dump/result.txt")
+  -- the reader may hold result.txt open at this exact moment (share violation) -- a failed
+  -- write must NEVER leave `busy` latched or the channel is dead for the session
+  pcall(writeFile, (ctx.modRoot or "") .. "dump/result.txt", table.concat(out, "\n") .. "\n")
+  pcall(function() ctx.log.info("remote: ran '" .. c .. "' -> dump/result.txt") end)
   busy = false
 end
 
