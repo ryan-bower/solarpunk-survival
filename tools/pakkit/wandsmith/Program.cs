@@ -1,6 +1,9 @@
 // wandsmith: UAssetAPI round-trip CLI for the Solarpunk wand content pak.
 //   wandsmith tojson   <usmap> <asset.uasset> <out.json>   [VER] [preload1;preload2;...]
 //   wandsmith fromjson <usmap> <in.json> <out.uasset>      [VER] [preload1;preload2;...]
+// For decoding function bodies at exact engine byte offsets (ubergraph trampoline targets),
+// run tools/pakkit/ubergraph.py over the tojson output -- UAssetAPI's own KismetSerializer
+// mis-sizes enough constructs that its StatementIndex drifts hundreds of bytes off.
 // Preloads: assets whose StructExports (BP classes, user structs) are registered into the
 // usmap so externally-parented exports can be (de)serialized -- .usmap files only carry
 // native schemas, blueprint schemas live in the assets themselves.

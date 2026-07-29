@@ -117,6 +117,28 @@ on the consumable hand-item actors (a mis-probe that once pointed the mod at a n
 component). The offline dump recipe: `wandsmith tojson` on `BP_MainPlayerCharacter.uasset`
 (VER_UE5_6) and walk the `ScriptBytecode` of the `FunctionExport`s.
 
+### Decoding event bodies at exact byte offsets (`ubergraph.py`, 2026-07-28)
+
+Most pawn "functions" are 3-statement trampolines: `ExecuteUbergraph_BP_MainPlayerCharacter(N)`
+where `N` is the byte offset of the event's real body inside the ubergraph. To read a body, decode
+the trampoline's `N`, then:
+
+```
+python ubergraph.py <tojson-output.json> <exportIndex|ExportName> [startOffset endOffset]
+```
+
+It computes engine-accurate offsets (memory accounting: pointer=8, FName=12) over the `tojson`
+JSON and renders pseudocode. It self-validates: every `Jump`/`JumpIfNot`/`PushExecutionFlow`
+target must land on a statement start (the header line reports `0 MISALIGNED` — if it doesn't,
+a size rule is wrong; fix `size()` before trusting anything). Do **not** use UAssetAPI's own
+`KismetSerializer` for this — its `StatementIndex` drifts hundreds of bytes by mid-file (only
+66 of the pawn ubergraph's 554 jump targets aligned). This is the recipe that found the
+never-uncast fishing fix: `UpdateHandMeshesAndModes` → trampoline 84340 → switch on
+`CurItemdataInHand.ItemInteractionType` → tool branch 82758 → `ChangeHandTool` → trampoline
+85082 → `UpdateHandToolWithModes` (the hardcoded class switch), whose `SetHandRBlueprintForBoth`
+destroy is gated on `IsValid(CurHandItemFirstPerson)` — nil the property pre-hook and the held
+actor survives the rebuild.
+
 ## The Tempest Codex (survival-guide clone chain, RE 2026-07-21)
 
 The survival guide is fully data-driven, which makes a *second book* a pure cloning job:
