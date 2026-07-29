@@ -103,6 +103,18 @@ M.defaults = {
   wand_hydrate_thirst  = 50.0,    -- thirst restored on a quenched teammate (AddThirst value)
   wand_pour_radius     = 300.0,   -- cm; how close to the aim point a storage/teammate must be
   wand_water_refill_debounce = 5.0, -- seconds between wade-refill triggers (footstep events spam)
+  -- Right-click DRINKING from the blue rod. Rate is thirst/second; the measure cost is derived
+  -- so a full 0->100% drink spends the whole wand (wand_hydration_max scaled by the player's
+  -- live MaxPlayerThirst). Mode "hold" treats the repeating IA_AltHandInteract events as a
+  -- held-button signal (drink while events keep arriving, wand_drink_grace after the last one);
+  -- if the live build turns out to fire the event only once per press, flip to "toggle"
+  -- (`sps set wand_drink_mode toggle`) -- each right click then starts/stops the drink.
+  wand_drink_mode      = "hold",
+  wand_drink_rate      = 25.0,    -- PERCENT of max thirst restored per second while drinking
+                                  -- (live saves have MaxPlayerThirst=1000; percent keeps the
+                                  -- "kinda quick" 4s full drink at any scale)
+  wand_drink_tick      = 0.25,    -- seconds between drink steps (bounded re-chained one-shots)
+  wand_drink_grace     = 0.4,     -- "hold" mode: seconds after the last alt event still counted as held
   wand_from_item       = true,    -- still DETECT the equipped cooked wand on HotbarSlotChanged (for
                                   -- cast/charge state + logging); with wand_rig off this no longer
                                   -- touches the hand -- the game draws it. false = only V-key/ritual.
@@ -296,7 +308,34 @@ M.defaults = {
   ship_chest_adopt_r  = 600.0,   -- cm; a chest within this range of the anchor (or of where the
                                  -- sidecar remembers leaving it) IS the ship chest -- adopted,
                                  -- moved, never duplicated
-  qol_recall_mult     = 3.0,     -- airship recall speed multiplier (dock TimelineSpeed, stock 800)
+  -- Airship boost (features/boost.lua): SPACE at the wheel pushes the control to max and boosts
+  -- to boost_mult x top speed with the game's own boost-wind loop + a raised FOV; SPACE again or
+  -- holding the slow-down control ramps back to normal max over boost_ramp_secs.
+  boost_enabled       = true,
+  boost_mult          = 3.0,     -- top speed while boosting, as a multiple of the ship's MaxSpeed
+  boost_fov_add       = 20.0,    -- degrees added to the ship camera's FOV while boosting
+  boost_ramp_secs     = 3.0,     -- seconds to glide from boost back to normal max speed
+  boost_volume        = 1.0,     -- wind loop volume
+  boost_key           = "SPACE", -- UE4SS Key name; gated on IsControllingAirship? so on-foot
+                                 -- SPACE stays the game's jump untouched
+  qol_recall_mult     = 20.0,    -- airship recall speed multiplier (dock TimelineSpeed, stock 800).
+                                 -- 20 is a deliberate TEST value (user 2026-07-29: "crank it to 20X
+                                 -- so I can really check") -- dial back after the live pass.
+  -- The chest stock ledger (features/chest_index.lua) -- shared by sort_chest + craft_pull.
+  chest_index_sweep   = 20.0,    -- secs between world sweeps for chests (lazy: only when asked)
+  chest_index_ttl     = 20.0,    -- secs a cached per-(chest,item) amount stays trusted
+  -- The blue SORTING CHEST (features/sort_chest.lua + pak clone BP_SortingChest_Placeable):
+  -- powered chest that Quick Stacks its contents into nearby chests already holding the item.
+  sort_chest          = true,
+  sort_chest_range    = 5000.0,  -- cm; chests within 50 m can receive
+  sort_chest_tick     = 1.5,     -- secs between sorting passes (one target chest per pass)
+  sort_chest_power_active = 500.0, -- power draw while it holds items to sort
+  sort_chest_power_idle   = 100.0, -- power draw while empty
+  -- Crafting AUTO-PULL (features/craft_pull.lua): recipes on screen fetch their missing
+  -- materials from chests within range into your inventory, so the counts turn real.
+  craft_pull          = true,
+  craft_pull_range    = 5000.0,  -- cm; chests within 50 m feed the crafting stations
+  craft_pull_scan_ms  = 300,     -- ms between recipe-widget scans while a station is open
   qol_hotbar_raise    = true,    -- pull the hotbar up under the open inventory window
   qol_hotbar_x        = 0.0,     -- hotbar shift while the inventory is open (px at 1080p design res)
   qol_hotbar_y        = -240.0,  -- negative = up. LIVE geometry is unreadable from Lua
@@ -342,6 +381,9 @@ M.defaults = {
                                  -- indistinguishable; if a stock glyph (rod_only fallback) ever
                                  -- reads mirrored, use 270.
   qol_map_names       = true,    -- map player icons: palette tint + name tooltip
+  qol_map_labels      = true,    -- always-visible name labels riding each player's map position
+                                 -- (positioned from live pawn locations, not FriendsMarkers --
+                                 -- immune to the vanishing-icon reconciliation bug)
 
   -- manual save (features/manual_save.lua): a Save button in the pause menu that runs the game's
   -- own autosave on demand. HOST ONLY -- only the host holds the world save (see the module).
@@ -392,7 +434,22 @@ M.defaults = {
   fishing_click_debounce = 0.30, -- seconds between accepted rod clicks (input events multi-fire)
   fishing_bar_speed_max_mult = 2.0, -- each bar's sweep speed rolls uniform 1x..this x the base
                                  -- speed (fishing_minigame_period is the 1x sweep)
-  fishing_wheel_share = 0.5,     -- chance a triggered skillshot is the WHEEL instead of the bar
+  fishing_wheel_share = 0.34,    -- chance a triggered skillshot is the WHEEL (with vsync_share
+                                 -- below this makes wheel/gap-sync/bar a ~even three-way roll)
+  fishing_vsync_share = 0.33,    -- chance it is the GAP-SYNC (two vertical lanes) game
+  -- The gap-sync game's knobs. Sizes hang off the sliding bar's geometry: the lanes are
+  -- fishing_bar_w long and fishing_bar_h wide; the line starts at 1/10 the sliding marker's
+  -- 36 px length and grows 2x its base height per second up to 9x (the gap and its rects are
+  -- 10x the base -- at full growth the fit margin is 1.8 px a side; tense, never impossible).
+  fishing_vsync_line  = 3.6,     -- the line's base height, px
+  fishing_vsync_grow_rate = 2.0, -- growth per second, in units of the base height
+  fishing_vsync_grow_cap  = 9.0, -- growth ceiling, in units of the base height
+  fishing_vsync_period_min = 0.4, -- fastest full ping-pong, seconds (2x the sliding bar's max)
+  fishing_vsync_period_max = 0.8, -- slowest -- the sliding bar's own fastest roll
+  fishing_vsync_x     = 840.0,   -- left lane's left edge, canvas px at 1080p design res
+  fishing_vsync_dx    = 130.0,   -- right lane's offset from the left lane
+  fishing_vsync_y     = 300.0,   -- lanes' top edge (420 tall: 300..720, straddling center)
+  fishing_vsync_slide_secs = 0.25, -- the click->reveal slide animation length
   fishing_wheel_speed = 360.0,   -- wheel spin, deg/s -- constant on purpose (learnable)
   fishing_wheel_decel = 144.0,   -- wheel slow-down, deg/s^2 -- constant on purpose; with speed
                                  -- these fix the click->rest offset at speed^2/(2*decel) = 450

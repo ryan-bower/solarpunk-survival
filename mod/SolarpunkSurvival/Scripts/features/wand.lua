@@ -58,6 +58,7 @@ local drawn = {}    -- playerId -> true while the wand is out
 local rigs  = {}    -- playerId -> { pawn, mode="hand"|"capsule", handle?, tips={}, slots={}, fx?, stashed? }
 local heldItemKind = {}  -- playerId -> item kind while a REAL cooked wand item is in hand
 local castHooked = false
+local altHooked = false
 local hotbarHooked = false
 local rebuildHooked = false
 local drinkHooked = false
@@ -72,6 +73,8 @@ local donorMats = {} -- donor mesh assetName -> its slot-0 material (the wand ti
 -- type again; tiers only judges a player with no real rod item in hand.
 local tiers   = {}  -- playerId -> "hydration" | "electrick" (nil = the rod is still mundane)
 local charges = {}  -- playerId -> water measures left in the blue rod (hydration tier only)
+local drinking = {} -- playerId -> { last = os.clock() of the newest alt event } while a drink runs
+local drinkSeq = {} -- playerId -> chain token; bumping it orphans any in-flight drink chain
 local zaps    = {}  -- playerId -> bolts left in the charged rod (wand_electric_charges per fill)
 local barLevel = {} -- playerId -> durability notches the held HYDRATION item currently displays
 local lastSoak = {} -- playerId -> os.clock() of the last wade-refill (footstep events spam)
@@ -949,6 +952,154 @@ local function hookCast()
   end
 end
 
+--------------------------------------------------------------------- drinking (right click)
+-- Hold right click to DRINK from the blue rod: thirst rises at wand_drink_rate while the rod
+-- drains at the matching cost -- a full 0->100% drink spends the whole wand (cost per thirst
+-- point = wand_hydration_max / MaxPlayerThirst). The IA_AltHandInteract event has no explicit
+-- triggers (offline RE 2026-07-29), so it repeats while the button is held; each fire refreshes
+-- drinking[id].last and a bounded re-chained one-shot does the actual sipping on the game
+-- thread (never a free-running UObject timer). If the live build fires the event only once per
+-- press, `sps set wand_drink_mode toggle` makes each click start/stop instead -- same chain.
+-- Pure sip math (unit-tested): one drink step. Returns sip (thirst points to add) and cost
+-- (measures to spend), holding the invariant that a full 0->maxThirst drink spends exactly
+-- wandMax measures, clamped so neither the thirst bar overfills nor the rod goes negative.
+function F.drinkStep(ch, cur, max, rate, tick, wandMax)
+  -- `rate` is PERCENT of max thirst per second, not raw points: live saves carry
+  -- MaxPlayerThirst = 1000 (probed 2026-07-29), so a flat point rate would drink 10x slower
+  -- than the bar suggests. At max = 100 percent and points coincide.
+  max = (max and max > 0) and max or 100.0
+  local sip = max * ((rate or 25.0) / 100.0) * (tick or 0.25)
+  if cur then sip = math.min(sip, math.max(0, max - cur)) end
+  local cost = sip * ((wandMax or 240.0) / max)
+  if cost > (ch or 0) then
+    if cost <= 0 then return 0, 0 end
+    sip = sip * ((ch or 0) / cost)
+    cost = ch or 0
+  end
+  return sip, cost
+end
+
+local function stopDrink(id, why)
+  if not drinking[id] then return end
+  drinking[id] = nil
+  drinkSeq[id] = (drinkSeq[id] or 0) + 1
+  if why then ctx.log.info("wand: " .. why) end
+end
+
+local function drinkTick(id, seq)
+  if drinkSeq[id] ~= seq or not drinking[id] then return end
+  local grace = tonumber(ctx.config.get("wand_drink_grace")) or 0.4
+  if ctx.config.get("wand_drink_mode") ~= "toggle"
+      and os.clock() - drinking[id].last > grace then
+    stopDrink(id)  -- button released (events stopped arriving)
+    return
+  end
+  -- every UObject fetched FRESH each tick (the chain outlives any single frame)
+  local pawn = localPlayerPawn and localPlayerPawn()
+  if not (pawn and ctx.uehelp.isValid(pawn) and playerIdOf(pawn) == id) then
+    stopDrink(id)
+    return
+  end
+  if wands[id] ~= "hydration" or not drawn[id] then stopDrink(id) return end
+  local ch = charges[id] or 0
+  if ch <= 0 then
+    stopDrink(id, "the blue rod is DRY -- drink (any water), wade a river, or repeat the rite")
+    return
+  end
+  local pc = pawnController(pawn)
+  if not pc then stopDrink(id) return end
+  local m = ctx.map.player
+  local cur, max
+  local okC, c = ctx.uehelp.get(pc, m.curThirstProp)
+  local okM, x = ctx.uehelp.get(pc, m.maxThirstProp)
+  if okC then cur = tonumber(c) end
+  if okM then max = tonumber(x) end
+  max = (max and max > 0) and max or 100.0
+  if cur and cur >= max - 0.5 then
+    stopDrink(id, "thy thirst is quenched -- the rod holds " ..
+      string.format("%.0f", ch) .. " measures yet")
+    return
+  end
+  local tick = math.max(0.1, tonumber(ctx.config.get("wand_drink_tick")) or 0.25)
+  local sip, cost = F.drinkStep(ch, cur, max,
+    tonumber(ctx.config.get("wand_drink_rate")),
+    tick, tonumber(ctx.config.get("wand_hydration_max")))
+  if sip <= 0 then stopDrink(id) return end
+  local first = not drinking[id].sipped
+  drinking[id].sipped = true
+  local okCall, added = ctx.uehelp.call(pc, m.addThirstFn, sip, first)
+  if not (okCall == true and added ~= false) then
+    stopDrink(id, "the vessel refused the drink")
+    return
+  end
+  charges[id] = math.max(0, ch - cost)
+  syncHydroBar(pawn, id)
+  if charges[id] <= 0 then
+    stopDrink(id, "*** the rod is drunk DRY ***")
+    return
+  end
+  pcall(ExecuteWithDelay, math.floor(tick * 1000), ctx.log.guard("wand.drink.tick", function()
+    onGameThread(function() drinkTick(id, seq) end)
+  end))
+end
+
+local function onAltInteract(pawn)
+  if not ctx.uehelp.isValid(pawn) then return end
+  local id = playerIdOf(pawn)
+  if not (id and drawn[id]) then return end
+  if wands[id] ~= "hydration" then return end
+  if not ctx.net.isHost() then return end  -- thirst writes are host-side (same rule as casting)
+  if ctx.config.get("wand_drink_mode") == "toggle" then
+    -- debounced start/stop (the enhanced event can double-fire per press)
+    local d = drinking[id]
+    if d and os.clock() - d.last < 0.3 then return end
+    if d then stopDrink(id) return end
+    drinking[id] = { last = os.clock() }
+  else
+    local d = drinking[id]
+    if d then d.last = os.clock() return end  -- held: refresh, the running chain does the rest
+    drinking[id] = { last = os.clock() }
+  end
+  drinkSeq[id] = (drinkSeq[id] or 0) + 1
+  local seq = drinkSeq[id]
+  ctx.log.info("*** the rod tips back -- drinking (" ..
+    string.format("%.0f", charges[id] or 0) .. " measures held) ***")
+  drinkTick(id, seq)
+end
+
+-- Hook the generic right-click on the pawn (IA_AltHandInteract) -- same recipe as hookCast.
+-- The hook body stamps NOTHING but plain Lua and schedules; all real work hops to the game
+-- thread. Deliberately separate from the cast hooks so neither gates the other.
+local function hookAltCast()
+  if altHooked then return end
+  local prefix = ctx.map.wand.altFnPrefix
+  if not prefix then return end
+  local pawn = ctx.uehelp.findFirst(ctx.map.pawn.class)
+  if not pawn then return end
+  local paths = {}
+  pcall(function()
+    pawn:GetClass():ForEachFunction(function(fn)
+      local n = ""; pcall(function() n = fn:GetFName():ToString() end)
+      if n:sub(1, #prefix) == prefix then
+        local full; pcall(function() full = fn:GetFullName() end)
+        if full then paths[#paths + 1] = (full:gsub("^%S+%s+", "")) end
+      end
+    end)
+  end)
+  local hooked = 0
+  for _, path in ipairs(paths) do
+    local ok = pcall(RegisterHook, path, ctx.log.guard("wand.drinkclick", function(Context)
+      local p; pcall(function() p = Context:get() end)
+      onGameThread(function() onAltInteract(p) end)
+    end))
+    if ok then hooked = hooked + 1 end
+  end
+  if hooked > 0 then
+    altHooked = true
+    ctx.log.info("wand: drink trigger armed (" .. hooked .. " right-click hooks)")
+  end
+end
+
 --------------------------------------------------------------------- hydration refills
 -- Full-path resolution for named pawn-class functions (same recipe as hookCast/hookHotbar).
 local function pawnFnPaths(pawn, names)
@@ -1546,6 +1697,7 @@ function F.init(c)
   -- Arm the cast + hotbar + refill hooks as soon as a pawn exists (now, on pawn spawn, and on
   -- storms as a retry); rebuild the rig after respawns (the old rig died with the old pawn).
   hookCast()
+  hookAltCast()
   hookHotbar()
   hookHandRebuild()
   hookDrink()
@@ -1553,6 +1705,7 @@ function F.init(c)
   ctx.uehelp.onNewInstance("/Script/Engine.Character", ctx.map.pawn.class,
     ctx.log.guard("wand.newpawn", function(p)
       hookCast()
+      hookAltCast()
       hookHotbar()
       hookHandRebuild()
       hookDrink()
@@ -1562,7 +1715,7 @@ function F.init(c)
       end))
     end))
   ctx.bus.on("weather.changed", ctx.log.guard("wand.rearm", function()
-    hookCast(); hookHotbar(); hookHandRebuild(); hookDrink(); hookWaterTouch()
+    hookCast(); hookAltCast(); hookHotbar(); hookHandRebuild(); hookDrink(); hookWaterTouch()
   end))
 
   -- Live rig tuning: any wand_* config change rebuilds drawn rigs immediately (no restart).

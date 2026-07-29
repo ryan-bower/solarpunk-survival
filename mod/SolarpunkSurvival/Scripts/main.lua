@@ -68,6 +68,11 @@ local ok, err = pcall(function()
     "features.foundation",   -- snapped foundations skip the corners-touch-ground rule
     "features.qol",          -- chests x2, backpack, crouch, airship QoL, UI fixes, pings, map names
     "features.ship_chest",   -- after qol: provides services.shipChestOpen that qol's wheel keys use
+    "features.boost",        -- SPACE at the airship wheel = 3X boost (+FOV, wind loop)
+    "features.chest_index",  -- the chest stock ledger service (services.chestIndex)
+    "features.sort_chest",   -- after chest_index: the blue powered chest that files its
+                             -- contents into nearby chests (Quick Stack)
+    "features.craft_pull",   -- after chest_index: open recipes pull their mats from chests
     "features.manual_save",  -- a Save button in the pause menu (runs the game's own autosave)
     "features.trash_slot",   -- the red trash slot in the inventory (replace deletes the previous)
     "ui.imgui_panel",

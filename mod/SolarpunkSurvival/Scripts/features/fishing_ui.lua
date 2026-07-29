@@ -52,12 +52,14 @@ local VIS_SHOWN, VIS_HIDDEN = 4, 1 -- SelfHitTestInvisible / Collapsed (the qol-
 
 local mode = nil    -- nil = unprobed this world; "own" | "group" | "flat" | false = give up
 local shell = {}    -- own: { w, cv }  group: { cv }  flat: {}
-local parts = nil   -- built widgets (bar OR wheel), reverse-fold order; nil = nothing up
-local mark = nil    -- bar: marker refs; wheel: { group = needle canvas, line }
-local refs = nil    -- named flash targets: {kind="bar",...} | {kind="wheel", rim={}, zone={},...}
+local parts = nil   -- built widgets (bar OR wheel OR vsync), reverse-fold order; nil = nothing up
+local mark = nil    -- bar: marker refs; wheel: { group = needle canvas, line }; vsync: below
+local refs = nil    -- named flash targets: {kind="bar",...} | {kind="wheel",...} | {kind="vsync",...}
 local geom = nil    -- bar only, cached at show: { x, y, w, h }
+local geomV = nil   -- vsync only, cached at showVsync: { ty, len, w, span, slideHit, slideMiss }
 local slotFallback = false -- SetRenderTranslation died once -> per-frame slot:SetPosition
 local wheelBroken = false  -- SetRenderTransformAngle failed on raw widgets -> bar-only session
+local vsyncBroken = false  -- SetRenderScale failed on raw widgets -> no gap-sync this session
 local statsBuf = {}
 
 local function cfgn(k, d) return tonumber(ctx.config.get(k)) or d end
@@ -214,7 +216,7 @@ end
 
 -- World changed: every widget ref is dead. The mode survives (it is a build fact, not world state).
 function F.reset()
-  parts, mark, geom = nil, nil, nil
+  parts, mark, geom, geomV = nil, nil, nil, nil
   shell = {}
   statsBuf = {}
 end
@@ -234,7 +236,7 @@ function F.fold()
       pcall(function() parts[i]:RemoveFromParent() end)
     end
   end
-  parts, mark, refs, geom = nil, nil, nil, nil
+  parts, mark, refs, geom, geomV = nil, nil, nil, nil, nil
   shellVisible(false)
 end
 
@@ -433,6 +435,151 @@ end
 
 function F.wheelOK() return not wheelBroken end
 
+--------------------------------------------------------------------- the gap-sync (vsync)
+-- Two vertical lanes, each as long as the sliding bar. LEFT lane: invisible (user spec) -- only
+-- a thin bright line rides it, GROWING while the player dithers. RIGHT lane: a visible track
+-- carrying a rect-gap-rect trio. Each moving side is one nested canvas group (one render
+-- transform per frame); the line's growth is the group's Y render SCALE, so drawn height =
+-- lineH * scale exactly -- the very number the judge uses (the screenshot rule, geometrically).
+-- SetRenderScale's first-ever call on our raw widgets sits under a poison latch like the
+-- wheel's rotation: a failure folds this one game and latches vsyncBroken (bar clothes after).
+-- opts: { diamond, lineH, rectH, gapH, len }
+function F.showVsync(opts)
+  F.fold()
+  if vsyncBroken then return false end
+  local canvas, outer = F.ensureShell()
+  if not canvas then return false end
+  if mode == "flat" then return false end -- needs nested groups: bar-only on the flat surface
+  local m = ctx.map.fishing
+  local W = cfgn("fishing_bar_h", 26)          -- lane width = the sliding bar's thickness
+  local LEN = opts.len or cfgn("fishing_bar_w", 420)
+  local LX = cfgn("fishing_vsync_x", 840)      -- left lane's left edge
+  local RX = LX + cfgn("fishing_vsync_dx", 130)
+  local TY = cfgn("fishing_vsync_y", 300)
+  local lineH = opts.lineH or 3.6
+  local rectH = opts.rectH or lineH * 10
+  local gapH = opts.gapH or rectH
+  local span = rectH * 2 + gapH
+  local tone = opts.diamond and "ice" or "gold"
+  local built, ok = {}, true
+  local function add(x, y, w, h, color, z)
+    local img = makeImage(canvas, outer, x, y, w, h, color, z)
+    if img then built[#built + 1] = img else ok = false end
+    return img
+  end
+
+  -- right lane: framed visible track (the left lane is deliberately naked)
+  add(RX - 3, TY - 3, W + 6, LEN + 6, LOOK.frame, 60)
+  local track = add(RX, TY, W, LEN, LOOK.track, 61)
+
+  local cvCls = StaticFindObject and StaticFindObject(m.canvasPanelPath)
+  if not (ok and valid(cvCls)) then F.fold() return false end
+
+  -- the right trio group: rect / glowing gap / rect, one translation per frame
+  local rgroup, rect1, rect2, gapGlow
+  local okR = pcall(function()
+    rgroup = StaticConstructObject(cvCls, outer)
+    local gs = canvas[m.canvasAddFn](canvas, rgroup)
+    gs:SetPosition({ X = RX, Y = TY })
+    gs:SetSize({ X = W, Y = span })
+    gs:SetZOrder(64)
+    rgroup:SetVisibility(VIS_SHOWN)
+  end)
+  if okR and valid(rgroup) then
+    built[#built + 1] = rgroup
+    rect1 = makeImage(rgroup, outer, 0, 0, W, rectH, LOOK.zoneCore[tone], 1)
+    gapGlow = makeImage(rgroup, outer, 0, rectH, W, gapH, LOOK.zoneGlow[tone], 1)
+    rect2 = makeImage(rgroup, outer, 0, rectH + gapH, W, rectH, LOOK.zoneCore[tone], 1)
+    if rect1 and gapGlow and rect2 then
+      built[#built + 1] = rect1
+      built[#built + 1] = gapGlow
+      built[#built + 1] = rect2
+    else ok = false end
+  else ok = false end
+
+  -- the left line group: glow + line; the group's Y scale IS the growth
+  local vgroup, vline
+  if ok then
+    local okL = pcall(function()
+      vgroup = StaticConstructObject(cvCls, outer)
+      local gs = canvas[m.canvasAddFn](canvas, vgroup)
+      gs:SetPosition({ X = LX - 4, Y = TY - lineH / 2 })
+      gs:SetSize({ X = W + 8, Y = lineH })
+      gs:SetZOrder(66)
+      vgroup:SetVisibility(VIS_SHOWN)
+    end)
+    if okL and valid(vgroup) then
+      built[#built + 1] = vgroup
+      local glow = makeImage(vgroup, outer, 0, -2, W + 8, lineH + 4, LOOK.markGlow, 1)
+      vline = makeImage(vgroup, outer, 4, 0, W, lineH, LOOK.markLine, 2)
+      if glow and vline then
+        built[#built + 1] = glow
+        built[#built + 1] = vline
+      else ok = false end
+    else ok = false end
+  end
+
+  -- the poison-latched first scale call: a build that can't render-scale raw widgets loses
+  -- this game cleanly and never rolls it again
+  if ok then
+    local okS = select(1, ctx.log.risky("fishingui.scale", function()
+      vgroup:SetRenderScale({ X = 1.0, Y = 1.0 })
+    end))
+    if not okS then
+      vsyncBroken = true
+      ctx.log.warn("fishing_ui: widget scaling unavailable -- gap-sync skillshot disabled")
+      ok = false
+    end
+  end
+
+  parts = built
+  if not ok then
+    F.fold()
+    return false
+  end
+  mark = { vgroup = vgroup, vline = vline, rgroup = rgroup, lastLY = 0 }
+  refs = { kind = "vsync", track = track, rects = { rect1, rect2 }, gap = gapGlow, line = vline }
+  geomV = { ty = TY, len = LEN, w = W, span = span,
+            slideHit = RX - LX, slideMiss = RX - LX - W }
+  statsBuf = {}
+  shellVisible(true)
+  return true
+end
+
+function F.vsyncOK() return not vsyncBroken end
+
+-- PER-FRAME (animator hop): both lane translations + the line's growth scale. False on death.
+function F.setVsync(pL, pR, scale)
+  local g, mk = geomV, mark
+  if not (g and mk and mk.vgroup) then return false end
+  if not (valid(mk.vgroup) and valid(mk.rgroup)) then return false end
+  local ly = pL * g.len
+  local okD = pcall(function()
+    mk.vgroup:SetRenderTranslation({ X = 0, Y = ly })
+    mk.vgroup:SetRenderScale({ X = 1.0, Y = scale })
+    mk.rgroup:SetRenderTranslation({ X = 0, Y = pR * (g.len - g.span) })
+  end)
+  if okD then
+    mk.lastLY = ly
+    statsBuf[#statsBuf + 1] = os.clock()
+  end
+  return okD
+end
+
+-- PER-FRAME during the reveal: slide the frozen line rightward. A hit runs the full distance
+-- (flush into the gap); a miss stops with the line's nose against the trio's left face.
+function F.vsyncSlide(frac, hit)
+  local g, mk = geomV, mark
+  if not (g and mk and mk.vgroup) then return false end
+  if not valid(mk.vgroup) then return false end
+  local fx = (frac or 0) * (hit and g.slideHit or g.slideMiss)
+  local okD = pcall(function()
+    mk.vgroup:SetRenderTranslation({ X = fx, Y = mk.lastLY })
+  end)
+  if okD then statsBuf[#statsBuf + 1] = os.clock() end
+  return okD
+end
+
 -- PER-FRAME (animator hop). Returns false when the bar's widgets died under us.
 function F.setMarker(p)
   local g, m = geom, mark
@@ -484,6 +631,21 @@ function F.flash(kind)
       tint(r.line, LOOK.missMark)
     elseif kind == "timeout" then
       tint(r.track, LOOK.timeoutTrack)
+    end
+  elseif r.kind == "vsync" then
+    -- the RIGHT bar carries the verdict (user spec: it flashes green on a slot-in, red on a slam)
+    if kind == "hit" then
+      tint(r.track, LOOK.hitTrack)
+      tintAll(r.rects, LOOK.hitZone)
+      tint(r.gap, LOOK.hitZone)
+      tint(r.line, LOOK.hitMark)
+    elseif kind == "miss" then
+      tint(r.track, LOOK.missTrack)
+      tintAll(r.rects, LOOK.missTrack)
+      tint(r.line, LOOK.missMark)
+    elseif kind == "timeout" then
+      tint(r.track, LOOK.timeoutTrack)
+      tintAll(r.rects, LOOK.timeoutTrack)
     end
   else -- wheel
     if kind == "hit" then

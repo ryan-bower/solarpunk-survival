@@ -265,6 +265,52 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   the ship rather than lengthwise (`ship_chest_yaw`, 90; set 270 if the lid should open the other
   way). `ship_chest`, `ship_chest_back/right/up`, `ship_chest_adopt_r`.
 
+### Added (2026-07-29)
+- **Airship boost** (`features/boost.lua`): SPACE at the wheel pushes the throttle to max and
+  boosts to **3× top speed**, with the ship camera's FOV raised by 20° and the game's own
+  airship wind loop (`S_Wind_AirshipSpeed`) plus speed VFX. Unlimited duration; SPACE again or
+  holding the slow-down control glides back to normal max over 3 s, then the ship decelerates
+  normally. Rides the ship's own `BoostAddition` velocity channel (bytecode RE: velocity =
+  `(CurrentSpeed + BoostAddition) × 50`, and only the dock-autopilot timeline ever writes it) —
+  the motor pitch reacts natively. On-foot SPACE is untouched (the bind gates on
+  `IsControllingAirship?`); the ship gently lifts while SPACE is held (the game's own lift bind)
+  — accepted side effect.
+- **Hydration wand drinks** (`features/wand.lua`): HOLD right-click with the blue rod to drink
+  from it — thirst refills at 25 %/s while the rod's water drains at the matching pro-rata cost,
+  so a full 0→100 % drink spends exactly the whole wand. Rate is percent-of-max (live saves
+  carry `MaxPlayerThirst = 1000`). `wand_drink_mode = toggle` if a build fires the alt event
+  once per press.
+- **Player names on the co-op map** (`features/qol.lua`): always-visible name labels floated
+  above each player's position, placed via the map's own `WorldToMapCoordinates` from live pawn
+  locations every 150 ms while the map is open — sidestepping the game's flaky `FriendsMarkers`
+  reconciliation (the "sometimes missing players" bug) entirely. Capability-latched: a build
+  that refuses TextBlock construction logs one warning and drops only this feature.
+- **The blue Sorting Chest** (content pak + `features/sort_chest.lua` + `features/chest_index.lua`):
+  a craftable, powered, cobalt-blue chest (bench recipe: 4 logs, 4 iron, 2 cobalt) that files
+  its contents into other chests within 50 m. Every pass it Quick Stacks into the next chest on
+  the rotation — the game's own `Quick Stack` pulls exactly the item classes that chest already
+  holds, which is the sorting rule; items no neighbor wants simply stay put. Draws **500 power
+  while loaded, 100 idle** (cable hookup like any powered machine) and pauses without power.
+  Cooked as a de-furnaced `BP_EnergyFurnace_Placeable` clone: crate mesh in the cobalt ore's
+  blue, every smelt/fuel/timer function stubbed to bytecode no-ops, interact stub hooked from
+  Lua to open the plain chest UI.
+- **Crafting auto-pull** (`features/craft_pull.lua`): while a crafting bench, energy bench or
+  kitchen is open, any recipe on screen fetches its missing materials from chests within 50 m
+  straight into your inventory (chest `Remove Item Amt` → player grant, nearest chest first,
+  capacity pre-flight) — so the "1/5" you'd go ferrying for becomes a real, craftable 5/5.
+  Shortfall counts are re-scanned every 300 ms via the recipe widgets' own `NeedAmt`/`HaveAmt`.
+  Both chest features share `features/chest_index.lua`, a demand-driven memoized stock ledger
+  (per-chest per-item counts with TTL, patched immediately by the mod's own moves; zero timers).
+- **A third fishing minigame — gap-sync** (`features/fishing.lua` + `fishing_ui.lua`): two
+  vertical lanes; an invisible left lane carries a thin line that oscillates at 1–2× the
+  sliding bar's top speed and **grows** at 2× its base height per second (cap 9×); the right
+  lane's rect-gap-rect trio oscillates at its own speed. Click freezes both and slides the line
+  right: fits the gap → flush slot-in, green flash, the normal loot roll; miss → it stops
+  against the lane's face, red flash, nothing. Wheel / gap-sync / sliding bar now roll ~evenly
+  (0.34/0.33/0.33); rain/storm skillshot-chance boosts unchanged.
+- **Airship recall at 20×** (`qol_recall_mult = 20`): a deliberate TEST value for the existing
+  dock-recall speed-up so the effect is unmissable in play — dial to taste afterwards.
+
 ### Known limitations
 - Mapped and tested against game build `24038177` only; a game update needs a re-map (and a pak
   rebuild) per `docs/RELEASE-CHECKLIST.md`.

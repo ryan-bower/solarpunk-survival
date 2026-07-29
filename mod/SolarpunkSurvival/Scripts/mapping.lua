@@ -25,6 +25,15 @@ M.schema = {
   craft    = { "repairItemId", "addRecipeFn" },
   buildmenu = { "registerFn" },
   energy   = { "linkFn" },
+  boost    = { "shipClass", "maxSpeedProp", "targetSpeedProp", "currentSpeedProp", "throttleProp",
+               "boostAdditionProp", "cameraProp", "fovProp", "speedFxProp", "windSound",
+               "windSoundPath" },
+  stock    = { "chestClasses", "invProp", "invSysClass", "amtFn", "freeFn", "totalFn",
+               "freeSlotsFn", "quickStackFn", "removeAmtFn", "addPlayerFn", "addFn" },
+  sortchest = { "class", "deviceGetFn", "hasPowerFn", "enoughProp", "consumptionProp",
+                "interactFnHint", "placeablePath" },
+  craftpull = { "openFns", "partSlotClass", "needProp", "haveProp", "itemDataProp",
+                "itemActorField", "stationWidgets" },
   smoke    = { "shipDamageVfxFn" },
   net      = { "hasAuthorityFn", "playerStateClass" },
   save     = { "saveFn", "loadFn", "managerClass", "managerProp", "gameStateClass",
@@ -53,7 +62,7 @@ M.schema = {
                "rodDurability", "diamondDurability", "invArrayProp",
                "handsMeshProp", "animItemEnumProp", "animItemEnumValue",
                "imagePath", "canvasAddFn", "userWidgetPath", "canvasPanelPath", "wblPath" },
-  wand     = { "castFnExact", "castFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
+  wand     = { "castFnExact", "castFnPrefix", "altFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
                "diamondMesh", "meshPaths", "niagaraCandidates", "handMeshFn", "handSlot1P",
                "handSlot3P", "handBlueprintFn", "handItemProp", "handItemMeshProps",
                "handItemDonor", "handItemDonorPath", "clearHandFn", "materialDir", "stashFn",
@@ -75,7 +84,7 @@ M.schema = {
                "shipChestCloseFn", "openChestUiFn", "toggleInvFn", "controllingShipFn",
                "invWidgetProp", "invRowCountFn", "dockClass", "dockSpeedProp", "pingClass", "pingMeshProps",
                "overlayClass", "dropsProp", "mapCompClass", "mapOpenFn", "friendsMarkersProp",
-               "mapIconImgProp", "mapSelfIconProp", "palette",
+               "mapIconImgProp", "mapSelfIconProp", "mapCanvasProp", "mapWorldToMapFn", "palette",
                "pingIconSlot", "pingBeamSlot", "pingHideMat", "pingHideMatDir", "setMaterialFn",
                "chestClassPath", "shipUnpossessFn",
                "slotGridLibPath", "slotGridFn", "chestGridRows", "chestGridCols",
@@ -344,6 +353,11 @@ M.profiles = {
       -- is right click -- the prefix below deliberately does not match it.
       castFnExact  = "PressedHandInteraction",
       castFnPrefix = "InpActEvt_IA_HandInteract",
+      -- Right click, for DRINKING from the blue rod. One handler on the pawn class (offline RE
+      -- 2026-07-29: InpActEvt_IA_AltHandInteract_K2Node_EnhancedInputActionEvent_1; the IA has
+      -- no explicit triggers, so the event repeats while held -- Conv_InputActionValueToBool in
+      -- the body is the press/release split the BP itself uses).
+      altFnPrefix  = "InpActEvt_IA_AltHandInteract",
       -- Mesh ASSETS by name (loaded-StaticMesh scan; CDO template reads are fatal):
       stickMesh   = "SM_Stick",       -- the wand handle
       cobaltMesh  = "SM_Cobalt",      -- blue material donor (Electric/uncharged tint)
@@ -656,6 +670,12 @@ M.profiles = {
       friendsMarkersProp = "FriendsMarkers",      -- TMap<FString, WC_MapPlayerIcon> -- name -> icon
       mapIconImgProp     = "IMG_Player",          -- the icon widget's single Image
       mapSelfIconProp    = "WC_MainPlayer",       -- the local player's own icon on WC_Map
+      -- Name labels (offline RE 2026-07-29, WC_Map bytecode): player icons are CNV_Main children
+      -- anchored at centre (0.5,0.5), ZOrder 100, moved by SetRenderTranslation; the widget's own
+      -- WorldToMapCoordinates(WorldLoc) -> FVector2D is the exact transform those translations
+      -- use, so labels positioned through it land in the same space as the icons.
+      mapCanvasProp   = "CNV_Main",
+      mapWorldToMapFn = "WorldToMapCoordinates",
       -- The marker's own materials, from the SM_Ping mesh (offline RE, scratchpad re_ping/ and
       -- re_ping2/SM_Ping.json): ONE flat plane, 167 wide x 1103 tall, origin at the base, and
       -- BP_Ping overrides neither slot (OverrideMaterials is [null, null]). Neither stock
@@ -700,6 +720,88 @@ M.profiles = {
         { r = 1.0,  g = 0.15, b = 0.1,  mat = "M_Preview_Red"  },  -- tomato red
         { r = 0.2,  g = 1.0,  b = 0.55, mat = "M_Energy_On"    },  -- powered green
       },
+    },
+    -- Airship boost (features/boost.lua; offline RE 2026-07-29 of BP_Airship bytecode,
+    -- out/bp_airship.json). The load-bearing findings:
+    --   * Applied velocity = (CurrentSpeed + BoostAddition) * 50, clamped [0, 25000] uu/s.
+    --     BoostAddition is a plain double the game only writes from Timeline_Boost while that
+    --     timeline plays (native boost = dock-autopilot only: LockedOntoTarget AND
+    --     LockedTargetDock.Powered). Free flight never touches it -- so the mod can own it.
+    --     BoostAddition = (mult-1) * MaxSpeed makes the top speed exactly mult * MaxSpeed.
+    --   * TargetSpeed integrates cap*dt*Throttle, clamped [0, MaxSpeed] -- writing it to
+    --     MaxSpeed with Throttle 1.0 is "control pushed to max".
+    --   * The ship's own camera is the `Camera` CameraComponent (base FOV 105; the native boost
+    --     timeline runs it 105 -> 115). While driving, the possessed pawn IS the ship -- the
+    --     character's SetMainCameraFOV path does not apply.
+    --   * IMC_AirshipControls: IA_Boost = LeftMouseButton, SPACE = IA_Lift(up) -- so the user's
+    --     SPACE binding rides RegisterKeyBind gated on IsControllingAirship? (the pawn-jump trap
+    --     of 91e4d5f only exists on foot; the ship also gently lifts while SPACE is held --
+    --     accepted, it is the game's own lift binding).
+    boost = {
+      shipClass         = "BP_Airship_C",
+      maxSpeedProp      = "MaxSpeed",       -- double; stock 50 at engine tier 0, save-persisted
+      targetSpeedProp   = "TargetSpeed",    -- double; the throttle-integrated control value
+      currentSpeedProp  = "CurrentSpeed",   -- double
+      throttleProp      = "Throttle",       -- double; input axis (W/S), negative = slowing down
+      boostAdditionProp = "BoostAddition",  -- double; OUR channel (see above)
+      cameraProp        = "Camera",         -- the driving CameraComponent
+      fovProp           = "FieldOfView",    -- double on the camera
+      speedFxProp       = "NS_Airship_Speed", -- Niagara wind-lines component (best-effort dressing)
+      -- the game's own boost-wind loop, referenced by BP_Airship right beside the boost symbols
+      windSound     = "S_Wind_AirshipSpeed",
+      windSoundPath = "/Game/Audio/SFX/Airship/S_Wind_AirshipSpeed.S_Wind_AirshipSpeed",
+    },
+    -- The chest stock ledger (features/chest_index.lua) + its two consumers. Offline RE
+    -- 2026-07-29, BC_InventorySystem bytecode (tools/pakkit/out/BC_InventorySystem.json).
+    -- Slot-struct probes reuse wand.slotItemField/slotQtyField/slotSavedataField (same
+    -- S_InventorySlotSlim). Every fn here passes structs/objects/scalars only -- no FNames
+    -- (the crash-ledger rule).
+    stock = {
+      chestClasses = { "BP_Chest_Buildable_C", "BP_SortingChest_Placeable_C" },
+      invProp      = "InventorySystem",
+      invSysClass  = "BC_InventorySystem_C",
+      amtFn        = "GetAmtOfItem",               -- (slot struct in, out Amount) -- trash-proven
+      freeFn       = "GetFreeStackingSpaceForItem",-- (slot struct in, out FreeStackingSpace)
+      totalFn      = "GetTotalItemAmt",            -- (out TotalItems) -- trash-proven
+      freeSlotsFn  = "GetNrOfFreeSlots",           -- (out FreeSlots)
+      -- dstInv:QuickStack(srcInv): pulls FROM src INTO dst ONLY item classes dst already
+      -- holds; clears/decrements src slots, saves + rep-marks both sides (bytecode-verified).
+      -- The auto-sort primitive verbatim. Second real param is an out array (fresh {}).
+      quickStackFn = "Quick Stack",
+      removeAmtFn  = "Remove Item Amt",            -- (slot struct, Save bool, out Success)
+      addPlayerFn  = "AddItemForPlayer",           -- (slot struct, Save, Plop, outs) -- plop included
+      addFn        = "AddItem",                    -- (slot struct, Save, outs) -- the restore path
+    },
+    -- The blue auto-sort chest: OUR pak clone of BP_EnergyFurnace_Placeable (the donor already
+    -- carries BC_InventorySystem + SNAP_CableConnector + BPC_Device_EnergySystemComponent +
+    -- GetEnergyComponent -- the whole powered-buildable wiring).
+    sortchest = {
+      class           = "BP_SortingChest_Placeable_C",
+      deviceGetFn     = "GetEnergyComponent",   -- BPI_EnergyBasic impl (single OUT component)
+      hasPowerFn      = "HasPower?",            -- device fn, single OUT bool (= EnoughPower)
+      enoughProp      = "EnoughPower",          -- replicated bool on the device component
+      consumptionProp = "CurPowerConsumption",  -- double; NEGATIVE = draw (furnace: -250 smelting)
+      -- The clone's OnInteractedWith trampoline is STUBBED at cook time (build_wand_pak
+      -- SORTCHEST_STUBS): natively E does nothing, but the delegate still broadcasts through
+      -- ProcessEvent, so hooking the stub works (the codex-proven pattern). sort_chest.lua
+      -- opens the plain chest UI itself from that hook.
+      interactFnHint  = "OnInteractedWith",     -- substring match over the clone class's fns
+      placeablePath   = "/Game/Code/Building_Placing/Placeables/BP_SortingChest_Placeable"
+                        .. ".BP_SortingChest_Placeable_C",
+    },
+    -- Auto-pull for the three crafting stations (features/craft_pull.lua). Widget RE 2026-07-29:
+    -- SW_MissingCraftingPartsSlot carries plain ints NeedAmt/HaveAmt + ItemData (S_Item struct;
+    -- its ItemActor member is the item UClass -- the same GUID field the wand reads off
+    -- CurItemdataInHand, single-struct-prop reads are the PROVEN-safe direction).
+    craftpull = {
+      openFns = { "UI_OpenCraftingTable", "UI_OpenAdvancedCraftingTable", "UI_OpenCooking" },
+      partSlotClass  = "SW_MissingCraftingPartsSlot_C",
+      needProp       = "NeedAmt",
+      haveProp       = "HaveAmt",
+      itemDataProp   = "ItemData",
+      itemActorField = "ItemActor_16_A80D2B2B49E59CC810744B999AEA8F92",
+      stationWidgets = { "W_WorkbenchCrafting_C", "W_AdvancedWorkbenchCrafting_C",
+                         "W_CookingCrafting_C" },
     },
     -- The trash-can slot (features/trash_slot.lua; offline RE 2026-07-28 of W_PlayerInventory,
     -- W_InventorySlot, W_Inventory_MASTER, W_ClickAndDrop, W_ChestInventory, BC_InventorySystem,

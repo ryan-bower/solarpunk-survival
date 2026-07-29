@@ -757,7 +757,9 @@ do
   eq(config.get("fishing_ui_own_widget"), true, "fishing: own viewport widget preferred")
   eq(config.get("anim_tick_ms"), 8, "animator: per-frame lane ticks at 8ms")
   eq(config.get("fishing_bar_speed_max_mult"), 2.0, "fishing: bar speed rolls up to 2x (user spec)")
-  eq(config.get("fishing_wheel_share"), 0.5, "fishing: wheel vs bar is a coin flip (user spec)")
+  -- three-way roll (user spec 2026-07-29: the gap-sync game joins as a ~even third option)
+  eq(config.get("fishing_wheel_share"), 0.34, "fishing: wheel share of the three-way roll")
+  eq(config.get("fishing_vsync_share"), 0.33, "fishing: gap-sync share of the three-way roll")
   eq(config.get("fishing_wheel_speed"), 360.0, "wheel: constant spin speed")
   eq(config.get("fishing_wheel_decel"), 144.0, "wheel: constant decel (learnable 450deg offset)")
   eq(config.get("fishing_wheel_zone"), 40.0, "wheel: golden arc width")
@@ -867,6 +869,26 @@ do
   ok(fishing.angleHit(10, 0, 40), "wheel: and from the right")
   ok(not fishing.angleHit(21, 0, 40), "wheel: just outside the wrapped zone misses")
   ok(fishing.angleHit(180, 180, 24), "wheel: plain mid-dial zone hits")
+
+  -- gap-sync (vsync) math: growth, periods, centers, and the fit verdict
+  eq(fishing.vsyncScale(0, 2, 9), 1, "vsync: line starts at 1x")
+  eq(fishing.vsyncScale(1, 2, 9), 3, "vsync: +2x base per second")
+  eq(fishing.vsyncScale(4, 2, 9), 9, "vsync: growth caps at 9x")
+  eq(fishing.vsyncScale(99, 2, 9), 9, "vsync: cap holds forever")
+  eq(fishing.vsyncPeriod(0.4, 0.8, 0), 0.8, "vsync: r=0 rolls the slowest period")
+  eq(fishing.vsyncPeriod(0.4, 0.8, 1), 0.4, "vsync: r=1 rolls the fastest")
+  eq(fishing.oscPos(0, 0.8, 0), 0, "vsync: phase 0 starts at the top")
+  eq(fishing.oscPos(0, 0.8, 0.5), 1, "vsync: phase 0.5 starts at the far end")
+  eq(fishing.vsyncLineCenter(0.5, 420), 210, "vsync: line centre in lane px")
+  -- trio: span 108 (36 rect / 36 gap / 36 rect); gap centre inset 54 from the trio's top
+  eq(fishing.vsyncGapCenter(0, 420, 108, 36, 36), 54, "vsync: gap centre at the top stop")
+  eq(fishing.vsyncGapCenter(1, 420, 108, 36, 36), 366, "vsync: gap centre at the bottom stop")
+  ok(fishing.vsyncFits(210, 1, 3.6, 210, 36), "vsync: dead-centre young line fits")
+  ok(fishing.vsyncFits(210, 1, 3.6, 226, 36), "vsync: young line fits at the gap edge")
+  ok(not fishing.vsyncFits(210, 1, 3.6, 227, 36), "vsync: just past the edge misses")
+  ok(fishing.vsyncFits(210, 9, 3.6, 211.8, 36), "vsync: full-grown line still fits centred")
+  ok(not fishing.vsyncFits(210, 9, 3.6, 212, 36), "vsync: full-grown margin is razor thin")
+  ok(not fishing.vsyncFits(210, 11, 3.6, 210, 36), "vsync: a line taller than the gap never fits")
 
   -- minigame arm chance: the diamond override applies only in-hand and only when >= 0
   eq(fishing.miniChance(false, 0.05, -1), 0.05, "fishing: base chance without the diamond rod")
@@ -999,6 +1021,109 @@ do
   ok((gate.check(m, { "trash.invUiProp", "trash.chestSyncFn", "trash.sysContainsFn" })),
      "trash: gate sees the trash keys")
   eq(config.get("trash_slot"), true, "trash: enabled by default")
+end
+
+------------------------------------------------------------------ airship boost (pure math)
+do
+  local B = require("features.boost")
+  eq(B.boostAddFor(50.0, 3.0), 100.0, "boost: 3X of stock 50 adds 100")
+  eq(B.boostAddFor(80.0, 3.0), 160.0, "boost: scales with upgraded MaxSpeed")
+  eq(B.boostAddFor(50.0, 1.0), 0.0, "boost: 1X adds nothing")
+  eq(B.boostAddFor(50.0, 0.5), 0.0, "boost: sub-1 mult clamps to no boost")
+  eq(B.rampK(0, 3), 1, "boost: glide starts at full")
+  eq(B.rampK(1.5, 3), 0.5, "boost: glide midpoint")
+  eq(B.rampK(3, 3), 0, "boost: glide lands at zero")
+  eq(B.rampK(99, 3), 0, "boost: glide never undershoots")
+  eq(B.rampK(1, 0), 0, "boost: zero-length glide is instant")
+end
+
+------------------------------------------------------------------ wand drinking (pure math)
+do
+  local W = require("features.wand")
+  -- the invariant: a full 0->100 drink spends exactly the whole wand
+  local ch, cur, spent = 240.0, 0.0, 0.0
+  local steps = 0
+  while cur < 100 and steps < 1000 do
+    local sip, cost = W.drinkStep(ch, cur, 100.0, 25.0, 0.25, 240.0)
+    if sip <= 0 then break end
+    cur, ch, spent = cur + sip, ch - cost, spent + cost
+    steps = steps + 1
+  end
+  ok(math.abs(cur - 100.0) < 1e-6, "drink: reaches full thirst")
+  ok(math.abs(spent - 240.0) < 1e-6, "drink: full drink spends exactly the whole wand")
+  eq(steps, 16, "drink: 100 thirst at 25/s in 0.25s ticks = 16 sips")
+
+  -- near-full thirst: the sip clamps to the gap, cost scales down with it
+  local sip, cost = W.drinkStep(240.0, 98.0, 100.0, 25.0, 0.25, 240.0)
+  ok(math.abs(sip - 2.0) < 1e-6, "drink: sip clamps to the thirst gap")
+  ok(math.abs(cost - 4.8) < 1e-6, "drink: clamped sip costs pro-rata measures")
+
+  -- nearly-dry rod: the sip shrinks to what the rod can pay for
+  sip, cost = W.drinkStep(3.0, 0.0, 100.0, 25.0, 0.25, 240.0)
+  ok(math.abs(cost - 3.0) < 1e-6, "drink: dry rod pays out its last measures")
+  ok(math.abs(sip - 3.0 / 2.4) < 1e-6, "drink: last sip scaled to remaining measures")
+
+  -- the LIVE scale: MaxPlayerThirst is 1000 in real saves (probed 2026-07-29). rate is percent
+  -- of max per second, so the whole-wand invariant and the 4s full drink hold at any scale.
+  local ch2, cur2, spent2, steps2 = 240.0, 0.0, 0.0, 0
+  while cur2 < 1000 and steps2 < 1000 do
+    local sip2, cost2 = W.drinkStep(ch2, cur2, 1000.0, 25.0, 0.25, 240.0)
+    if sip2 <= 0 then break end
+    cur2, ch2, spent2, steps2 = cur2 + sip2, ch2 - cost2, spent2 + cost2, steps2 + 1
+  end
+  ok(math.abs(cur2 - 1000.0) < 1e-6, "drink: reaches full at the live 1000-point scale")
+  ok(math.abs(spent2 - 240.0) < 1e-6, "drink: whole-wand invariant holds at 1000 scale")
+  eq(steps2, 16, "drink: still a 4-second (16-tick) full drink at 1000 scale")
+
+  -- degenerate guards
+  sip, cost = W.drinkStep(0.0, 0.0, 100.0, 25.0, 0.25, 240.0)
+  eq(cost, 0.0, "drink: empty rod costs nothing")
+  sip, cost = W.drinkStep(240.0, 100.0, 100.0, 25.0, 0.25, 240.0)
+  eq(sip, 0.0, "drink: full thirst sips nothing")
+  sip, cost = W.drinkStep(240.0, 50.0, nil, 25.0, 0.25, 240.0)
+  ok(sip > 0, "drink: unreadable max falls back to 100")
+end
+
+------------------------------------------------------------------ chest trio (ledger / sort / pull)
+-- The three chest modules are integration-shaped (every interesting move is a reflected call),
+-- so the spec pins what CAN break silently at a distance: the mapping contract they share, the
+-- config surface, and that each module still loads clean with its pure exports in place.
+do
+  local m = mapping.resolve("24038177")
+  ok(m.stock ~= nil, "stock: mapping section present")
+  ok(#(m.stock.chestClasses) >= 2, "stock: sorter + plain chest both registered as holders")
+  eq(m.stock.quickStackFn, "Quick Stack", "stock: Quick Stack keeps its real space")
+  eq(m.stock.removeAmtFn, "Remove Item Amt", "stock: Remove Item Amt keeps its real spaces")
+  eq(m.stock.invSysClass, "BC_InventorySystem_C",
+     "stock: inv component class pinned (wrong-class BP calls are fatal asserts)")
+  eq(m.sortchest.class, "BP_SortingChest_Placeable_C", "sortchest: pak clone class name pinned")
+  ok(({ ["BP_SortingChest_Placeable_C"] = true })[m.sortchest.class] ~= nil
+     and (function() for _, c in ipairs(m.stock.chestClasses) do
+            if c == m.sortchest.class then return true end end return false end)(),
+     "sortchest: the sorter is itself a ledger chest class (craft_pull may draw from it)")
+  eq(#(m.craftpull.openFns), 3, "craftpull: bench + energy bench + kitchen all hooked")
+  ok(m.craftpull.itemActorField:find("^ItemActor_16_") ~= nil,
+     "craftpull: item actor field is the S_Item GUID name, not a display name")
+  ok(gate.check(m, { "stock.chestClasses", "stock.invProp", "stock.amtFn" }),
+     "chest_index: gate sees its keys")
+  ok(gate.check(m, { "sortchest.class", "stock.quickStackFn", "stock.totalFn" }),
+     "sort_chest: gate sees its keys")
+  ok(gate.check(m, { "craftpull.openFns", "craftpull.partSlotClass", "stock.removeAmtFn" }),
+     "craft_pull: gate sees its keys")
+
+  eq(config.get("sort_chest"), true, "sort_chest: enabled by default")
+  eq(config.get("craft_pull"), true, "craft_pull: enabled by default")
+  eq(config.get("sort_chest_power_active"), 500.0, "sort_chest: 500 draw while sorting (user spec)")
+  eq(config.get("sort_chest_power_idle"), 100.0, "sort_chest: 100 draw idle (user spec)")
+  eq(config.get("sort_chest_range"), 5000.0, "sort_chest: 50 m radius (user spec)")
+  eq(config.get("craft_pull_range"), 5000.0, "craft_pull: 50 m radius (user spec)")
+  ok(config.get("chest_index_ttl") > 0, "chest_index: cached counts expire")
+
+  ok(pcall(require, "features.chest_index"), "chest_index: module loads")
+  ok(pcall(require, "features.sort_chest"), "sort_chest: module loads")
+  ok(pcall(require, "features.craft_pull"), "craft_pull: module loads")
+  local CI = require("features.chest_index")
+  eq(type(CI.probeFor), "function", "chest_index: probe builder exported for its consumers")
 end
 
 print(string.format("\n%d passed, %d failed", passed, failed))

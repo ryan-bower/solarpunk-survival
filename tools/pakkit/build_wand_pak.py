@@ -627,6 +627,17 @@ def patch_db_items():
                    "A truffle veined with gold. Worth ten times the usual to the recycler.",
                    icon_goldtru, goldtru_cls, recycler=200)
 
+    # ---- the blue sorting chest (2026-07-29) ----
+    # EnergyFurnace is the row donor (placeable machine taxonomy: stack 1, T-type, interaction);
+    # only icon/actor/text change. DB_Buildables maps the row to BP_SortingChest_Placeable.
+    icon_sortchest = add_texture_import(d, "Icon_Chest", "Icon_SortingChest")
+    sortchest_cls = add_bp_imports(d, "BP_SortingChest_Item")
+    clone_item_row(d, rows, "EnergyFurnace", "SortingChest", "Sorting Chest",
+                   "A cobalt-blue chest with a tidy streak. Wire it to power, fill it with"
+                   " clutter, and it files every item into whichever nearby chest already"
+                   " keeps that kind.",
+                   icon_sortchest, sortchest_cls)
+
     fix_name_count(d)
     jout = os.path.join(OUT, "db_items_patched.json")
     json.dump(d, open(jout, "w", encoding="utf-8"), indent=1)
@@ -1138,6 +1149,129 @@ def build_codex_bps():
                 preloads=place_master,
                 patch=_patch_placeable)
 
+# ---------------------------------------------------------------- 5. the blue sorting chest
+# A powered chest that files its contents into nearby chests (features/sort_chest.lua drives the
+# actual sorting via the game's own Quick Stack). Donor: BP_EnergyFurnace_Placeable -- the ONE
+# placeable that ships every wire the feature needs already connected: BC_InventorySystem +
+# SNAP_CableConnector + BPC_Device_EnergySystemComponent + GetEnergyComponent (BPI_EnergyBasic)
+# + interactable logic + SaveData/DataToJSON persistence. Cloning a plain chest and ADDING power
+# would mean SCS surgery; cloning the furnace and REMOVING smelting is bytecode-local.
+#
+# The de-furnacing, all cook-time:
+#   * mesh: SM_Furnace_Electric -> SM_Crate_Wood (same /Game/Art/StaticMeshes dir, exact-name
+#     import rename so SM_Furnace_Electric_closed stays untouched); the mesh template's
+#     OverrideMaterials[0] (M_FurnaceElectric_Off) -> M_Cobalt = the whole crate renders in the
+#     cobalt ore's blue. Visually unmistakable, per the user's spec.
+#   * smelting: every smelt/fuel/timer function's ScriptBytecode is replaced with a bare
+#     EX_Return + EX_EndOfScript stub. The ubergraph is untouched -- stubbing the ENTRY functions
+#     (incl. the InventoryChanged / OnEnergyNetworkUpdated bound-event trampolines) is enough
+#     because every path into the graph goes through one, and mid-graph edits would break the
+#     serialized jump offsets (the codex insert was only safe because it sat after EX_Return).
+#   * interact: the OnInteractedWith trampoline is stubbed too -- natively the chest does NOTHING
+#     on E. But RegisterHook fires on ProcessEvent regardless of the body, so features/
+#     sort_chest.lua hooks the stub (codex-proven pattern) and opens the plain chest UI itself.
+#     No furnace widget ever flashes.
+#   * power: the device template's draw becomes idle-level; features/sort_chest.lua modulates
+#     CurPowerConsumption (-500 sorting / -100 idle, the engine's negative-draw convention).
+SORTCHEST_STUBS = [
+    "TrySmelting", "TryStartSmelting", "KickstartSmelting", "StartSmeltingTimer",
+    "MULTI_StartSmeltingTimer", "SmeltItem", "TryFueling", "AbortSmelting",
+    "SyncTimerToLocal", "MULTI_SyncTimer", "SetOpticallySmelting", "UpdatePowerConsumption",
+    # bound-event trampolines (exact names carry the donor's own historic typos)
+    "BndEvt__BP_Furnance_BC_InventorySystem_K2Node_ComponentBoundEvent_3_InventoryChanged__DelegateSignature",
+    "BndEvt__BP_SortingChest_Placeable_BPC_Device_EnergySystemComponent_K2Node_ComponentBoundEvent_4_OnEnergyNetworkUpdated__DelegateSignature",
+    "BndEvt__BP_Furnance_BPC_InteractableLogic_K2Node_ComponentBoundEvent_0_OnInteractedWith__DelegateSignature",
+]
+
+def _stub_bytecode(export):
+    export["ScriptBytecode"] = [
+        {"$type": "UAssetAPI.Kismet.Bytecode.Expressions.EX_Return, UAssetAPI",
+         "ReturnExpression":
+             {"$type": "UAssetAPI.Kismet.Bytecode.Expressions.EX_Nothing, UAssetAPI"}},
+        {"$type": "UAssetAPI.Kismet.Bytecode.Expressions.EX_EndOfScript, UAssetAPI"},
+    ]
+
+def _rename_import(d, class_name, old_obj, new_obj, old_pkg, new_pkg):
+    """Exact-name import retarget (object + its package pair) -- every export/bytecode reference
+    is by import INDEX, so renaming the entry redirects them all."""
+    hits = 0
+    for e in d["Imports"]:
+        if str(e.get("ClassName")) == class_name and str(e["ObjectName"]) == old_obj:
+            e["ObjectName"] = new_obj
+            hits += 1
+        elif str(e.get("ClassName")) == "Package" and str(e["ObjectName"]) == old_pkg:
+            e["ObjectName"] = new_pkg
+            hits += 1
+    if hits != 2:
+        sys.exit(f"sorting chest: expected exactly 2 import renames for {old_obj}, got {hits}")
+    add_name(d, new_obj)
+    add_name(d, new_pkg)
+
+def build_sorting_chest():
+    # the donor's component templates (inventory + the whole energy component chain) serialize
+    # unversioned headers, so fromjson needs their schemas preloaded too
+    place_master = ";".join([
+        os.path.join(LEGACY, PLACE_DIR, "_BP_Placeable_MASTER.uasset"),
+        os.path.join(LEGACY, "Solarpunk/Content/Code/Interactables/Framework",
+                     "BPC_InteractableLogic.uasset"),
+        os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "BC_InventorySystem.uasset"),
+        os.path.join(LEGACY, "Solarpunk/Content/Code/Energy/Framework",
+                     "BPC_EnergySystemComponent.uasset"),
+        os.path.join(LEGACY, "Solarpunk/Content/Code/Energy/Framework",
+                     "BPC_Device_EnergySystemComponent.uasset"),
+        os.path.join(LEGACY, "Solarpunk/Content/Code/Energy/Framework",
+                     "BPC_Active_EnergySystemComponent.uasset"),
+        os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "S_Smeltable.uasset"),
+        os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "S_InventorySlotSlim.uasset"),
+    ])
+
+    def _patch_item(d):
+        # the world-drop model: the same wood crate the placed chest uses (its own material)
+        _rename_import(d, "StaticMesh", "SM_Furnace_Electric", "SM_Crate_Wood",
+                       "/Game/Art/StaticMeshes/SM_Furnace_Electric",
+                       "/Game/Art/StaticMeshes/SM_Crate_Wood")
+
+    clone_asset(os.path.join(ITEMS_DIR, "ItemActors", "BP_EnergyFurnance_Item.uasset"),
+                os.path.join(ITEMS_DIR, "ItemActors", "BP_SortingChest_Item.uasset"),
+                [("BP_EnergyFurnance_Item", "BP_SortingChest_Item")],
+                preloads=MASTER_BP, patch=_patch_item)
+
+    def _patch_placeable(d):
+        _rename_import(d, "StaticMesh", "SM_Furnace_Electric", "SM_Crate_Wood",
+                       "/Game/Art/StaticMeshes/SM_Furnace_Electric",
+                       "/Game/Art/StaticMeshes/SM_Crate_Wood")
+        _rename_import(d, "Material", "M_FurnaceElectric_Off", "M_Cobalt",
+                       "/Game/Art/Materials/M_FurnaceElectric_Off",
+                       "/Game/Art/Materials/M_Cobalt")
+        stubbed = set()
+        for e in d["Exports"]:
+            if str(e.get("ObjectName")) in SORTCHEST_STUBS and e.get("ScriptBytecode"):
+                _stub_bytecode(e)
+                stubbed.add(str(e["ObjectName"]))
+        missing = set(SORTCHEST_STUBS) - stubbed
+        if missing:
+            sys.exit(f"sorting chest: stub targets not found: {sorted(missing)}")
+        # device template: idle draw by default; the Lua feature modulates it live
+        dev = next(e for e in d["Exports"]
+                   if e.get("ObjectName") == "BPC_Device_EnergySystemComponent_GEN_VARIABLE")
+        for p in dev["Data"]:
+            if p.get("Name") == "MaxPowerConsumption":
+                p["Value"] = -500
+            elif p.get("Name") == "CurPowerConsumption":
+                p["Value"] = -100.0
+
+    clone_asset(os.path.join(PLACE_DIR, "BP_EnergyFurnace_Placeable.uasset"),
+                os.path.join(PLACE_DIR, "BP_SortingChest_Placeable.uasset"),
+                [("BP_EnergyFurnace_Placeable", "BP_SortingChest_Placeable"),
+                 ("BP_EnergyFurnance_Item", "BP_SortingChest_Item")],
+                preloads=place_master,
+                patch=_patch_placeable)
+
+def make_sortchest_icon():
+    # the vanilla chest icon re-inked cobalt blue (same watery-blue curve as the hydration wand)
+    _tint_icon(ICONS_DIR, "Icon_Chest", "Icon_SortingChest",
+               lambda L: (L * 1.10 + 22, L * 0.55, L * 0.32))
+
 def patch_db_recipes():
     """DB_CraftingRecipes: TempestCodex + MundaneWand, both BENCH-only and NOT starting recipes
     (they are unlocked by the TempestCodex research row -- see patch_db_researchables). The
@@ -1208,6 +1342,14 @@ def patch_db_recipes():
     add_recipe("DiamondFishingRod", "BP_DiamondFishingRod_Item_C",
                [("BP_Stick_Item_C", 5), ("BP_Stone_Item_C", 2), ("BP_Iron_Item_C", 4),
                 ("BP_Diamond_Item_C", 2)])
+    # the sorting chest: a chest's worth of wood, a machine's worth of iron, cobalt for the blue.
+    # Appended AFTER the research-gated rows so their persisted RecipyIDs stay stable in saves;
+    # then flipped to a STARTING recipe (no research gate -- bench interact self-heals it into
+    # every save via FixMissingCraftingRecipies).
+    add_recipe("SortingChest", "BP_SortingChest_Item_C",
+               [("BP_Log_Item_C", 4), ("BP_Iron_Item_C", 4), ("BP_Cobalt_Item_C", 2)])
+    sc_sr = field(rows[-1], "StartingRecipy")
+    sc_sr["Value"], sc_sr["IsZero"] = True, False
 
     # The keeper: a hidden row whose one "ingredient" slot holds the W_TempestCodex_C class ref.
     # Purpose is GC ROOTING, not crafting: DataTable row object refs are GC-visible (this is how
@@ -1371,6 +1513,24 @@ def patch_db_buildables():
                         inner["Value"] = "TempestCodex"
     rows.append(row)
     add_rowkey(d, "TempestCodex", "DB_Buildables")
+    # the sorting chest: EnergyFurnace is the buildable donor (powered-machine placement rules,
+    # slope/rotation taxonomy); actor -> our clone, ghost mesh -> the wood crate it really shows
+    furnace = next(r for r in rows if r["Name"] == "EnergyFurnace")
+    sc = copy.deepcopy(furnace)
+    sc["Name"] = "SortingChest"
+    field(sc, "Actor")["Value"] = add_import_pair(
+        d, "/Game/Code/Building_Placing/Placeables/BP_SortingChest_Placeable",
+        "BP_SortingChest_Placeable_C", "BlueprintGeneratedClass")
+    field(sc, "Mesh")["Value"] = add_import_pair(
+        d, "/Game/Art/StaticMeshes/SM_Crate_Wood", "SM_Crate_Wood", "StaticMesh")
+    for slot in field(sc, "ItemsNeeded")["Value"]:
+        for f in slot["Value"]:
+            if f["Name"].split("_")[0] == "Item":
+                for inner in f["Value"]:
+                    if inner.get("Name") == "RowName":
+                        inner["Value"] = "SortingChest"
+    rows.append(sc)
+    add_rowkey(d, "SortingChest", "DB_Buildables")
     fix_name_count(d)
     jout = os.path.join(OUT, "db_buildables_patched.json")
     json.dump(d, open(jout, "w", encoding="utf-8"), indent=1)
@@ -1444,7 +1604,9 @@ def verify_pak():
     enum_pre = os.path.join(STAGED, TIPS_DIR, "ETempestCodexCategory.uasset")
     for rel, pre in ((WIDGETS_DIR + "/W_TempestCodex.uasset", enum_pre),
                      (TIPS_DIR + "/ETempestCodexCategory.uasset", ""),
-                     (PLACE_DIR + "/BP_TempestCodex_Placeable.uasset", "")):
+                     (PLACE_DIR + "/BP_TempestCodex_Placeable.uasset", ""),
+                     (PLACE_DIR + "/BP_SortingChest_Placeable.uasset", ""),
+                     (ITEMS_DIR + "/ItemActors/BP_SortingChest_Item.uasset", "")):
         vj = os.path.join(OUT, "verify_" + os.path.basename(rel) + ".json")
         run(WS, "tojson", USMAP, os.path.join(vd, rel), vj, "VER_UE5_6", pre)
     print("verify: all tables + widgets survive the zen round-trip")
@@ -1476,6 +1638,8 @@ if __name__ == "__main__":
     clone_item_bp("BP_Truffle_Item", "BP_GoldTruffle_Item")
     make_icons()
     make_fishing_icons()
+    make_sortchest_icon()
+    build_sorting_chest()
     build_codex()
     patch_db_items()
     patch_db_smeltables()

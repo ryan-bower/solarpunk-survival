@@ -29,9 +29,19 @@
 --     then restoring. Diamond rod: the game ignores the click entirely, so the bar reveals with
 --     no drop at all. While the bar is up the water sits still (the rod's bite roll is parked,
 --     see suppressBites) and the resolve click reels the line in -- win reels in the prize.
---   * The TAB inventory (any hand rebuild) kills the rod actor, uncasting a thrown line. The mod
---     tracks the line via the rod's own RodInUse?/roll ticks and re-throws it after the rebuild,
---     pity ramp included -- opening/closing the inventory does not affect fishing.
+--   * The TAB inventory (any hand rebuild) can kill the rod actor, uncasting a thrown line.
+--     For the DIAMOND rod this is fixed at the DATA level (2026-07-29): its row carries the
+--     vanilla FishingRod's ItemInteractionType (tool), so UpdateHandMeshesAndModes takes the
+--     tool branch, finds no matching class in the hardcoded ladder, and returns WITHOUT
+--     touching the hand actor -- closing the inventory never uncasts it. (The old consumable
+--     I2 typing sent every rebuild through UpdateHandConsumable's baked food map, which nulled
+--     the hand: destroy + "can not spawn an actor from a NULL class" x2 per close.) The
+--     VANILLA rod's class IS in the ladder, so its rebuilds still destroy+respawn natively;
+--     the mod tracks its line via RodInUse?/roll ticks and re-throws after the rebuild, pity
+--     ramp included (recastAfterRebuild). Do NOT try to preserve the actor from the rebuild
+--     pre-hook: the chokepoint re-enters itself (SetHandRBlueprintForBoth -> SwitchHandItem ->
+--     UpdateHandMeshesAndModes) and sync UObject work inside that nested hook dispatch was the
+--     2026-07-28 all-UE4SS AV crash cluster.
 --
 -- Fished-up rods arrive "worn": a fresh rod item appearing in the inventory right after a catch
 -- click is stamped a random durability via the game's own OverwriteAndSaveItemAtIndex (the wand's
@@ -249,6 +259,52 @@ function F.rollPeriod(base, maxMult, r)
   return base / m
 end
 
+-- The GAP-SYNC skillshot ("vsync"): two vertical lanes the length of the sliding bar. A thin
+-- line ping-pongs the LEFT lane, GROWING the longer you wait; a rect-gap-rect trio ping-pongs
+-- the RIGHT lane at its own speed. Click when they line up: the line slides right and either
+-- slots into the gap (win) or slams the trio's edge (lose). All pure math here; the renderer
+-- and the judge share these exact functions (the screenshot rule needs both on one formula).
+
+-- Ping-pong position with a per-side random phase offset (both lanes use the marker's sweep).
+function F.oscPos(elapsed, period, phase)
+  return F.markerPos((elapsed or 0) + (phase or 0) * (period or 1), period)
+end
+
+-- The line's growth: starts at 1x its base height, grows `rate` x base per second, capped.
+function F.vsyncScale(elapsed, rate, cap)
+  local s = 1 + (tonumber(rate) or 2.0) * math.max(0, elapsed or 0)
+  local c = tonumber(cap) or 9.0
+  if s > c then s = c end
+  return s
+end
+
+-- A rolled oscillation period in [min, max] seconds (the vsync speed band: the sliding bar's
+-- fastest roll down to double that speed).
+function F.vsyncPeriod(minP, maxP, r)
+  local lo, hi = tonumber(minP) or 0.4, tonumber(maxP) or 0.8
+  if hi < lo then lo, hi = hi, lo end
+  return hi - (r or 0) * (hi - lo)
+end
+
+-- Centers along the lane, in pixels. The line's center runs the full lane; the trio (rect,
+-- gap, rect -- `span` px tall) runs the lane minus its own height, its GAP center inset by
+-- rectH + gapH/2 from the trio's top.
+function F.vsyncLineCenter(p, len)
+  return (p or 0) * (len or 420)
+end
+
+function F.vsyncGapCenter(p, len, span, rectH, gapH)
+  return (p or 0) * ((len or 420) - (span or 108)) + (rectH or 36) + (gapH or 36) / 2
+end
+
+-- The verdict: does the line (grown to scale x lineH) fit inside the gap right now?
+function F.vsyncFits(lineC, scale, lineH, gapC, gapH)
+  local h = (lineH or 3.6) * (scale or 1)
+  local room = ((gapH or 36) - h) / 2
+  if room < 0 then return false end
+  return math.abs((lineC or 0) - (gapC or 0)) <= room + 1e-9
+end
+
 -- The spinner wheel. Constant spin speed and constant deceleration (both config, never rolled),
 -- so the click->rest offset speed^2/(2*decel) is FIXED -- the learnable skill the user asked
 -- for. Only the zone's angle is random per wheel. All angles in degrees, needle starts at 0 (up).
@@ -399,6 +455,10 @@ local mgAwaitClick = false -- pure-Lua gate the hook body reads: the decisive cl
                          -- (false during the wheel's slow-down so extra clicks don't re-stamp)
 local mgSlow = nil       -- wheel slow-down in flight: { clickAt, thetaClick, final, hit }
 local mgWheel = nil      -- wheel params fixed at reveal: { speed, decel, zc, zw }
+local mgVs = nil         -- vsync params fixed at reveal: { perL, perR, phL, phR, lineH, rectH,
+                         --   gapH, len, span, rate, cap }
+local mgSlide = nil      -- vsync slide in flight: { clickAt, hit, lineC, gapC, scale } -- the
+                         -- verdict is SEALED here (screenshot rule); the slide is pure reveal
 local UI = require("features.fishing_ui") -- the renderer; this module never touches a widget
 local forceMini = false  -- sps_fish_mini: arm on every bite (live testing)
 
@@ -974,16 +1034,62 @@ local function finishWheel(pawn, slow)
   end
 end
 
+-- VSYNC click: the verdict is SEALED here from the LAST DRAWN frame (screenshot rule -- the
+-- freeze the player sees is the exact geometry judged). The slide that follows is pure
+-- theatre: the line rides right and either slots home or slams the trio's edge.
+local function vsyncClicked(pawn, clickAt, drawn)
+  if not mgActive or mgSlide or not mgVs then return end
+  mgAwaitClick = false
+  lastClickAt = clickAt
+  local vs = mgVs
+  local pL, pR, scale
+  if drawn then
+    pL, pR, scale = drawn.pL, drawn.pR, drawn.scale
+  else
+    -- degraded path (no drawn frame to trust): judge the stamped clock minus the lead
+    local lead = tonumber(cfg("fishing_click_lead")) or 0
+    local el = math.max(0, clickAt - lead - mgStart)
+    pL = F.oscPos(el, vs.perL, vs.phL)
+    pR = F.oscPos(el, vs.perR, vs.phR)
+    scale = F.vsyncScale(el, vs.rate, vs.cap)
+    UI.setVsync(pL, pR, scale) -- freeze the picture at the judged spot outright
+  end
+  local lineC = F.vsyncLineCenter(pL, vs.len)
+  local gapC = F.vsyncGapCenter(pR, vs.len, vs.span, vs.rectH, vs.gapH)
+  mgSlide = { clickAt = clickAt, hit = F.vsyncFits(lineC, scale, vs.lineH, gapC, vs.gapH),
+              lineC = lineC, gapC = gapC, scale = scale }
+end
+
+-- VSYNC reveal: the slide has landed -- flash, reel, pay out (or not), fold.
+local function finishVsync(pawn, slide)
+  if not mgActive then return end
+  mgActive = false
+  mgSlide = nil
+  resumeBites()
+  reelLine(pawn)
+  lineOut = false
+  UI.flash(slide.hit and "hit" or "miss")
+  logBarStats()
+  foldSoon((tonumber(cfg("fishing_flash_secs")) or 0.22) * 1000)
+  if slide.hit then
+    grantSoon(pawn)
+  else
+    ctx.log.info(string.format(
+      "fishing: the line strikes the frame (%.0fpx off, grown %.1fx) -- it got away",
+      math.abs(slide.lineC - slide.gapC), slide.scale))
+  end
+end
+
 -- The 6 s timeout. mgLate keeps this skillshot's parameters warm for a 0.4 s grace window: a
 -- click STAMPED before the timeout but processed after it (the deferred fallback path) still
 -- judges. The wheel's slow-down phase never times out -- it resolves itself in under a second.
 local function timeoutMinigame()
   if not mgActive then return end
   mgActive = false
-  mgClickAt, mgAwaitClick, mgSlow = nil, false, nil
+  mgClickAt, mgAwaitClick, mgSlow, mgSlide = nil, false, nil, nil
   mgLate = { untilT = os.clock() + 0.4, kind = mgKind, start = mgStart,
              center = mgCenter, width = mgWidth, period = mgPeriod, wheel = mgWheel,
-             diamond = mgDiamond, group = mgGroup }
+             vs = mgVs, diamond = mgDiamond, group = mgGroup }
   UI.flash("timeout")
   logBarStats()
   foldSoon(150)
@@ -1062,6 +1168,58 @@ local function makeWheelJob(tok, pawn)
     end
     if done then
       finishWheel(pawn, slow)
+      return "stop"
+    end
+  end
+end
+
+-- The per-frame VSYNC job: both lanes ping-pong (the line growing all the while) until the
+-- stamped click, then the sealed verdict rides the slide animation to its reveal. Same
+-- token/timeout/widget-death contracts as the other jobs.
+local function makeVsyncJob(tok, pawn)
+  local last = nil  -- { pL, pR, scale } of the last DRAWN frame (the judged screenshot)
+  return function(now)
+    if tok ~= mgToken or not mgActive then return "stop" end
+    local vs = mgVs
+    if not vs then return "stop" end
+    local slide = mgSlide
+    if not slide then
+      local t = mgClickAt
+      if t then
+        mgClickAt = nil
+        vsyncClicked(pawn, t, last)
+        slide = mgSlide
+        if not slide then return "stop" end
+      elseif now - mgStart > (tonumber(cfg("fishing_minigame_timeout")) or 6) then
+        timeoutMinigame()
+        return "stop"
+      else
+        local el = now - mgStart
+        last = last or {}
+        last.pL = F.oscPos(el, vs.perL, vs.phL)
+        last.pR = F.oscPos(el, vs.perR, vs.phR)
+        last.scale = F.vsyncScale(el, vs.rate, vs.cap)
+        if not UI.setVsync(last.pL, last.pR, last.scale) then
+          mgActive = false
+          mgClickAt, mgAwaitClick, mgSlide = nil, false, nil
+          UI.fold()
+          resumeBites()
+          return "stop"
+        end
+        return
+      end
+    end
+    local secs = tonumber(cfg("fishing_vsync_slide_secs")) or 0.25
+    local frac = secs > 0 and math.min(1, (now - slide.clickAt) / secs) or 1
+    if not UI.vsyncSlide(frac, slide.hit) then
+      mgActive = false
+      mgSlide = nil
+      UI.fold()
+      resumeBites()
+      return "stop"
+    end
+    if frac >= 1 then
+      finishVsync(pawn, slide)
       return "stop"
     end
   end
@@ -1165,6 +1323,13 @@ local function onClick(pawn, clickAt)
   if mgActive then
     if mgKind == "wheel" then
       if mgAwaitClick then wheelClicked(pawn, clickAt) end -- clicks during the slow-down are noise
+    elseif mgKind == "vsync" then
+      if mgAwaitClick then
+        -- fallback path (the animator usually beat us here): seal AND reveal immediately --
+        -- with no live job there is nobody to drive the slide theatre
+        vsyncClicked(pawn, clickAt)
+        if mgSlide then finishVsync(pawn, mgSlide) end
+      end
     else
       resolveMinigame(pawn, clickAt)
     end
@@ -1183,6 +1348,15 @@ local function onClick(pawn, clickAt)
       hit = F.angleHit(final, late.wheel.zc, late.wheel.zw)
       missLine = string.format("fishing: the wheel rests at %.0f (zone %.0f) -- it got away",
         final, late.wheel.zc)
+    elseif late.kind == "vsync" and late.vs then
+      local vs = late.vs
+      local lineC = F.vsyncLineCenter(F.oscPos(el, vs.perL, vs.phL), vs.len)
+      local gapC = F.vsyncGapCenter(F.oscPos(el, vs.perR, vs.phR), vs.len, vs.span,
+        vs.rectH, vs.gapH)
+      hit = F.vsyncFits(lineC, F.vsyncScale(el, vs.rate, vs.cap), vs.lineH, gapC, vs.gapH)
+      missLine = string.format(
+        "fishing: the line strikes the frame (%.0fpx off) -- it got away",
+        math.abs(lineC - gapC))
     else
       local p = F.markerPos(el, late.period or 1.6)
       hit = F.zoneHit(p, late.center, late.width)
@@ -1210,12 +1384,20 @@ local function onClick(pawn, clickAt)
       -- another leaf, never a real-table catch
       onGameThread(restoreMgRiver)
     end))
-    -- 50/50 which skillshot this catch is (user spec); the wheel needs widget rotation, so a
-    -- build that can't rotate quietly serves bars every time
-    mgKind = (math.random() < (tonumber(cfg("fishing_wheel_share")) or 0.5)) and "wheel" or "bar"
+    -- Which skillshot this catch is: a three-way roll (user spec: the gap-sync game joins as a
+    -- roughly even third option). Each fancy game carries a capability downgrade to "bar" --
+    -- the wheel needs widget rotation, the gap-sync needs render-scale and a nesting surface.
+    local roll = math.random()
+    local wheelShare = tonumber(cfg("fishing_wheel_share")) or 0.34
+    local vsyncShare = tonumber(cfg("fishing_vsync_share")) or 0.33
+    if roll < wheelShare then mgKind = "wheel"
+    elseif roll < wheelShare + vsyncShare then mgKind = "vsync"
+    else mgKind = "bar" end
     if mgKind == "wheel" and not UI.wheelOK() then mgKind = "bar" end
+    if mgKind == "vsync" and not UI.vsyncOK() then mgKind = "bar" end
     local shown = false
     if mgKind == "wheel" then
+      mgVs = nil
       mgWheel = {
         speed = tonumber(cfg("fishing_wheel_speed")) or 360,
         decel = tonumber(cfg("fishing_wheel_decel")) or 360,
@@ -1226,8 +1408,32 @@ local function onClick(pawn, clickAt)
       shown = UI.showWheel({ diamond = mgDiamond, centerDeg = mgWheel.zc, widthDeg = mgWheel.zw })
       if not shown then mgKind = "bar" end -- rotation just broke: same skillshot, bar clothes
     end
-    if mgKind == "bar" then
+    if mgKind == "vsync" then
       mgWheel = nil
+      local lineH = tonumber(cfg("fishing_vsync_line")) or 3.6
+      local pMin = tonumber(cfg("fishing_vsync_period_min")) or 0.4
+      local pMax = tonumber(cfg("fishing_vsync_period_max")) or 0.8
+      local perL = F.vsyncPeriod(pMin, pMax, math.random())
+      local perR = F.vsyncPeriod(pMin, pMax, math.random())
+      -- the two lanes must run at visibly DIFFERENT speeds (user spec); re-roll near-twins
+      for _ = 1, 4 do
+        if math.abs(perL - perR) >= 0.04 then break end
+        perR = F.vsyncPeriod(pMin, pMax, math.random())
+      end
+      local rectH = lineH * 10
+      mgVs = {
+        perL = perL, perR = perR, phL = math.random(), phR = math.random(),
+        lineH = lineH, rectH = rectH, gapH = rectH, span = rectH * 3,
+        len = tonumber(cfg("fishing_bar_w")) or 420,
+        rate = tonumber(cfg("fishing_vsync_grow_rate")) or 2.0,
+        cap = tonumber(cfg("fishing_vsync_grow_cap")) or 9.0,
+      }
+      shown = UI.showVsync({ diamond = mgDiamond, lineH = lineH, rectH = rectH,
+                             gapH = rectH, len = mgVs.len })
+      if not shown then mgKind = "bar"; mgVs = nil end -- scale/nesting broke: bar clothes
+    end
+    if mgKind == "bar" then
+      mgWheel, mgVs = nil, nil
       mgWidth = tonumber(cfg(mgDiamond and "fishing_minigame_zone_diamond" or "fishing_minigame_zone"))
                 or (mgDiamond and 0.10 or 0.18)
       mgCenter = 0.22 + math.random() * 0.56
@@ -1238,13 +1444,14 @@ local function onClick(pawn, clickAt)
     end
     if shown then
       mgActive = true
-      mgClickAt, mgLate, mgSlow = nil, nil, nil
+      mgClickAt, mgLate, mgSlow, mgSlide = nil, nil, nil, nil
       mgAwaitClick = true
       suppressBites(pawn)
       mgStart = os.clock()
       mgToken = mgToken + 1
       mgJob = ctx.anim.start(mgKind == "wheel" and makeWheelJob(mgToken, pawn)
-                                               or makeMarkerJob(mgToken, pawn))
+                             or mgKind == "vsync" and makeVsyncJob(mgToken, pawn)
+                             or makeMarkerJob(mgToken, pawn))
       if not mgJob then -- animator died since the probe: no motion, no game
         mgActive = false
         mgAwaitClick = false
@@ -1257,6 +1464,9 @@ local function onClick(pawn, clickAt)
       if mgKind == "wheel" then
         ctx.log.info(mgDiamond and "fishing: something HUGE -- stop the wheel on the diamond arc!"
                                or "fishing: something big -- stop the wheel on the golden arc!")
+      elseif mgKind == "vsync" then
+        ctx.log.info(mgDiamond and "fishing: something HUGE -- slot the line through the gap!"
+                               or "fishing: something big -- slot the line through the gap!")
       else
         ctx.log.info(mgDiamond and "fishing: something HUGE -- hit the diamond zone!"
                                or "fishing: something big -- hit the golden zone!")
@@ -1359,6 +1569,16 @@ local function recastAfterRebuild(pawn, kind, attempt)
   end
 end
 
+-- SYNCHRONOUS pre-hook half of the never-uncast fix (bytecode RE 2026-07-28, char ubergraph):
+-- UpdateHandMeshesAndModes fires via ProcessEvent BEFORE the game's tool switch runs, and the
+-- only destroy of the held rod sits inside SetHandRBlueprintForBoth behind
+-- IsValid(CurHandItemFirstPerson). Nil that property here and the cast rod actor SURVIVES the
+-- rebuild untouched -- line in the water, parked bite roll, pity ramp and all. The game then
+-- spawns a reeled-in duplicate into the same hand socket (vanilla row) or nothing at all
+-- (diamond row: unmatched in every class switch); restoreCast swaps the original back ~150 ms
+-- later and the water never noticed. Everything in this body is plain property/struct reads
+-- plus ONE property write -- no reflected UFunction calls (VM re-entrancy from a hook body is
+-- the proven crash class).
 -- Deferred body of the UpdateHandMeshesAndModes hook -- the ONE equip chokepoint (hotbar
 -- switches AND every UI close funnel through it).
 local function onHandRebuilt(pawn)
@@ -1371,13 +1591,13 @@ local function onHandRebuilt(pawn)
     mgToken = mgToken + 1
     if mgJob then ctx.anim.stop(mgJob); mgJob = nil end
     UI.fold()
-    if mgSlow and mgSlow.hit then
-      -- the wheel's outcome was sealed at the click; the rebuild only ate the reveal animation.
-      -- The player won it -- pay out anyway.
-      ctx.log.info("fishing: the wheel had already landed -- the prize is yours")
+    if (mgSlow and mgSlow.hit) or (mgSlide and mgSlide.hit) then
+      -- the outcome was sealed at the click (wheel slow-down / vsync slide); the rebuild only
+      -- ate the reveal animation. The player won it -- pay out anyway.
+      ctx.log.info("fishing: the catch was already sealed -- the prize is yours")
       grantSoon(pawn)
     end
-    mgSlow = nil
+    mgSlow, mgSlide = nil, nil
     if mgSavedBonus ~= nil then lastBonus = mgSavedBonus end
     mgRod, mgSavedBonus = nil, nil
     restoreMgRiver()
@@ -1507,7 +1727,8 @@ local function applyAll()
     structMembers, structMemberTries = nil, 0
     tablesBroken = false
     mgReady, mgPending, mgActive, mgRiver = nil, false, false, nil
-    mgClickAt, mgLate, mgAwaitClick, mgSlow, mgWheel = nil, nil, false, nil, nil
+    mgClickAt, mgLate, mgAwaitClick, mgSlow, mgWheel, mgVs, mgSlide =
+      nil, nil, false, nil, nil, nil, nil
     if mgJob then ctx.anim.stop(mgJob); mgJob = nil end
     UI.reset() -- the old world's widgets are dead; the surface mode survives (a build fact)
     mgRod, mgSavedBonus = nil, nil -- the old world's rod actor died and took its bonus with it

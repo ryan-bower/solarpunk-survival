@@ -1376,6 +1376,110 @@ local function tintIcon(icon, name)
   end
 end
 
+--------------------------------------------------------------------- map name labels
+-- Always-visible name labels on the map: one raw TextBlock per live player, positioned straight
+-- from the pawn's world location through WC_Map's own WorldToMapCoordinates. Deliberately NOT
+-- through FriendsMarkers/SharedPlayerMapData -- their reconciliation is the "some players never
+-- show up" bug (user 2026-07-29) these labels replace. Labels sit in CNV_Main with the same
+-- centre anchors as the game's icons (offline RE of Create Map Player Icon) and follow at
+-- 150 ms while the map is open: a token-guarded re-chained one-shot, never a free-running
+-- timer, every UObject re-fetched fresh per pass. First construction failure latches the
+-- feature off for the session (the fishing_ui capability-latch discipline).
+local mapLabels = {}        -- name -> { tb = TextBlock }  (this world only; applyAll clears)
+local labelsBroken = false  -- capability latch
+local labelToken = 0
+
+local function makeLabel(wc, canvas, name)
+  local cls
+  pcall(function() cls = StaticFindObject("/Script/UMG.TextBlock") end)
+  if not cls then return nil end
+  local addFn = (ctx.map.fishing and ctx.map.fishing.canvasAddFn) or "AddChildToCanvas"
+  local tb
+  local ok = pcall(function()
+    tb = StaticConstructObject(cls, wc)
+    tb:SetText(FText(tostring(name)))
+    local slot = canvas[addFn](canvas, tb)
+    -- same anchor recipe the game gives its own icons; alignment (0.5, 1) floats the text
+    -- just above the icon centre, autosize fits it to the name
+    slot:SetAnchors({ Minimum = { X = 0.5, Y = 0.5 }, Maximum = { X = 0.5, Y = 0.5 } })
+    slot:SetAlignment({ X = 0.5, Y = 1.0 })
+    slot:SetAutoSize(true)
+    slot:SetZOrder(101)
+    tb:SetRenderScale({ X = 0.7, Y = 0.7 })
+    tb:SetVisibility(4)  -- SelfHitTestInvisible: visible, never eats map clicks
+  end)
+  if not (ok and tb) then return nil end
+  -- the owner's palette colour, best-effort: FSlateColor marshals in as a plain table; a build
+  -- that refuses it just keeps the default white text (readable either way)
+  local pal = paletteFor(name)
+  if pal then
+    pcall(function()
+      tb:SetColorAndOpacity({ SpecifiedColor = { R = pal.r, G = pal.g, B = pal.b, A = 1.0 },
+                              ColorUseRule = 0 })
+    end)
+  end
+  return tb
+end
+
+local function foldLabels()
+  for _, l in pairs(mapLabels) do
+    pcall(function() if ctx.uehelp.isValid(l.tb) then l.tb:SetVisibility(1) end end)
+  end
+end
+
+local function updateLabels(token)
+  if token ~= labelToken or labelsBroken then return end
+  if not ctx.config.get("qol_map_labels") then return end
+  local wc
+  for _, w in ipairs(liveInstances(qmap().mapCompClass)) do
+    local vis; pcall(function() vis = w:IsVisible() end)
+    if vis then wc = w break end
+  end
+  if not wc then foldLabels() return end  -- map closed; OpenMap re-arms the chain
+  local canvas
+  local okC, cv = ctx.uehelp.get(wc, qmap().mapCanvasProp)
+  if okC and ctx.uehelp.isValid(cv) then canvas = cv end
+  if canvas then
+    local seen = {}
+    for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
+      if ctx.uehelp.isValid(pawn) then
+        local pc; pcall(function() pc = pawn:GetController() end)
+        local nm = (pc and ctx.uehelp.isValid(pc)) and playerNameOf(pc) or nil
+        local loc = ctx.identity.locationOf(pawn)
+        if nm and loc then
+          seen[nm] = true
+          local l = mapLabels[nm]
+          if l and not ctx.uehelp.isValid(l.tb) then mapLabels[nm], l = nil, nil end
+          if not l then
+            local tb = makeLabel(wc, canvas, nm)
+            if not tb then
+              labelsBroken = true
+              ctx.log.warn("qol: map name labels unavailable (TextBlock construction failed)")
+              return
+            end
+            l = { tb = tb }
+            mapLabels[nm] = l
+          end
+          local okW, r = ctx.uehelp.call(wc, qmap().mapWorldToMapFn,
+            { X = loc.X, Y = loc.Y, Z = loc.Z })
+          if okW and r then
+            pcall(function()
+              l.tb:SetRenderTranslation({ X = r.X, Y = r.Y - 16 })
+              l.tb:SetVisibility(4)
+            end)
+          end
+        end
+      end
+    end
+    for nm, l in pairs(mapLabels) do
+      if not seen[nm] then
+        pcall(function() if ctx.uehelp.isValid(l.tb) then l.tb:SetVisibility(1) end end)
+      end
+    end
+  end
+  deferOnly(150, function() updateLabels(token) end)
+end
+
 -- Runs (deferred) each time the map opens: FriendsMarkers is WC_Map's own name->icon TMap, so
 -- every teammate's icon gets that player's palette color + a hover tooltip with their name; the
 -- local player's icon (WC_MainPlayer) gets their own.
@@ -1552,7 +1656,15 @@ local function armHooks()
     end)
   end)
   armHook(qmap().mapCompClass, qmap().mapOpenFn, "qol.map", function()
+    -- three dress passes: FriendsMarkers reconciles AFTER the open, so a single 150 ms pass
+    -- missed icons born late (the "sometimes no tooltip/tint" report) -- idempotent, so cheap
     deferOnly(150, dressMap)
+    deferOnly(700, dressMap)
+    deferOnly(2000, dressMap)
+    -- and the always-visible name labels (self-terminating chain; token orphans stale chains)
+    labelToken = labelToken + 1
+    local tok = labelToken
+    deferOnly(200, function() updateLabels(tok) end)
   end)
   -- The chest UI builds a FIXED 2x6 slot grid -- RowCount/ColumnCount are LITERALS in
   -- W_ChestInventory's bytecode, and the build reaches BPL_UiFunctions through an
@@ -1597,6 +1709,8 @@ local function applyAll()
   chestSized = {}
   chestGrowFails = {}
   facing = false     -- the old world's ping-facing loop cannot survive into this one
+  mapLabels = {}     -- label widgets died with the old world's map; rebuild on next open
+  labelToken = labelToken + 1
   -- A new local controller instance = a world was (re)loaded = every class the last world's
   -- registrations lived on may be a dead copy. Drop them all; armHooks below rebuilds. Respawns
   -- and animal notifies keep the same controller, so this stays a no-op in steady play.
