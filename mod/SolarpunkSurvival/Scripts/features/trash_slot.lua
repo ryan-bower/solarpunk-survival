@@ -131,8 +131,13 @@ end
 -- themselves are unreadable from Lua (the proven VM-wedge), but GetAmtOfItem takes a struct we
 -- BUILD (marshal-proven direction) and matches by class only.
 
+-- NO isValid() pre-guard on the class: DB_Items key wrappers FAIL every direct method call
+-- (IsValid, GetFName, GetFullName all die -- the blank "holding Nx " log lines) yet marshal
+-- perfectly as call arguments (Contains one Of matches them; that is how bisect converges).
+-- Guarding on isValid rejected every booked class, made stillHasPrev permanently "unknown",
+-- and turned every replace into a silent swap -- the user-reported 2026-07-28 bug.
 local function amtOf(cls)
-  if not ctx.uehelp.isValid(cls) then return false, 0 end
+  if cls == nil then return false, 0 end
   local m = tmap()
   local probe = {
     [m.slotItemField]     = cls,
@@ -245,13 +250,16 @@ end
 
 local function getCarry()
   local m = tmap()
-  -- ONE out table: UE4SS writes EVERY out param into the first table sitting at an out-param
-  -- position (live-proven on GetSystemAndIndex: two tables -> the first held System AND Index,
-  -- the second stayed empty). Two tables here would leave Widget forever nil.
-  local out = {}
-  if not ctx.uehelp.call(S.slot, m.carryGetFn, out) then return nil end
-  if unwrap(out.Success) ~= true then return nil end
-  local w = unwrap(out.Widget)
+  -- UE4SS multi-out rule (live-burned TWICE, 2026-07-28): a call must pass ONE placeholder
+  -- table per out param or it errors out entirely ("no table on the stack"), yet every out
+  -- VALUE lands in the FIRST placeholder -- the later tables stay empty. GetClickAndDropWidget
+  -- has two outs (Success, Widget), so: two tables in, both values read from the first.
+  -- Reading Widget from table two (v1) and passing one table (v2) each made this return nil on
+  -- every call -- which turned every replace into a silent native swap (the user-reported bug).
+  local o1, o2 = {}, {}
+  if not ctx.uehelp.call(S.slot, m.carryGetFn, o1, o2) then return nil end
+  if unwrap(o1.Success) ~= true then return nil end
+  local w = unwrap(o1.Widget)
   if not ctx.uehelp.isValid(w) then return nil end
   return w
 end
@@ -301,7 +309,14 @@ local function rebook(qty)
   local cls = discoverClass()
   S.prevClass, S.prevQty = cls, qty
   S.prevName = ""
-  if cls then pcall(function() S.prevName = cls:GetFName():ToString() end) end
+  if cls then
+    pcall(function() S.prevName = cls:GetFName():ToString() end)
+    if S.prevName == "" then
+      pcall(function() S.prevName = tostring(cls:GetFullName()):match("([%w_]+)%s*$") or "" end)
+    end
+    -- DB_Items key wrappers refuse BOTH name reads (methods die on them; params marshal fine)
+    if S.prevName == "" then S.prevName = "?" end
+  end
   if cls then
     ctx.log.info("trash: holding " .. qty .. "x " .. S.prevName .. " (queued for deletion)")
   else
@@ -322,8 +337,15 @@ local function onTrashClick()
   local stillHasPrev = false
   if hadPrev then
     local ok, amt = amtOf(S.prevClass)
-    -- a failed probe means "unknown" -- and unknown must land on the keep side of decide()
-    stillHasPrev = (not ok) or amt > 0
+    if ok then
+      stillHasPrev = amt > 0
+    else
+      -- amt probe refused the wrapper: fall back to the set probe (same marshal family the
+      -- bisect discovery runs on). A failed fallback means "unknown" -- and unknown must land
+      -- on the keep side of decide().
+      local c = containsAny({ S.prevClass })
+      stillHasPrev = (c == nil) or c
+    end
   end
 
   local carry = getCarry()

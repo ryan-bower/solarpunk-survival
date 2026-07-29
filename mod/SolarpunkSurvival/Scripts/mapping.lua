@@ -757,7 +757,10 @@ M.profiles = {
                                              -- SetColorAndOpacity tint survives every repaint
       slotBorderProp = "BORDER_Selected",    -- UBorder the game shows on focus/hover
       carryClass     = "W_ClickAndDrop_C",
-      carryGetFn     = "GetClickAndDropWidget",  -- slot fn: (out Success, out Widget)
+      carryGetFn     = "GetClickAndDropWidget",  -- slot fn: (out Success, out Widget) --
+                                                 -- TWO out placeholders required, BOTH values
+                                                 -- come back in the FIRST table (the UE4SS
+                                                 -- multi-out rule, burned twice 2026-07-28)
       carryDestroyFn = "Destroy",                -- deletes the carried item (no ground spawn)
       carrySenderProp = "SenderSlot",
       chestUiClass   = "W_ChestInventory_C",
