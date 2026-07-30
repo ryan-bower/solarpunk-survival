@@ -125,15 +125,46 @@ local function sortPass(s)
   end
 end
 
+-- Put every live sorter back on the idle draw. Used when the feature is switched off at
+-- runtime: the last pass may have left a loaded chest asking the network for the working
+-- wattage, and nothing else would ever write that property again.
+local function releaseDraw()
+  for _, s in ipairs(liveSorters()) do
+    local dev = deviceOf(s.actor)
+    if dev then
+      ctx.uehelp.set(dev, smap().consumptionProp, -cfgn("sort_chest_power_idle", 100.0))
+    end
+  end
+  rr = {}
+end
+
 local function startChain()
   if chainLive then return end
   chainLive = true
   dryPasses = 0
   chainTok = chainTok + 1
   local tok = chainTok
+  local paused = false
   local function pass()
     if tok ~= chainTok then return end
-    if not ctx.config.get("sort_chest") then chainLive = false return end
+    if not ctx.config.get("sort_chest") then
+      -- switched off at runtime: PARK, do not die. Nothing watches the config for it coming
+      -- back (startChain is only reached from a world entry, a sorter spawn, init, or
+      -- sps_sort), so a pass that returned here left the blue chest inert -- and stranded
+      -- whatever draw it last wrote -- until the player reloaded the world.
+      if not paused then
+        paused = true
+        if ctx.net.isHost() then pcall(releaseDraw) end
+        ctx.log.info("sort_chest: switched off -- parked, draw released")
+      end
+      deferOnly(math.floor(cfgn("sort_chest_tick", 1.5) * 4000),
+        function() onGameThread(pass) end)
+      return
+    end
+    if paused then
+      paused = false
+      ctx.log.info("sort_chest: switched back on -- sorting resumes")
+    end
     local sorters = ctx.net.isHost() and liveSorters() or {}
     if #sorters == 0 then
       dryPasses = dryPasses + 1
@@ -151,10 +182,27 @@ local function startChain()
 end
 
 --------------------------------------------------------------------- interact hook
+-- Did the LOCAL CONTROLLER change? That -- not "a Character was constructed" -- is the real
+-- "new world, the class hooks died" signal.
+local hookWorldPc = nil
+local function worldChanged()
+  local pcNow
+  pcall(function()
+    local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+    pcNow = pc and pc:GetFullName() or nil
+  end)
+  if pcNow and pcNow ~= hookWorldPc then
+    hookWorldPc = pcNow
+    return true
+  end
+  return false
+end
+
 -- Codex pattern: find the clone class's OnInteractedWith event(s) and hook them. The event body
 -- is a cook-time stub, so the game does nothing on E; we open the chest UI for the local
 -- interactor. Callback signature per BPC_InteractableLogic's delegate:
 -- (Context = the placeable, comp, hit, controller, tool).
+
 local function armInteractHook()
   if hooked.interact then return end
   local u, m = ctx.uehelp, smap()
@@ -210,13 +258,17 @@ function F.init(c)
     return false
   end
 
-  -- world entry + sorter spawn both (re)arm the chain and the interact hook; the hook re-arms
-  -- keyed inside armInteractHook (per-controller), the chain via startChain's own latch
+  -- world entry + sorter spawn both (re)arm the chain and the interact hook; the chain is
+  -- guarded by startChain's own latch, the hook by the registry below
   ctx.uehelp.onNewInstance("/Script/Engine.Character",
     (ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C", function()
-      hooked = {}   -- new world: the old controller's hook is dead
       deferOnly(4000, function()
         onGameThread(function()
+          -- This notify fires for EVERY Character constructed -- respawns and remote players
+          -- joining, not only world loads. OnInteractedWith is hooked on the CLASS function
+          -- path, which survives a respawn, so clearing the registry unconditionally stacked
+          -- a second live registration each time and opened the chest UI once per copy.
+          if worldChanged() then hooked = {} end
           armInteractHook()
           startChain()
         end)

@@ -454,7 +454,7 @@ function F.showVsync(opts)
   local W = cfgn("fishing_bar_h", 26)          -- lane width = the sliding bar's thickness
   local LEN = opts.len or cfgn("fishing_bar_w", 420)
   local LX = cfgn("fishing_vsync_x", 840)      -- left lane's left edge
-  local RX = LX + cfgn("fishing_vsync_dx", 130)
+  local RX = LX + cfgn("fishing_vsync_dx", 70)
   local TY = cfgn("fishing_vsync_y", 300)
   local lineH = opts.lineH or 3.6
   local rectH = opts.rectH or lineH * 10
@@ -472,12 +472,16 @@ function F.showVsync(opts)
   add(RX - 3, TY - 3, W + 6, LEN + 6, LOOK.frame, 60)
   local track = add(RX, TY, W, LEN, LOOK.track, 61)
 
+  -- NOTE: no early `F.fold() return` past this point -- makeImage parents each image to the
+  -- shell the moment it is built, but fold() only knows about `parts`, which is not published
+  -- until the bottom. An early return therefore left the frame + track stranded on the HUD,
+  -- one stray pair per failed roll. Everything below flows to `ok = false` and the one exit.
   local cvCls = StaticFindObject and StaticFindObject(m.canvasPanelPath)
-  if not (ok and valid(cvCls)) then F.fold() return false end
+  if not valid(cvCls) then ok = false end
 
   -- the right trio group: rect / glowing gap / rect, one translation per frame
   local rgroup, rect1, rect2, gapGlow
-  local okR = pcall(function()
+  local okR = ok and pcall(function()
     rgroup = StaticConstructObject(cvCls, outer)
     local gs = canvas[m.canvasAddFn](canvas, rgroup)
     gs:SetPosition({ X = RX, Y = TY })

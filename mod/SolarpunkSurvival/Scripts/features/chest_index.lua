@@ -160,12 +160,15 @@ local function freeFor(inv, cls)
 end
 
 -- Our own transfer just moved `delta` of cls into (positive) or out of (negative) chestKey.
+-- Patch the amount but DELIBERATELY leave `at` alone: the timestamp measures how long ago we
+-- last saw the chest for real, and our own move teaches us nothing about the deposits we
+-- cannot see (a hand drop, a teammate's dump). Re-stamping here let a cached zero blind the
+-- ledger to a chest someone had just filled, for a fresh full TTL after every mod-driven pull.
 local function noteMove(key, cls, delta)
   local ck = clsKey(cls)
   local hit = counts[key] and counts[key][ck]
   if hit then
     hit.amt = math.max(0, hit.amt + delta)
-    hit.at = os.clock()
   end
 end
 

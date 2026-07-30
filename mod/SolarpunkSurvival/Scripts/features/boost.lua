@@ -175,13 +175,22 @@ local function enterBoost(ship)
   ctx.uehelp.set(ship, m.targetSpeedProp, maxSpeed)
   ctx.uehelp.set(ship, m.boostAdditionProp, boostAdd)
   if not baseFov then
-    local cam = shipCamera(ship)
-    local okF, f = cam and ctx.uehelp.get(cam, m.fovProp)
-    baseFov = (okF and tonumber(f)) or 105.0
+    -- `local okF, f = cam and get(...)` looks right and is not: Lua adjusts `and`'s right
+    -- operand to ONE value, so f was always nil and baseFov always took the fallback --
+    -- every exit glide then restored 105 instead of the FOV the camera actually had.
+    local cam, f = shipCamera(ship), nil
+    if cam then
+      local okF, v = ctx.uehelp.get(cam, m.fovProp)
+      if okF then f = tonumber(v) end
+    end
+    baseFov = f or 105.0
   end
   setFov(ship, baseFov + (tonumber(cfg("boost_fov_add")) or 20.0))
   speedFx(ship, true)
-  if not boosting then windOn() end
+  -- gate on the loop itself, not on `boosting`: a re-light DURING the exit glide still has
+  -- boosting == true (beginRamp only sets `ramping`) while windOff has already dropped the
+  -- component, so a flag test left every re-lit boost silent for the rest of the flight
+  if not windComp then windOn() end
   boosting, ramping = true, false
   chainTok = chainTok + 1
   startWatch(chainTok)

@@ -30,18 +30,18 @@
 --     no drop at all. While the bar is up the water sits still (the rod's bite roll is parked,
 --     see suppressBites) and the resolve click reels the line in -- win reels in the prize.
 --   * The TAB inventory (any hand rebuild) can kill the rod actor, uncasting a thrown line.
---     For the DIAMOND rod this is fixed at the DATA level (2026-07-29): its row carries the
---     vanilla FishingRod's ItemInteractionType (tool), so UpdateHandMeshesAndModes takes the
---     tool branch, finds no matching class in the hardcoded ladder, and returns WITHOUT
---     touching the hand actor -- closing the inventory never uncasts it. (The old consumable
---     I2 typing sent every rebuild through UpdateHandConsumable's baked food map, which nulled
---     the hand: destroy + "can not spawn an actor from a NULL class" x2 per close.) The
---     VANILLA rod's class IS in the ladder, so its rebuilds still destroy+respawn natively;
---     the mod tracks its line via RodInUse?/roll ticks and re-throws after the rebuild, pity
---     ramp included (recastAfterRebuild). Do NOT try to preserve the actor from the rebuild
---     pre-hook: the chokepoint re-enters itself (SetHandRBlueprintForBoth -> SwitchHandItem ->
---     UpdateHandMeshesAndModes) and sync UObject work inside that nested hook dispatch was the
---     2026-07-28 all-UE4SS AV crash cluster.
+--     DIAMOND rod: fixed at the DATA level -- its row keeps the wand-safe ItemType (T5 primary;
+--     the full tool taxonomy is the 109fcd9 world-load crash) but carries the TOOL
+--     ItemInteractionType (make_row interaction=1 in tools/pakkit/build_wand_pak.py), so
+--     UpdateHandMeshesAndModes takes the tool branch, misses its hardcoded class ladder, and
+--     returns WITHOUT touching the hand actor: closing the inventory never uncasts it. (The old
+--     consumable I2 typing routed every rebuild through UpdateHandConsumable's baked food map,
+--     which nulled the hand: destroy + failed respawn per close.) VANILLA rod: its class IS in
+--     the ladder, so rebuilds still destroy+respawn natively; recastAfterRebuild tracks its line
+--     via RodInUse?/roll ticks and re-throws after the rebuild, pity ramp included. Do NOT try
+--     to preserve the actor from the rebuild pre-hook instead: the chokepoint re-enters itself
+--     (SetHandRBlueprintForBoth -> SwitchHandItem -> UpdateHandMeshesAndModes) and sync UObject
+--     work inside that nested hook dispatch was the 2026-07-28 all-UE4SS AV crash cluster.
 --
 -- Fished-up rods arrive "worn": a fresh rod item appearing in the inventory right after a catch
 -- click is stamped a random durability via the game's own OverwriteAndSaveItemAtIndex (the wand's
@@ -279,9 +279,9 @@ function F.vsyncScale(elapsed, rate, cap)
 end
 
 -- A rolled oscillation period in [min, max] seconds (the vsync speed band: the sliding bar's
--- fastest roll down to double that speed).
+-- fastest roll down to half that speed).
 function F.vsyncPeriod(minP, maxP, r)
-  local lo, hi = tonumber(minP) or 0.4, tonumber(maxP) or 0.8
+  local lo, hi = tonumber(minP) or 0.8, tonumber(maxP) or 1.6
   if hi < lo then lo, hi = hi, lo end
   return hi - (r or 0) * (hi - lo)
 end
@@ -1212,10 +1212,11 @@ local function makeVsyncJob(tok, pawn)
     local secs = tonumber(cfg("fishing_vsync_slide_secs")) or 0.25
     local frac = secs > 0 and math.min(1, (now - slide.clickAt) / secs) or 1
     if not UI.vsyncSlide(frac, slide.hit) then
-      mgActive = false
-      mgSlide = nil
-      UI.fold()
-      resumeBites()
+      -- The shell died under the animation, but the verdict was SEALED at the click. Pay it
+      -- out exactly as a landed slide does: dropping it here threw away catches the player had
+      -- already won (with no flash and no log line to show for it) and left lineOut true on a
+      -- rod that was never reeled in.
+      finishVsync(pawn, slide)
       return "stop"
     end
     if frac >= 1 then
@@ -1411,13 +1412,15 @@ local function onClick(pawn, clickAt)
     if mgKind == "vsync" then
       mgWheel = nil
       local lineH = tonumber(cfg("fishing_vsync_line")) or 3.6
-      local pMin = tonumber(cfg("fishing_vsync_period_min")) or 0.4
-      local pMax = tonumber(cfg("fishing_vsync_period_max")) or 0.8
+      local pMin = tonumber(cfg("fishing_vsync_period_min")) or 0.8
+      local pMax = tonumber(cfg("fishing_vsync_period_max")) or 1.6
       local perL = F.vsyncPeriod(pMin, pMax, math.random())
       local perR = F.vsyncPeriod(pMin, pMax, math.random())
-      -- the two lanes must run at visibly DIFFERENT speeds (user spec); re-roll near-twins
+      -- the two lanes must run at visibly DIFFERENT speeds (user spec); re-roll near-twins.
+      -- The threshold is a tenth of the band, so retuning the speeds keeps the same feel.
+      local twin = math.abs(pMax - pMin) * 0.1
       for _ = 1, 4 do
-        if math.abs(perL - perR) >= 0.04 then break end
+        if math.abs(perL - perR) >= twin then break end
         perR = F.vsyncPeriod(pMin, pMax, math.random())
       end
       local rectH = lineH * 10
@@ -1538,12 +1541,23 @@ end
 -- straight back and re-apply the pity ramp -- opening/closing the inventory doesn't cost the
 -- player their cast. RodInUse? on the fresh actor guards the toggle: already-out never re-drives.
 local function recastAfterRebuild(pawn, kind, attempt)
-  if not (ctx.uehelp.isValid(pawn) and lineOut and cfg("fishing_enabled")) then return end
-  if heldRodKind(pawn) ~= kind then return end
+  -- TEMP diag (info): every exit path logs why -- demote to debug once the vanilla-rod
+  -- recast is player-verified
+  if not (ctx.uehelp.isValid(pawn) and lineOut and cfg("fishing_enabled")) then
+    ctx.log.info("fishing: recast diag -- bail (pawn/lineOut/cfg) lineOut=" .. tostring(lineOut))
+    return
+  end
+  if heldRodKind(pawn) ~= kind then
+    ctx.log.info("fishing: recast diag -- bail (held " .. tostring(heldRodKind(pawn))
+      .. " ~= " .. tostring(kind) .. ")")
+    return
+  end
   local m = ctx.map.fishing
   local rod
   pcall(function() rod = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
   if not (ctx.uehelp.isValid(rod) and ctx.uehelp.className(rod) == m.rodHandClass) then
+    ctx.log.info("fishing: recast diag -- hand not a rod actor yet (attempt "
+      .. tostring(attempt or 1) .. ", " .. tostring(ctx.uehelp.className(rod)) .. ")")
     if (attempt or 1) < 3 then -- the diamond seat is itself deferred; give it another beat
       defer(600, ctx.log.guard("fishing.recast", function()
         onGameThread(function() recastAfterRebuild(pawn, kind, (attempt or 1) + 1) end)
@@ -1552,10 +1566,30 @@ local function recastAfterRebuild(pawn, kind, attempt)
     return
   end
   local okU, inUse = ctx.uehelp.get(rod, m.rodInUseProp)
-  if not okU or inUse == true then return end
-  if os.clock() - lastRecastAt < 1.5 then return end -- rebuilds echo; one throw per lost line
+  if not okU or inUse == true then
+    ctx.log.info("fishing: recast diag -- retired (RodInUse ok=" .. tostring(okU)
+      .. " inUse=" .. tostring(inUse) .. ")")
+    return
+  end
+  if os.clock() - lastRecastAt < 1.5 then
+    -- Rebuilds echo, and one throw per lost line is the rule. But a SECOND genuine rebuild
+    -- inside the window is not an echo -- open and close the inventory twice quickly and
+    -- dropping it outright left a fresh, reeled-in rod with lineOut still true and nothing
+    -- ever scheduled to fix it: no bites for the rest of the session. Retry once the window
+    -- closes instead; a real echo simply finds RodInUse? true above and retires there.
+    ctx.log.info("fishing: recast diag -- inside the echo window, retrying (attempt "
+      .. tostring(attempt or 1) .. ")")
+    if (attempt or 1) < 5 then
+      defer(math.floor((1.5 - (os.clock() - lastRecastAt)) * 1000) + 100,
+        ctx.log.guard("fishing.recast", function()
+          onGameThread(function() recastAfterRebuild(pawn, kind, (attempt or 1) + 1) end)
+        end))
+    end
+    return
+  end
   lastRecastAt = os.clock()
   ctx.uehelp.call(pawn, m.useRodFn)
+  ctx.log.info("fishing: the line flies back out")
   local bonus = lastBonus
   if bonus and bonus > 0 then
     -- the bobber's water-landing zeroes RandomCatchBonus (rod ubergraph); restore it after
@@ -1569,18 +1603,13 @@ local function recastAfterRebuild(pawn, kind, attempt)
   end
 end
 
--- SYNCHRONOUS pre-hook half of the never-uncast fix (bytecode RE 2026-07-28, char ubergraph):
--- UpdateHandMeshesAndModes fires via ProcessEvent BEFORE the game's tool switch runs, and the
--- only destroy of the held rod sits inside SetHandRBlueprintForBoth behind
--- IsValid(CurHandItemFirstPerson). Nil that property here and the cast rod actor SURVIVES the
--- rebuild untouched -- line in the water, parked bite roll, pity ramp and all. The game then
--- spawns a reeled-in duplicate into the same hand socket (vanilla row) or nothing at all
--- (diamond row: unmatched in every class switch); restoreCast swaps the original back ~150 ms
--- later and the water never noticed. Everything in this body is plain property/struct reads
--- plus ONE property write -- no reflected UFunction calls (VM re-entrancy from a hook body is
--- the proven crash class).
 -- Deferred body of the UpdateHandMeshesAndModes hook -- the ONE equip chokepoint (hotbar
--- switches AND every UI close funnel through it).
+-- switches AND every UI close funnel through it). Deferred on purpose: the chokepoint re-enters
+-- itself, and sync UObject work inside that nested dispatch is the proven AV crash class (see
+-- the header). The diamond rod's actor SURVIVES a UI-close rebuild (I1 row typing, see header):
+-- seatDiamond sees it live and stands down, recastAfterRebuild retires on RodInUse?. The
+-- vanilla rod's actor is already gone by the time this runs -- its cast line is re-thrown by
+-- recastAfterRebuild below, not rescued.
 local function onHandRebuilt(pawn)
   if not ctx.uehelp.isValid(pawn) then return end
   if mgActive or mgPending then
@@ -1599,10 +1628,18 @@ local function onHandRebuilt(pawn)
     end
     mgSlow, mgSlide = nil, nil
     if mgSavedBonus ~= nil then lastBonus = mgSavedBonus end
-    mgRod, mgSavedBonus = nil, nil
+    -- Put the real bite roll BACK on the rod before letting go of the handle. Dropping
+    -- mgRod/mgSavedBonus outright left any rod that outlived the rebuild parked at the -1000
+    -- suppressBites wrote -- clamp(0.3 + bonus, 0, 1) = 0, so the line sat in the water and
+    -- could never get another bite; the recast salvage cannot cover it either (it bails on
+    -- RodInUse? while the line is still out).
+    resumeBites()
     restoreMgRiver()
   end
   local kind = heldRodKind(pawn)
+  if kind then -- TEMP diag: what every rod-in-hand rebuild decides (demote with the rest)
+    ctx.log.info("fishing: rebuild diag -- kind=" .. kind .. " lineOut=" .. tostring(lineOut))
+  end
   local was = diamondHeld
   diamondHeld = (kind == "diamond")
   if kind == "diamond" then
