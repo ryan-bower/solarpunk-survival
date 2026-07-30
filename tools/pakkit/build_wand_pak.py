@@ -1192,7 +1192,8 @@ HANDBOOK_PAGES = [
     # -------- HOMESTEAD --------
     ("Hand_S5P1", 5, "Icon_SortingChest",
      "The blue chest sorts."
-     "\n\nBuild it, run a cable to it like any machine, and empty your pockets into it. Every few"
+     "\n\nMake it at the Energy Crafting Table, run a cable to it like any machine, and empty"
+     " your pockets into it. Every few"
      " seconds it takes what is inside and files it into whichever chest nearby already keeps"
      " that sort of thing. It will not invent a home for something -- it only agrees with the"
      " homes you already made. Whatever nothing wants stays in the blue chest for you to settle."
@@ -1255,8 +1256,8 @@ HANDBOOK_PAGES = [
      " from the start. If somebody joins you and looks lost, hand them one."
      "\n\nThe Tempest Codex -- a log, two leaves and clay at the bench, after the Dark Arts"
      " research. The full account of the circle and the rites."
-     "\n\nThe Sorting Chest -- four logs, four iron and two cobalt at the bench. No research"
-     " needed; you have always known how."),
+     "\n\nThe Sorting Chest -- four logs, four iron and two cobalt at the Energy Crafting Table,"
+     " with the other machines. No research needed; you have always known how."),
     # kept under ~590 chars a page: that is the longest the codex ships, and the length the page
     # widget is known to render without the reader having to scroll
     ("Hand_S7P2", 7, "Icon_StickBlue",

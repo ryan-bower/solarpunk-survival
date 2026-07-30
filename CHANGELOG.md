@@ -315,7 +315,8 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   reconciliation (the "sometimes missing players" bug) entirely. Capability-latched: a build
   that refuses TextBlock construction logs one warning and drops only this feature.
 - **The blue Sorting Chest** (content pak + `features/sort_chest.lua` + `features/chest_index.lua`):
-  a craftable, powered, cobalt-blue chest (bench recipe: 4 logs, 4 iron, 2 cobalt) that files
+  a craftable, powered, cobalt-blue chest (Energy Crafting Table, no research: 4 logs, 4 iron,
+  2 cobalt — it was briefly on the plain Crafting Table, where a machine shows in no category) that files
   its contents into other chests within 50 m. Every pass it Quick Stacks into the next chest on
   the rotation — the game's own `Quick Stack` pulls exactly the item classes that chest already
   holds, which is the sorting rule; items no neighbor wants simply stay put. Draws **500 power
