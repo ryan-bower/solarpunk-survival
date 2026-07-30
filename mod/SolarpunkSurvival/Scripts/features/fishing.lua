@@ -373,6 +373,13 @@ function F.wornShare(group, shortCls)
   return worn / (worn + full)
 end
 
+-- The Durability number out of a slot's AdditionalSavedata JSON (nil = factory-fresh slot).
+function F.durabilityFromSavedata(sd)
+  if type(sd) ~= "string" then return nil end
+  local n = sd:match('"Durability"%s*:%s*(%-?%d+)')
+  return n and tonumber(n) or nil
+end
+
 --------------------------------------------------------------------- helpers
 local function onGameThread(fn)
   if ExecuteInGameThread then
@@ -578,6 +585,8 @@ end
 -- IsDay sampling on a slow self-rechaining one-shot (the storms.naturalWatchdog shape --
 -- free-running UObject timers are the proven native crash; this touches one prop per pass,
 -- re-found fresh, fully guarded). A flip opens the fishing_twilight_secs window.
+local snapshotRods -- forward: the rod ledger (defined with its section below)
+
 local function dayWatch(tok)
   local ms = math.max(5, math.floor((tonumber(cfg("fishing_daywatch_secs")) or 20) * 1000))
   pcall(ExecuteWithDelay, ms, ctx.log.guard("fishing.daywatch", function()
@@ -598,6 +607,7 @@ local function dayWatch(tok)
         end
       end
       checkMult("twilight")  -- catches window expiry too
+      if snapshotRods then snapshotRods("watch") end
       dayWatch(tok)
     end)
   end))
@@ -782,6 +792,228 @@ local function scheduleSweeps(pawn, group)
       onGameThread(function() sweepNewRods(pawn, group, tok) end)
     end))
   end
+end
+
+--------------------------------------------------------------------- rod ledger
+-- The diamond rod INTERMITTENTLY vanishes across a quit+rejoin (user report 2026-07-30; a
+-- quit-save held zero rods across all 1470 slots while the same pak's wands persisted, and the
+-- player loads in WITH the rod on good days -- so the loss is at load or mid-session, then the
+-- next save bakes it in). Until it is caught red-handed this ledger detects AND heals:
+--   * snapshotRods: cheap PLAYER-inventory count+durability snapshot -- rides the daywatch tick
+--     and every game save -- persisted as a sidecar flag (write is host-gated by core/save, so
+--     the ledger is effectively host-only; on clients it is a harmless in-memory no-op).
+--   * rodLedgerSweep (world entry, once): audits the WHOLE world -- every BC_InventorySystem
+--     (players, chests, ship, deathloot, trash backing store) plus rod item actors on the
+--     ground. Rods the ledger promised that exist NOWHERE are re-granted with their recorded
+--     durability, loudly. The log then dates the loss: gone at entry = load-time; a daywatch
+--     "LEFT the player inventory" line mid-session = something ate it live.
+-- Snapshots are GATED until the entry audit ran (ledgerDone) -- else the first post-load
+-- snapshot would record the loss as the new truth before the sweep could act on it.
+local LEDGER_FLAG = "diamond_rod_ledger"
+local INV_SYS_CLASS = "BC_InventorySystem_C" -- every inventory in the game is this component
+local ledgerDone = false
+local ledgerToken = 0
+local ledgerHold = false -- a restore is unverified (or failed): snapshots must NOT overwrite
+                         -- the promise with the still-rodless truth (live-burned 2026-07-30:
+                         -- DEBUG_SpawnItems "succeeded", delivered nothing, and the instant
+                         -- snapshot zeroed the ledger -- the rod debt was erased)
+
+local function diamondShort()
+  local m = ctx.map.fishing
+  if not (ctx.map.items and ctx.map.items.classFmt and m.diamondRow) then return nil end
+  return string.format(ctx.map.items.classFmt, m.diamondRow)
+end
+
+-- Durabilities (full max when fresh) of every diamond rod in ONE inventory component.
+local function rodsInInventory(inv, target)
+  local out = {}
+  local m, wm = ctx.map.fishing, ctx.map.wand
+  pcall(function()
+    local arr = inv[m.invArrayProp]
+    arr:ForEach(function(_, el)
+      local e = el
+      pcall(function() e = el:get() end)
+      if e == nil then e = el end
+      local it
+      pcall(function() it = e[wm.slotItemField] end)
+      if ctx.uehelp.isValid(it) then
+        local cn
+        pcall(function() cn = it:GetFName():ToString() end)
+        if cn == target then
+          local sd
+          pcall(function()
+            local raw = e[wm.slotSavedataField]
+            sd = (type(raw) == "string") and raw or raw:ToString()
+          end)
+          out[#out + 1] = F.durabilityFromSavedata(sd) or m.diamondDurability or 2000
+        end
+      end
+    end)
+  end)
+  return out
+end
+
+snapshotRods = function(reason)
+  if not (ledgerDone and cfg("fishing_rod_ledger")) or ledgerHold then return end
+  local target = diamondShort()
+  if not target then return end
+  local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
+  if not ctx.uehelp.isValid(pawn) then return end
+  local inv
+  pcall(function() inv = pawn[ctx.map.wand.inventorySystemProp or "InventorySystem"] end)
+  if not ctx.uehelp.isValid(inv) then return end
+  local dur = rodsInInventory(inv, target)
+  local prev = ctx.save.getFlag(LEDGER_FLAG)
+  local prevN = (type(prev) == "table" and tonumber(prev.n)) or 0
+  if #dur < prevN then
+    ctx.log.warn(string.format(
+      "fishing: rod ledger -- %d diamond rod(s) LEFT the player inventory mid-session (%s), %d -> %d (stored/traded is fine; if not, this line dates the loss)",
+      prevN - #dur, tostring(reason), prevN, #dur))
+  end
+  local same = (#dur == prevN)
+  if same and type(prev) == "table" and type(prev.dur) == "table" then
+    for i = 1, #dur do
+      if dur[i] ~= tonumber(prev.dur[i]) then same = false; break end
+    end
+  elseif prevN > 0 or #dur > 0 then
+    same = false
+  end
+  if not same then ctx.save.setFlag(LEDGER_FLAG, { n = #dur, dur = dur }) end
+end
+
+-- How many diamond rods the player carries right now (-1 = inventory unreadable).
+local function playerRodCount(pawn, target)
+  local inv
+  pcall(function() inv = pawn[ctx.map.wand.inventorySystemProp or "InventorySystem"] end)
+  if not ctx.uehelp.isValid(inv) then return -1 end
+  return #rodsInInventory(inv, target)
+end
+
+-- Re-grant `missing` rods and put the recorded wear back on the fresh grants. DEBUG_SpawnItems
+-- returning cleanly proves NOTHING (it "succeeded" and delivered zero rods live 2026-07-30 --
+-- the same session whose LOAD dropped the rod, so the two failures likely share a root) --
+-- delivery is VERIFIED by recounting, retried twice, and on final failure the ledger keeps its
+-- promise (ledgerHold) so the next session's audit tries again.
+local function restoreRods(missing, durs)
+  local target = diamondShort()
+  local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
+  local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+  if not (target and ctx.uehelp.isValid(pawn) and ctx.uehelp.isValid(pc)) then return end
+  local m, wm = ctx.map.fishing, ctx.map.wand
+  local before = freshRods(pawn) -- pre-grant: pristine rods the player already owned stay theirs
+  local baseCount = playerRodCount(pawn, target)
+  if baseCount < 0 then return end
+  ledgerHold = true
+
+  local function stampWear()
+    local worn = {}
+    for _, d in ipairs(durs or {}) do
+      local n = tonumber(d)
+      if n and n < (m.diamondDurability or 2000) then worn[#worn + 1] = n end
+    end
+    if #worn == 0 or not (wm and wm.overwriteSlotFn and wm.slotItemField
+                          and wm.slotQtyField and wm.slotSavedataField) then
+      return
+    end
+    local now = freshRods(pawn)
+    local inv
+    pcall(function() inv = pawn[wm.inventorySystemProp or "InventorySystem"] end)
+    local cls = resolveClass(target)
+    if not (ctx.uehelp.isValid(inv) and cls) then return end
+    local wi = 1
+    for idx, kind in pairs(now) do
+      if kind == "diamond" and not before[idx] and wi <= #worn then
+        local slot = {
+          [wm.slotItemField] = cls,
+          [wm.slotQtyField] = 1,
+          [wm.slotSavedataField] = durabilitySavedata(worn[wi]),
+        }
+        if ctx.uehelp.call(inv, wm.overwriteSlotFn, slot, idx) then wi = wi + 1 end
+      end
+    end
+  end
+
+  local attempt
+  attempt = function(round)
+    if not ctx.uehelp.isValid(pawn) then ledgerHold = false; return end
+    local owed = missing - (math.max(0, playerRodCount(pawn, target)) - baseCount)
+    for _ = 1, owed do ctx.items.giveByClass(pc, target, 1) end
+    defer(2000, ctx.log.guard("fishing.ledgerverify", function()
+      onGameThread(function()
+        if not ctx.uehelp.isValid(pawn) then ledgerHold = false; return end
+        local landed = math.max(0, playerRodCount(pawn, target)) - baseCount
+        if landed >= missing then
+          ctx.log.warn(string.format(
+            "fishing: rod ledger -- %d diamond rod(s) returned to your pack (verified)", landed))
+          stampWear()
+          ledgerHold = false
+          snapshotRods("restore")
+        elseif round < 3 then
+          ctx.log.info(string.format(
+            "fishing: rod ledger -- the spawner delivered %d of %d, asking again (round %d)",
+            landed, missing, round + 1))
+          attempt(round + 1)
+        else
+          ctx.log.warn(string.format(
+            "fishing: rod ledger -- the spawner refused the rod this session (%d of %d landed after 3 rounds) -- the debt stands and the next load will try again",
+            landed, missing))
+          -- ledgerHold stays true: the promise survives this broken session untouched
+        end
+      end)
+    end))
+  end
+  attempt(1)
+end
+
+-- The once-per-world-entry audit. Retries (the 45s pass) only while not ledgerDone -- a world
+-- still streaming in (few live inventory systems) cannot be audited without risking a dupe.
+local function rodLedgerSweep(tok)
+  if tok ~= ledgerToken or ledgerDone then return end
+  if not cfg("fishing_rod_ledger") then ledgerDone = true; return end
+  local target = diamondShort()
+  if not target then ledgerDone = true; return end
+  local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
+  if not ctx.uehelp.isValid(pawn) then return end
+  local prev = ctx.save.getFlag(LEDGER_FLAG)
+  local promised = (type(prev) == "table" and tonumber(prev.n)) or 0
+  if promised <= 0 then
+    ledgerDone = true
+    snapshotRods("entry")
+    return
+  end
+  local systems = ctx.uehelp.findAll(INV_SYS_CLASS)
+  local live, total = 0, 0
+  for _, sys in ipairs(systems) do
+    if ctx.uehelp.isValid(sys) then
+      local fn = ""
+      pcall(function() fn = sys:GetFullName() end)
+      if not fn:find("Default__", 1, true) then
+        live = live + 1
+        total = total + #rodsInInventory(sys, target)
+      end
+    end
+  end
+  if live < 4 then return end -- chests not streamed in yet; the later pass retries
+  for _, a in ipairs(ctx.uehelp.findAll(target)) do -- rods lying on the ground are still rods
+    if ctx.uehelp.isValid(a) then
+      local fn = ""
+      pcall(function() fn = a:GetFullName() end)
+      if not fn:find("Default__", 1, true) then total = total + 1 end
+    end
+  end
+  ledgerDone = true
+  local missing = promised - total
+  if missing <= 0 then
+    ctx.log.info(string.format(
+      "fishing: rod ledger -- all %d promised diamond rod(s) accounted for (%d inventories)",
+      promised, live))
+    snapshotRods("entry")
+    return
+  end
+  ctx.log.warn(string.format(
+    "fishing: rod ledger -- %d diamond rod(s) VANISHED across the reload (world holds %d of the %d promised; %d inventories swept) -- the load dropped them, restoring",
+    missing, total, promised, live))
+  restoreRods(missing, (type(prev) == "table" and prev.dur) or {})
 end
 
 --------------------------------------------------------------------- skillshot bar (UI)
@@ -1777,6 +2009,16 @@ local function applyAll()
     diamondHeld = false
     lastIsDay = nil
     stormNow = (ctx.services.isStormy and ctx.services.isStormy()) or false
+    -- rod ledger: audit the fresh world once its chests have streamed in (two chances)
+    ledgerDone = false
+    ledgerHold = false
+    ledgerToken = ledgerToken + 1
+    local ltok = ledgerToken
+    for _, ms in ipairs({ 15000, 45000 }) do
+      defer(ms, ctx.log.guard("fishing.ledger", function()
+        onGameThread(function() rodLedgerSweep(ltok) end)
+      end))
+    end
   end
   armHooks()
   -- rivers stream in with the level; spaced passes catch the stragglers (idempotent writes)
@@ -1823,6 +2065,11 @@ function F.init(c)
     -- storms no longer touch the loot bands -- wetNow() reads this flag for the skillshot bonus
     stormNow = ev and ev.storm == true
   end)
+  -- rod ledger: a game save is the moment the world's truth gets baked -- snapshot with it, so
+  -- the ledger always describes the save the next load will read
+  ctx.bus.on("save.write", function()
+    deferOnly(0, function() onGameThread(function() snapshotRods("save") end) end)
+  end)
   dayToken = dayToken + 1
   dayWatch(dayToken)
 
@@ -1840,10 +2087,12 @@ function F.init(c)
   pcall(function()
     RegisterConsoleCommandHandler("sps_fish", function()
       local mult, twilight = currentMult()
+      local led = ctx.save.getFlag(LEDGER_FLAG)
       ctx.log.info(string.format(
-        "fishing: mult x%.1f (diamond=%s storm=%s twilight=%s) tables=%s minigame=%s",
+        "fishing: mult x%.1f (diamond=%s storm=%s twilight=%s) tables=%s minigame=%s ledger=%s/%s",
         mult, tostring(diamondHeld), tostring(stormNow), tostring(twilight),
-        tablesBroken and "BROKEN" or "ok", tostring(mgReady)))
+        tablesBroken and "BROKEN" or "ok", tostring(mgReady),
+        tostring(type(led) == "table" and led.n or 0), ledgerDone and "audited" or "pre-audit"))
       return true
     end)
     RegisterConsoleCommandHandler("sps_fish_tables", function()

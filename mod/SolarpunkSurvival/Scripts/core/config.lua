@@ -430,6 +430,10 @@ M.defaults = {
                                  -- are the proven native crash)
   fishing_rod_wear_min = 0.10,   -- a FISHED-UP rod keeps between these fractions of its max
   fishing_rod_wear_max = 0.60,   -- durability ("random amount of durability remaining")
+  fishing_rod_ledger  = true,    -- diamond rods vanish across some reloads (intermittent, cause
+                                 -- unproven): snapshot the player's rods (count+durability) into
+                                 -- the mod sidecar, audit the whole world at entry, and re-grant
+                                 -- any rod that exists nowhere -- with its recorded wear
   fishing_minigame_chance = 0.05,-- 5% of bites: the catch click yields a leaf and reveals the
                                  -- skillshot bar; a second click in the golden zone = a rare/jackpot
                                  -- guarantee (diamond rod: smaller zone, jackpot-only)
@@ -457,9 +461,9 @@ M.defaults = {
   fishing_vsync_line  = 3.6,     -- the line's base height, px
   fishing_vsync_grow_rate = 2.0, -- growth per second, in units of the base height
   fishing_vsync_grow_cap  = 9.0, -- growth ceiling, in units of the base height
-  fishing_vsync_period_min = 0.8, -- fastest full ping-pong, seconds (the sliding bar's own
-                                 -- fastest roll -- half the speed this game shipped with)
-  fishing_vsync_period_max = 1.6, -- slowest -- half the fastest, so the band is still 2:1
+  fishing_vsync_period_min = 1.6, -- fastest full ping-pong, seconds (user pass 2026-07-30:
+                                 -- both lanes at HALF speed again -- periods doubled)
+  fishing_vsync_period_max = 3.2, -- slowest -- half the fastest, so the band is still 2:1
   fishing_vsync_x     = 840.0,   -- left lane's left edge, canvas px at 1080p design res
   fishing_vsync_dx    = 70.0,    -- right lane's offset from the left lane (lanes are
                                  -- fishing_bar_h=26 wide, so this leaves a 44 px alley)

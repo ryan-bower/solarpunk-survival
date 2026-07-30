@@ -898,6 +898,15 @@ do
   eq(fishing.miniChance(true, 0.05, 1.5), 1, "fishing: chance clamps to a probability")
   eq(fishing.miniChance(false, nil, nil), 0, "fishing: garbage config reads as never")
 
+  -- rod ledger: the durability parser reads the game's exact savedata shape and nothing else
+  eq(fishing.durabilityFromSavedata("{\r\n\t\"Durability\": 973\r\n}"), 973,
+     "fishing: ledger reads the byte-exact savedata shape")
+  eq(fishing.durabilityFromSavedata('{"Durability":90}'), 90,
+     "fishing: ledger tolerates compact JSON")
+  eq(fishing.durabilityFromSavedata("{}"), nil, "fishing: no Durability key reads as fresh")
+  eq(fishing.durabilityFromSavedata(nil), nil, "fishing: nil savedata reads as fresh")
+  eq(fishing.durabilityFromSavedata(42), nil, "fishing: non-string savedata reads as fresh")
+
   -- worn-rod durability roll and the worn-vs-full diamond split
   eq(fishing.wornDurability(0, 200, 0.1, 0.6), 20, "fishing: worst fished rod keeps 10%")
   eq(fishing.wornDurability(1, 200, 0.1, 0.6), 120, "fishing: best fished rod keeps 60%")
