@@ -427,7 +427,7 @@ def add_texture_import(d, base_tex, new_tex):
     return tex_idx
 
 def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx, durability=None,
-             tools_tab=False, extra_types=None):
+             tools_tab=False, extra_types=None, interaction=None):
     stick = next(r for r in rows if r["Name"] == "Stick")
     rasp = next(r for r in rows if r["Name"] == "Raspberry")
     cobalt = next(r for r in rows if r["Name"] == "Cobalt")
@@ -480,7 +480,18 @@ def make_row(d, rows, row_name, display, desc, icon_idx, actor_idx, durability=N
     # active "use" interaction -- a passive I0 (Stick) shows nothing (proven: T5+I0 => invisible).
     # I2 makes the game draw the palm-out hold + SM_Stick. The wand has empty DefaultAttribues, so
     # "eating" it should be a no-op (no food value to consume); casting stays on our own input hooks.
+    # interaction=N overrides the enumerator: the DiamondFishingRod row passes 1 (tool) so the
+    # hand-rebuild chokepoint (UpdateHandMeshesAndModes switches on ItemInteractionType, bytecode
+    # RE 2026-07-28) takes the TOOL branch -- whose hardcoded class ladder doesn't know our row and
+    # returns WITHOUT touching the hand actor. A UI close then never destroys the mod-seated rod
+    # (a thrown line survives the TAB inventory); the old I2 typing routed every rebuild through
+    # UpdateHandConsumable's baked food map, which nulled + destroyed the hand actor per close.
+    # ItemType stays T5-primary -- ONLY the full tool taxonomy (ItemType [T1,T0] + durability,
+    # commit 109fcd9) is the proven world-load crash, not the interaction byte.
     field(row, "ItemInteractionType")["Value"] = copy.deepcopy(field(rasp, "ItemInteractionType")["Value"])
+    if interaction is not None:
+        field(row, "ItemInteractionType")["Value"] = \
+            f"EItemInteractionType::NewEnumerator{interaction}"
     # description: clone the Cobalt's populated text property, swap key + string
     di = next(i for i, p in enumerate(row["Value"]) if p["Name"].split("_")[0] == "Description")
     dp = copy.deepcopy(field(cobalt, "Description"))
@@ -614,12 +625,14 @@ def patch_db_items():
     # + durability on a NEW row = the proven world-load crash, commit 109fcd9): make_row's
     # wand-proven shape (T5 primary + T1 appended for the Tools tab + durability bar) loads clean,
     # and features/fishing.lua seats the REAL BP_HandItem_FishingRod on equip so it fishes like
-    # the vanilla rod. Durability 2000 = 10x the vanilla rod's 200.
+    # the vanilla rod. Durability 2000 = 10x the vanilla rod's 200. interaction=1 (tool) is the
+    # never-uncast fix: rebuilds miss the tool ladder and leave the cast rod actor alone (see
+    # make_row).
     make_row(d, rows, "DiamondFishingRod", "Diamond Fishing Rod",
              "Two cut diamonds crown the reel. Ten times the endurance of a plain rod, and the"
              " deep things rise to meet it: twice the luck for rare and precious catches."
              " Its skillshot demands a finer touch, and pays only in jackpots.",
-             icon_diarod, diarod_cls, durability=2000, tools_tab=True)
+             icon_diarod, diarod_cls, durability=2000, tools_tab=True, interaction=1)
     clone_item_row(d, rows, "Egg", "GoldEgg", "Gold Egg",
                    "One egg in twenty comes out gilded. Worth ten times the usual to the recycler.",
                    icon_goldegg, goldegg_cls, recycler=200)
