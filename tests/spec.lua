@@ -1030,11 +1030,12 @@ do
   eq(B.boostAddFor(80.0, 3.0), 160.0, "boost: scales with upgraded MaxSpeed")
   eq(B.boostAddFor(50.0, 1.0), 0.0, "boost: 1X adds nothing")
   eq(B.boostAddFor(50.0, 0.5), 0.0, "boost: sub-1 mult clamps to no boost")
-  eq(B.rampK(0, 3), 1, "boost: glide starts at full")
-  eq(B.rampK(1.5, 3), 0.5, "boost: glide midpoint")
-  eq(B.rampK(3, 3), 0, "boost: glide lands at zero")
-  eq(B.rampK(99, 3), 0, "boost: glide never undershoots")
-  eq(B.rampK(1, 0), 0, "boost: zero-length glide is instant")
+  eq(B.stepToward(100, 0, 25, 0.5), 87.5, "boost: glide steps down by rate*dt")
+  eq(B.stepToward(10, 0, 25, 0.5), 0, "boost: glide clamps at zero, never undershoots")
+  eq(B.stepToward(0, 15, 15, 0.5), 7.5, "boost: FOV eases up by rate*dt")
+  eq(B.stepToward(14, 15, 15, 0.5), 15, "boost: FOV clamps at the full bump")
+  eq(B.stepToward(15, 15, 15, 0.5), 15, "boost: at target stays at target")
+  eq(B.stepToward(5, 0, 0, 1), 0, "boost: zero rate (zero-length glide) is instant")
 end
 
 ------------------------------------------------------------------ recall assist (pure math)

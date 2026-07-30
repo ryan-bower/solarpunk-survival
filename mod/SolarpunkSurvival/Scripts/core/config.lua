@@ -315,8 +315,9 @@ M.defaults = {
   -- holding the slow-down control ramps back to normal max over boost_ramp_secs.
   boost_enabled       = true,
   boost_mult          = 3.0,     -- top speed while boosting, as a multiple of the ship's MaxSpeed
-  boost_fov_add       = 20.0,    -- degrees added to the ship camera's FOV while boosting
-  boost_ramp_secs     = 3.0,     -- seconds to glide from boost back to normal max speed
+  boost_fov_add       = 15.0,    -- degrees added to the ship camera's FOV while boosting
+  boost_fov_in_secs   = 1.0,     -- seconds for the FOV to ease up to the full bump on boost
+  boost_ramp_secs     = 3.0,     -- seconds to glide speed AND FOV back to normal on exit
   boost_volume        = 1.0,     -- wind loop volume
   boost_key           = "SPACE", -- UE4SS Key name; gated on IsControllingAirship? so on-foot
                                  -- SPACE stays the game's jump untouched

@@ -9,8 +9,12 @@
 -- dock-autopilot (LockedOntoTarget) -- in free flight the channel is OURS. So:
 --   enter:  TargetSpeed = MaxSpeed, Throttle = 1 (control pushed to max),
 --           BoostAddition = (boost_mult - 1) * MaxSpeed  (top speed becomes mult * MaxSpeed),
---           Camera.FieldOfView += boost_fov_add, wind loop on, NS_Airship_Speed shown.
---   exit:   BoostAddition and the FOV bump lerp to 0 over boost_ramp_secs, wind fades.
+--           FOV eases up linearly to +boost_fov_add over boost_fov_in_secs, wind loop on,
+--           NS_Airship_Speed shown.
+--   exit:   BoostAddition and the FOV bump ease linearly to 0 over boost_ramp_secs, wind fades.
+-- Transitions tick at ~33 ms with a FIXED dt per step (never a wall clock read): the glide is
+-- perfectly linear no matter how unevenly the delay timer fires, and can only ever take LONGER
+-- than the configured seconds, never collapse into a couple of visible jumps.
 -- The motor pitch rising with BoostAddition is the game's own reaction (it maps the value into
 -- its rotor sound) -- free feedback, no work here.
 --
@@ -26,8 +30,13 @@ local boosting = false   -- steady boost engaged
 local ramping  = false   -- exit glide running
 local chainTok = 0       -- bumping orphans any in-flight watch/ramp chain
 local baseFov            -- ship-camera FOV remembered at entry (restored exactly on exit)
-local boostAdd = 0       -- the BoostAddition we currently own
+local boostAdd = 0       -- the full BoostAddition this boost owns
+local curAdd   = 0       -- the BoostAddition currently applied (eases during the exit glide)
+local curBump  = 0       -- the FOV degrees currently applied on top of baseFov
 local windComp           -- AudioComponent when SpawnSound2D hands one back (else nil)
+
+local TICK_FAST = 33     -- ms between steps while FOV or speed is easing (~30 fps, smooth)
+local TICK_SLOW = 150    -- ms between passes when steady (just watching for the exit signal)
 
 local function bmap() return ctx.map.boost or {} end
 local function cfg(k) return ctx.config.get(k) end
@@ -41,14 +50,21 @@ local function deferOnly(ms, fn)
   pcall(ExecuteWithDelay, ms, fn)
 end
 
--- Pure ramp math (unit-tested): fraction of the boost still applied at `elapsed` seconds into
--- a `secs`-long exit glide, and the BoostAddition that makes top speed mult * maxSpeed.
-function F.rampK(elapsed, secs)
-  if not secs or secs <= 0 then return 0 end
-  local k = 1 - (elapsed or 0) / secs
-  if k < 0 then return 0 end
-  if k > 1 then return 1 end
-  return k
+-- Pure ramp math (unit-tested): move `cur` toward `target` by `rate` units/second over a `dt`-
+-- second step, clamping at the target (a non-positive rate snaps there), and the BoostAddition
+-- that makes top speed mult * maxSpeed.
+function F.stepToward(cur, target, rate, dt)
+  cur, target = tonumber(cur) or 0, tonumber(target) or 0
+  local step = (tonumber(rate) or 0) * (tonumber(dt) or 0)
+  if step <= 0 then return target end
+  if cur < target then
+    cur = cur + step
+    if cur > target then cur = target end
+  elseif cur > target then
+    cur = cur - step
+    if cur < target then cur = target end
+  end
+  return cur
 end
 
 function F.boostAddFor(maxSpeed, mult)
@@ -156,7 +172,7 @@ local function snapClear(ship)
     if baseFov then setFov(ship, baseFov) end
     speedFx(ship, false)
   end
-  baseFov, boostAdd = nil, 0
+  baseFov, boostAdd, curAdd, curBump = nil, 0, 0, 0
 end
 
 local startWatch  -- fwd decl
@@ -170,6 +186,7 @@ local function enterBoost(ship)
     return
   end
   boostAdd = F.boostAddFor(maxSpeed, cfg("boost_mult"))
+  curAdd = boostAdd
   -- control pushed to max, then the boost on top
   ctx.uehelp.set(ship, m.throttleProp, 1.0)
   ctx.uehelp.set(ship, m.targetSpeedProp, maxSpeed)
@@ -185,7 +202,8 @@ local function enterBoost(ship)
     end
     baseFov = f or 105.0
   end
-  setFov(ship, baseFov + (tonumber(cfg("boost_fov_add")) or 20.0))
+  -- no FOV snap here: the watch chain eases curBump up to the full bump over boost_fov_in_secs
+  -- (a re-light mid-glide keeps whatever bump is currently applied and climbs from there)
   speedFx(ship, true)
   -- gate on the loop itself, not on `boosting`: a re-light DURING the exit glide still has
   -- boosting == true (beginRamp only sets `ramping`) while windOff has already dropped the
@@ -198,9 +216,9 @@ local function enterBoost(ship)
     tonumber(cfg("boost_mult")) or 3, maxSpeed + boostAdd))
 end
 
--- The exit glide: BoostAddition and the FOV bump lerp to zero over boost_ramp_secs, stepped by
--- the same 150 ms chain. When it lands, stock numbers rule again -- keeping the slow-down
--- control held simply keeps decelerating the normal way.
+-- The exit glide: BoostAddition and the FOV bump ease linearly to zero over boost_ramp_secs.
+-- When it lands, stock numbers rule again -- keeping the slow-down control held simply keeps
+-- decelerating the normal way.
 local function beginRamp()
   if not boosting or ramping then return end
   ramping = true
@@ -209,7 +227,7 @@ local function beginRamp()
 end
 
 startWatch = function(tok)
-  local rampStart
+  local tickMs = TICK_FAST  -- the delay the CURRENT pass was scheduled with (= this step's dt)
   local function pass()
     if tok ~= chainTok then return end
     if not (boosting or ramping) then return end
@@ -219,29 +237,42 @@ startWatch = function(tok)
       return
     end
     local m = bmap()
+    local fovAdd = tonumber(cfg("boost_fov_add")) or 15.0
+    local dt = tickMs / 1000.0
+    local easing
     if ramping then
-      rampStart = rampStart or os.clock()
       local secs = tonumber(cfg("boost_ramp_secs")) or 3.0
-      local k = F.rampK(os.clock() - rampStart, secs)
-      ctx.uehelp.set(ship, m.boostAdditionProp, boostAdd * k)
-      if baseFov then
-        setFov(ship, baseFov + (tonumber(cfg("boost_fov_add")) or 20.0) * k)
-      end
-      if k <= 0 then
+      curAdd  = F.stepToward(curAdd, 0, boostAdd / secs, dt)
+      curBump = F.stepToward(curBump, 0, fovAdd / secs, dt)
+      ctx.uehelp.set(ship, m.boostAdditionProp, curAdd)
+      if baseFov then setFov(ship, baseFov + curBump) end
+      if curAdd <= 0 and curBump <= 0 then
         speedFx(ship, false)
         boosting, ramping = false, false
-        baseFov, boostAdd = nil, 0
+        baseFov, boostAdd, curAdd, curBump = nil, 0, 0, 0
         ctx.log.info("boost: back to honest sailing")
         return
       end
+      easing = true
     else
-      -- steady boost: watch for the slow-down control (negative throttle = the exit signal)
+      -- steady boost: ease the FOV bump up to full over boost_fov_in_secs, then hold it
+      if curBump ~= fovAdd then
+        local inSecs = tonumber(cfg("boost_fov_in_secs")) or 1.0
+        curBump = F.stepToward(curBump, fovAdd, fovAdd / inSecs, dt)
+        if baseFov then setFov(ship, baseFov + curBump) end
+        easing = curBump ~= fovAdd
+      end
+      -- watch for the slow-down control (negative throttle = the exit signal)
       local okT, thr = ctx.uehelp.get(ship, m.throttleProp)
       if okT and tonumber(thr) and tonumber(thr) < -0.05 then
         beginRamp()
+        easing = true
       end
     end
-    deferOnly(150, function() onGameThread(pass) end)
+    -- fixed-dt stepping: each step advances by the delay it ASKED for, so a late timer only
+    -- stretches the glide -- it can never skip ahead and turn the ease into visible jumps
+    tickMs = easing and TICK_FAST or TICK_SLOW
+    deferOnly(tickMs, function() onGameThread(pass) end)
   end
   onGameThread(pass)
 end
