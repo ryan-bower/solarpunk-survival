@@ -321,6 +321,11 @@ M.defaults = {
   boost_volume        = 1.0,     -- wind loop volume
   boost_key           = "SPACE", -- UE4SS Key name; gated on IsControllingAirship? so on-foot
                                  -- SPACE stays the game's jump untouched
+  boost_hint          = true,    -- "Press SPACE to boost" nudge at the wheel (the mod's own,
+                                 -- speed-gated -- unlike the vanilla boost tooltip that fires
+                                 -- even at max speed)
+  boost_hint_secs     = 20.0,    -- seconds spent AT max speed without boosting before it shows
+  boost_hint_show_secs = 5.0,    -- seconds the nudge stays up (shows once per turn at the wheel)
   qol_recall_mult     = 5.0,     -- airship recall multiplier -- the mod's own assist amplifies the
                                  -- return flight's travel leg AND the long "unstuck" descent (the
                                  -- raise, the final approach and the docking stay native;

@@ -27,7 +27,7 @@ M.schema = {
   energy   = { "linkFn" },
   boost    = { "shipClass", "maxSpeedProp", "targetSpeedProp", "currentSpeedProp", "throttleProp",
                "boostAdditionProp", "cameraProp", "fovProp", "speedFxProp", "windSound",
-               "windSoundPath" },
+               "windSoundPath", "possessFn" },
   stock    = { "chestClasses", "invProp", "invSysClass", "amtFn", "freeFn", "totalFn",
                "freeSlotsFn", "quickStackFn", "removeAmtFn", "addPlayerFn", "addFn" },
   sortchest = { "class", "deviceGetFn", "hasPowerFn", "enoughProp", "consumptionProp",
@@ -768,6 +768,10 @@ M.profiles = {
       -- the game's own boost-wind loop, referenced by BP_Airship right beside the boost symbols
       windSound     = "S_Wind_AirshipSpeed",
       windSoundPath = "/Game/Audio/SFX/Airship/S_Wind_AirshipSpeed.S_Wind_AirshipSpeed",
+      -- "someone took the wheel" -- the sibling of qol.shipUnpossessFn (both present in
+      -- out/bp_airship.json; Unpossessed proven hookable live by ship_chest). Arms the
+      -- boost-hint watch; engine-dispatched, so the ProcessEvent hook rule is satisfied.
+      possessFn     = "ReceivePossessed",
     },
     -- The chest stock ledger (features/chest_index.lua) + its two consumers. Offline RE
     -- 2026-07-29, BC_InventorySystem bytecode (tools/pakkit/out/BC_InventorySystem.json).

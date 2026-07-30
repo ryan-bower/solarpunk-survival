@@ -1036,6 +1036,17 @@ do
   eq(B.stepToward(14, 15, 15, 0.5), 15, "boost: FOV clamps at the full bump")
   eq(B.stepToward(15, 15, 15, 0.5), 15, "boost: at target stays at target")
   eq(B.stepToward(5, 0, 0, 1), 0, "boost: zero rate (zero-length glide) is instant")
+  eq(B.atMaxSpeed(50, 50), true, "hint: exactly max counts")
+  eq(B.atMaxSpeed(49.5, 50), true, "hint: within the 2% headroom counts")
+  eq(B.atMaxSpeed(40, 50), false, "hint: cruising below max does not")
+  eq(B.atMaxSpeed(nil, 50), false, "hint: unreadable speed does not")
+  eq(B.atMaxSpeed(50, 0), false, "hint: zero max never counts")
+  local acc, due = B.hintAccum(0, 1, true, 20)
+  eq(acc, 1, "hint: first second accumulates"); eq(due, false, "hint: not due at 1s")
+  acc, due = B.hintAccum(19.5, 1, true, 20)
+  eq(acc, 20.5, "hint: accumulates past the bar"); eq(due, true, "hint: due at 20s")
+  acc, due = B.hintAccum(15, 1, false, 20)
+  eq(acc, 0, "hint: a dip below max resets the count"); eq(due, false, "hint: reset is never due")
 end
 
 ------------------------------------------------------------------ recall assist (pure math)

@@ -15,6 +15,15 @@
 -- Transitions tick at ~33 ms with a FIXED dt per step (never a wall clock read): the glide is
 -- perfectly linear no matter how unevenly the delay timer fires, and can only ever take LONGER
 -- than the configured seconds, never collapse into a couple of visible jumps.
+--
+-- BOOST HINT: after boost_hint_secs at max speed WITHOUT boosting, a "Press SPACE to boost"
+-- TextBlock shows on the player overlay for boost_hint_show_secs, once per turn at the wheel.
+-- (The vanilla boost tooltip fires even when already at max speed -- this one is speed-gated.)
+-- Armed by the ship's ReceivePossessed (the ship_chest ReceiveUnpossessed discipline: hook
+-- re-keyed per ship instance, re-armed on the world-entry Character notify, body only
+-- schedules); the watch is a 1 s token-guarded re-chained one-shot that dies the moment the
+-- player leaves the wheel. First widget-construction failure latches the hint off for the
+-- session (the fishing_ui capability-latch discipline).
 -- The motor pitch rising with BoostAddition is the game's own reaction (it maps the value into
 -- its rotor sound) -- free feedback, no work here.
 --
@@ -71,6 +80,22 @@ function F.boostAddFor(maxSpeed, mult)
   local m = tonumber(mult) or 3.0
   if m < 1 then m = 1 end
   return (tonumber(maxSpeed) or 0) * (m - 1)
+end
+
+-- Pure hint math (unit-tested): "at max speed" leaves 2% headroom because CurrentSpeed
+-- integrates toward MaxSpeed asymptotically-ish and float crumbs must not starve the timer;
+-- hintAccum returns the new consecutive-seconds count and whether the hint just became due
+-- (any dip below max resets the count -- the 20 s must be UNBROKEN).
+function F.atMaxSpeed(cur, max)
+  cur, max = tonumber(cur), tonumber(max)
+  if not (cur and max) or max <= 0 then return false end
+  return cur >= max * 0.98
+end
+
+function F.hintAccum(accum, dt, atMax, needSecs)
+  if not atMax then return 0, false end
+  local a = (tonumber(accum) or 0) + (tonumber(dt) or 0)
+  return a, a >= (tonumber(needSecs) or 20.0)
 end
 
 local function liveShip()
@@ -161,12 +186,157 @@ local function setFov(ship, fov)
   if cam and fov then pcall(function() cam:SetFieldOfView(fov) end) end
 end
 
+--------------------------------------------------------------------- boost hint
+local hintTb             -- our TextBlock on the player overlay (world reload kills it; rebuilt)
+local hintBroken = false -- capability latch: first construction failure = hint off this session
+local hintUp    = false  -- the hint is currently visible
+local hintLeft  = 0      -- seconds the shown hint has left
+local hintAcc   = 0      -- consecutive seconds at max speed without boosting
+local hintShown = false  -- once per drive session (ReceivePossessed resets it)
+local hintTok   = 0      -- bumping orphans any in-flight hint watch chain
+local possHooked         -- ship-instance fullname the possess hook is currently armed off
+local possIds            -- { preId, postId, path }
+
+local VIS_SHOWN, VIS_HIDDEN = 4, 1  -- SelfHitTestInvisible / Collapsed (the qol-proven pair)
+local HINT_TICK = 1000              -- ms; two double reads off the ship per pass, nothing hot
+
+-- Root canvas of the always-on player overlay (the fishing_ui "flat"-surface recipe).
+local function overlayCanvas()
+  local pc = localController()
+  if not ctx.uehelp.isValid(pc) then return nil end
+  local overlay
+  pcall(function() overlay = pc[(ctx.map.qol and ctx.map.qol.overlayProp) or "PlayerOverlay"] end)
+  if not ctx.uehelp.isValid(overlay) then return nil end
+  local root
+  pcall(function() root = overlay.WidgetTree.RootWidget end)
+  if not ctx.uehelp.isValid(root) then return nil end
+  return root, overlay
+end
+
+local function makeHint()
+  if hintBroken then return nil end
+  if hintTb and ctx.uehelp.isValid(hintTb) then return hintTb end
+  hintTb = nil
+  local root, overlay = overlayCanvas()
+  local cls
+  pcall(function() cls = StaticFindObject("/Script/UMG.TextBlock") end)
+  if not (root and cls) then return nil end  -- overlay not up yet: retry, don't latch
+  local addFn = (ctx.map.fishing and ctx.map.fishing.canvasAddFn) or "AddChildToCanvas"
+  local tb
+  local ok = pcall(function()
+    tb = StaticConstructObject(cls, overlay)
+    tb:SetText(FText("Press " .. tostring(cfg("boost_key") or "SPACE") .. " to boost"))
+    local slot = root[addFn](root, tb)
+    -- anchored, not pixel-positioned: lower-center at every resolution, autosized to the text
+    slot:SetAnchors({ Minimum = { X = 0.5, Y = 0.72 }, Maximum = { X = 0.5, Y = 0.72 } })
+    slot:SetAlignment({ X = 0.5, Y = 0.5 })
+    slot:SetAutoSize(true)
+    slot:SetZOrder(70)
+    tb:SetVisibility(VIS_HIDDEN)
+  end)
+  if not (ok and tb and ctx.uehelp.isValid(tb)) then
+    if tb then pcall(function() tb:RemoveFromParent() end) end
+    hintBroken = true
+    ctx.log.warn("boost: hint label construction failed -- boost hint off this session")
+    return nil
+  end
+  hintTb = tb
+  return tb
+end
+
+local function hideHint()
+  hintUp, hintLeft = false, 0
+  if hintTb and ctx.uehelp.isValid(hintTb) then
+    pcall(function() hintTb:SetVisibility(VIS_HIDDEN) end)
+  end
+end
+
+local function showHint()
+  local tb = makeHint()
+  if not tb then return false end
+  hintUp = true
+  hintLeft = tonumber(cfg("boost_hint_show_secs")) or 5.0
+  pcall(function() tb:SetVisibility(VIS_SHOWN) end)
+  return true
+end
+
+-- The hint watch: armed by ReceivePossessed, dies the moment the player leaves the wheel
+-- (the next possession re-arms it). Same fixed-dt discipline as the boost glide.
+local function hintPass(tok)
+  if tok ~= hintTok then return end
+  if hintBroken or not cfg("boost_hint") then hideHint() return end
+  local ship = liveShip()
+  if not (ship and drivingNow()) then hideHint() return end
+  local dt = HINT_TICK / 1000.0
+  if boosting or ramping then
+    hintShown = true  -- the key is clearly known; never nag this drive
+    hintAcc = 0
+    if hintUp then hideHint() end
+  elseif hintUp then
+    hintLeft = hintLeft - dt
+    if hintLeft <= 0 then hideHint() end
+  elseif not hintShown then
+    local m = bmap()
+    local okC, cur = ctx.uehelp.get(ship, m.currentSpeedProp)
+    local okM, max = ctx.uehelp.get(ship, m.maxSpeedProp)
+    local due
+    hintAcc, due = F.hintAccum(hintAcc, dt,
+      okC and okM and F.atMaxSpeed(tonumber(cur), tonumber(max)),
+      tonumber(cfg("boost_hint_secs")))
+    -- showHint can fail benignly (overlay mid-rebuild): stay due and retry next pass
+    if due and showHint() then hintShown = true end
+  end
+  deferOnly(HINT_TICK, function() onGameThread(function() hintPass(tok) end) end)
+end
+
+local function fullFuncPath(obj, fnName)  -- the ship_chest recipe, verbatim
+  local full
+  pcall(function()
+    obj:GetClass():ForEachFunction(function(fn)
+      local n = ""; pcall(function() n = fn:GetFName():ToString() end)
+      if n == fnName then pcall(function() full = fn:GetFullName() end) end
+    end)
+  end)
+  if full then return (full:gsub("^%S+%s+", "")) end
+  return nil
+end
+
+-- Hook registration re-keyed to the SHIP INSTANCE (world reloads rebuild the ship on a possibly
+-- reloaded class and silently kill hooks left on the old copy -- the ship_chest lesson). A ship
+-- FIRST BUILT mid-session isn't seen until the next world entry re-arm; accepted, same as
+-- ship_chest.
+local function armPossessHook()
+  if not cfg("boost_hint") then return end
+  local ship = liveShip()
+  if not ship then return end
+  local shipFn; pcall(function() shipFn = ship:GetFullName() end)
+  if not shipFn or shipFn == possHooked then return end
+  local fn = bmap().possessFn
+  if not fn then return end
+  local path = fullFuncPath(ship, fn)
+  if not path then return end
+  if possIds then pcall(UnregisterHook, possIds[3], possIds[1], possIds[2]) end
+  possIds = nil
+  local ok, pre, post = pcall(RegisterHook, path, ctx.log.guard("boost.possess", function()
+    -- hook body: plain Lua only, then schedule -- a fresh drive session begins
+    hintShown, hintAcc = false, 0
+    hintTok = hintTok + 1
+    local tok = hintTok
+    deferOnly(1000, function() onGameThread(function() hintPass(tok) end) end)
+  end))
+  if ok then
+    possHooked, possIds = shipFn, { pre, post, path }
+    ctx.log.debug("boost: hint hook armed on " .. path)
+  end
+end
+
 --------------------------------------------------------------------- enter / exit
 local function snapClear(ship)
   -- immediate, no glide: for unpossess / lost ship / world reload
   boosting, ramping = false, false
   chainTok = chainTok + 1
   windOff()
+  hideHint()
   if ship and ctx.uehelp.isValid(ship) then
     ctx.uehelp.set(ship, bmap().boostAdditionProp, 0.0)
     if baseFov then setFov(ship, baseFov) end
@@ -209,6 +379,8 @@ local function enterBoost(ship)
   -- boosting == true (beginRamp only sets `ramping`) while windOff has already dropped the
   -- component, so a flag test left every re-lit boost silent for the rest of the flight
   if not windComp then windOn() end
+  hintShown = true  -- they pressed the key; the nudge is moot for the rest of this drive
+  hideHint()
   boosting, ramping = true, false
   chainTok = chainTok + 1
   startWatch(chainTok)
@@ -311,8 +483,15 @@ function F.init(c)
       local sub = (params and params[1]) or "toggle"
       onGameThread(function()
         if sub == "status" then
-          ctx.log.info(string.format("boost: boosting=%s ramping=%s add=%.1f driving=%s",
-            tostring(boosting), tostring(ramping), boostAdd, tostring(drivingNow())))
+          ctx.log.info(string.format(
+            "boost: boosting=%s ramping=%s add=%.1f driving=%s hint(acc=%.0fs shown=%s up=%s hooked=%s broken=%s)",
+            tostring(boosting), tostring(ramping), boostAdd, tostring(drivingNow()),
+            hintAcc, tostring(hintShown), tostring(hintUp), tostring(possHooked ~= nil),
+            tostring(hintBroken)))
+        elseif sub == "hint" then
+          -- force-show for a live look without 20 s at the wheel
+          if showHint() then ctx.log.info("boost: hint shown (forced)")
+          else ctx.log.info("boost: hint could not build (overlay down or latched broken)") end
         elseif sub == "off" then
           snapClear(liveShip())
           ctx.log.info("boost: cleared")
@@ -323,6 +502,17 @@ function F.init(c)
       return true
     end)
   end)
+
+  -- Boost hint arming: the ship streams in with the save, so the work sits a few seconds back
+  -- from the world-entry Character notify (the ship_chest channel + delay); the immediate arm
+  -- covers a mod hot-load into an already-running world.
+  if cfg("boost_hint") then
+    ctx.uehelp.onNewInstance("/Script/Engine.Character",
+      (ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C", function()
+        deferOnly(4000, function() onGameThread(armPossessHook) end)
+      end)
+    deferOnly(4000, function() onGameThread(armPossessHook) end)
+  end
 
   ctx.log.info("boost: SPACE at the wheel = " .. tostring(cfg("boost_mult")) ..
     "X wind (SPACE again or slow-down to ease off)")
