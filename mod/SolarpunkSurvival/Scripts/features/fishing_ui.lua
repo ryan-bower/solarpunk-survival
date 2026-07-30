@@ -12,7 +12,8 @@
 -- The bar is a stack of flat-tinted Images (no textures, no materials -- the material-parameter
 -- family is FATAL on this build, mapping.lua). Layered rects fake the depth: frame behind track,
 -- a translucent top sheen, a soft zone glow under the zone core + hot center, and the marker as
--- a bright line inside a wide translucent glow. The marker pair lives in a nested canvas group,
+-- a crisp bright line (no glow feathering -- user pass 2026-07-29: the moving line reads exact,
+-- only the target zone keeps its glow). The marker lives in a nested canvas group,
 -- so each frame moves ONE widget via SetRenderTranslation (a render-transform: no layout pass,
 -- and the proven cheap call -- qol's hotbar slide uses it).
 --
@@ -31,7 +32,6 @@ local LOOK = {
   zoneGlow = { gold = { 1.00, 0.78, 0.10, 0.30 }, ice = { 0.55, 0.85, 1.00, 0.30 } },
   zoneCore = { gold = { 1.00, 0.72, 0.10, 0.96 }, ice = { 0.55, 0.85, 1.00, 0.96 } },
   zoneHot  = { gold = { 1.00, 0.90, 0.45, 0.95 }, ice = { 0.85, 0.97, 1.00, 0.95 } },
-  markGlow = { 1.00, 1.00, 1.00, 0.22 },
   markLine = { 1.00, 1.00, 1.00, 1.00 },
   -- resolve flashes (recolors only; the bar folds fishing_flash_secs later)
   hitZone  = { 1.00, 1.00, 0.92, 1.00 },
@@ -44,7 +44,9 @@ local LOOK = {
   rimTick  = { 0.82, 0.16, 0.12, 0.85 },
   hub      = { 1.00, 1.00, 1.00, 0.90 },
 }
-local MARK_W, GLOW_W = 4, 12
+local MARK_W, GLOW_W = 4, 12 -- GLOW_W now only sizes the marker's group slot (the glow image
+-- itself is gone -- user pass 2026-07-29); the line keeps its x=4 offset inside, so the judged
+-- center never moved
 local RIM_STEP, ZONE_STEP, GLOW_STEP = 15, 2, 4 -- wheel tick spacing, degrees (zone ticks
 -- overlap at radius 90 -- 2deg is ~3px of arc vs a 6px tick -- so the wedge reads solid)
 
@@ -280,22 +282,18 @@ function F.show(opts)
       end)
       if okG and valid(g) then
         built[#built + 1] = g
-        local glow = makeImage(g, outer, 0, 1, GLOW_W, H + 8, LOOK.markGlow, 1)
         local line = makeImage(g, outer, 4, 0, MARK_W, H + 10, LOOK.markLine, 2)
-        if glow and line then
-          built[#built + 1] = glow
+        if line then
           built[#built + 1] = line
           mark = { group = g, groupSlot = gslot, line = line }
         else ok = false end
       else ok = false end
     else ok = false end
   elseif ok then
-    local glow, glowSlot = makeImage(canvas, outer, X - 4, Y - 4, GLOW_W, H + 8, LOOK.markGlow, 66)
     local line, lineSlot = makeImage(canvas, outer, X, Y - 5, MARK_W, H + 10, LOOK.markLine, 67)
-    if glow and line then
-      built[#built + 1] = glow
+    if line then
       built[#built + 1] = line
-      mark = { glow = glow, line = line, glowSlot = glowSlot, lineSlot = lineSlot }
+      mark = { line = line, lineSlot = lineSlot }
     else ok = false end
   end
 
@@ -313,7 +311,7 @@ end
 
 --------------------------------------------------------------------- the wheel
 -- The spinner: a dial of radial tick rects (statics, each rotated once at build) with the zone
--- as a denser arc of gold/ice ticks, and the needle = line+glow inside a nested canvas group
+-- as a denser arc of gold/ice ticks, and the needle = a crisp line inside a nested canvas group
 -- rotated about its own center per frame (RenderTransformPivot defaults to 0.5,0.5). Rotation
 -- rides UWidget:SetRenderTransformAngle -- proven on game widgets (savemenu matchFlip); its
 -- first-ever call on OUR raw widgets sits under a poison latch, and a failure latches
@@ -386,7 +384,7 @@ function F.showWheel(opts)
     zone[1] = tick(zc % 360, R, 6, 18, LOOK.zoneCore[tone], 65)
   end
 
-  -- the needle: a 2R square group centered on the hub; line+glow point up from the center,
+  -- the needle: a 2R square group centered on the hub; the line points up from the center,
   -- one SetRenderTransformAngle on the group per frame sweeps them like a clock hand
   mark = nil
   local cvCls = StaticFindObject and StaticFindObject(m.canvasPanelPath)
@@ -402,10 +400,8 @@ function F.showWheel(opts)
     end)
     if okG and valid(g) then
       built[#built + 1] = g
-      local glow = makeImage(g, outer, R - 5, R * 0.10, 10, R * 0.92, LOOK.markGlow, 1)
       local line = makeImage(g, outer, R - 2, R * 0.14, 4, R * 0.88, LOOK.markLine, 2)
-      if glow and line then
-        built[#built + 1] = glow
+      if line then
         built[#built + 1] = line
         mark = { group = g, line = line }
       else ok = false end
@@ -501,7 +497,7 @@ function F.showVsync(opts)
     else ok = false end
   else ok = false end
 
-  -- the left line group: glow + line; the group's Y scale IS the growth
+  -- the left line group: the bare line; the group's Y scale IS the growth
   local vgroup, vline
   if ok then
     local okL = pcall(function()
@@ -514,10 +510,8 @@ function F.showVsync(opts)
     end)
     if okL and valid(vgroup) then
       built[#built + 1] = vgroup
-      local glow = makeImage(vgroup, outer, 0, -2, W + 8, lineH + 4, LOOK.markGlow, 1)
       vline = makeImage(vgroup, outer, 4, 0, W, lineH, LOOK.markLine, 2)
-      if glow and vline then
-        built[#built + 1] = glow
+      if vline then
         built[#built + 1] = vline
       else ok = false end
     else ok = false end
@@ -605,9 +599,8 @@ function F.setMarker(p)
     if okS then statsBuf[#statsBuf + 1] = os.clock() end
     return okS
   end
-  if not (valid(m.glow) and valid(m.line)) then return false end
+  if not valid(m.line) then return false end
   local okF = pcall(function()
-    m.glow:SetRenderTranslation({ X = tx, Y = 0 })
     m.line:SetRenderTranslation({ X = tx, Y = 0 })
   end)
   if okF then statsBuf[#statsBuf + 1] = os.clock() end

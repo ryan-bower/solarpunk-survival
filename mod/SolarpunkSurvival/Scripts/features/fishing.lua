@@ -15,7 +15,8 @@
 --     own Interaction_FishingRod(), which drains OUR item's durability through the shared path.
 --   * BITE SPLASH: the game plays S_FishingRod_Splash at 1.0 exactly when a fish bites; the mod
 --     layers (fishing_splash_gain - 1) more on top at the bobber -- "300% splash when you hook".
---   * SKILLSHOT: 5% of bites, the catch click reveals one of TWO minigames (50/50 roll): the
+--   * SKILLSHOT: 5% of bites (diamond rod: 25%, fishing_minigame_chance_diamond), the catch
+--     click reveals one of THREE minigames (~even three-way roll, fishing_wheel/vsync_share): the
 --     sliding-marker BAR (sweep speed rolled 1x..2x per bar) or the spinner WHEEL (constant
 --     spin + constant deceleration, so the click->rest offset is fixed (450 deg at defaults) -- a
 --     skill the player learns; only the zone's angle is random). Winning either guarantees a
@@ -448,7 +449,7 @@ local mgClickAt = nil    -- os.clock() stamped in the click-hook BODY while a ba
 local mgLate = nil       -- timeout grace: a click STAMPED before the bar timed out still counts
                          -- even when its deferred processing lands after the fold
 local mgJob = nil        -- core/animator token for the live bar's marker job
-local mgKind = "bar"     -- which skillshot this is: "bar" | "wheel" (50/50 roll at reveal)
+local mgKind = "bar"     -- which skillshot this is: "bar" | "wheel" | "vsync" (rolled at reveal)
 local mgPeriod = 1.6     -- the bar's ROLLED sweep period (speed 1x..2x base, per bar); the judge
                          -- and the renderer must share it, so it is state, not a config read
 local mgAwaitClick = false -- pure-Lua gate the hook body reads: the decisive click is still owed

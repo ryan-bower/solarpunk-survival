@@ -433,8 +433,9 @@ M.defaults = {
   fishing_minigame_chance = 0.05,-- 5% of bites: the catch click yields a leaf and reveals the
                                  -- skillshot bar; a second click in the golden zone = a rare/jackpot
                                  -- guarantee (diamond rod: smaller zone, jackpot-only)
-  fishing_minigame_chance_diamond = -1, -- separate bite chance while the Diamond Fishing Rod is
-                                 -- held; -1 (default) = follow fishing_minigame_chance
+  fishing_minigame_chance_diamond = 0.25, -- separate bite chance while the Diamond Fishing Rod
+                                 -- is held (user spec 2026-07-29: 1 in 4); -1 = follow
+                                 -- fishing_minigame_chance
   fishing_minigame_period = 1.6, -- seconds per full marker sweep (out and back)
   fishing_minigame_zone   = 0.18,-- golden-zone width as a fraction of the bar
   fishing_minigame_zone_diamond = 0.10, -- the diamond rod's harder zone
