@@ -7,16 +7,15 @@
 -- WHY PRE-PULL (and not dressing the numbers): the recipe widgets recompute HaveAmt from the
 -- REAL inventory at times Lua cannot see (their fns are VM-internal, hooks never fire), and the
 -- craft click re-validates the real inventory in BP -- painted-on "20/5" would craft nothing.
--- Pulling makes the display truthful instead of decorated. Known, accepted quirk: browsing a
--- recipe pulls its mats even if you never craft it; they simply stay in your inventory.
+-- True craft-FROM-chest would mean repatching that compiled validation; pulling is the honest
+-- reachable version, and the BORROW ledger completes the illusion: whatever a browsed recipe
+-- pulled and the player did not craft away flows back to its chests when the station closes.
 --
--- Mechanics per shortfall (host-only): nearest chests first via the chest_index ledger.
--- Chest side: "Remove Item Amt" -- its Success out is the truth gate (a stale ledger count
--- simply fails the remove; nothing moves). Player side: the controller's DEBUG_SpawnItems, one
--- call per item -- the mod's only LIVE-PROVEN grant primitive (AddItemForPlayer's multi-out
--- marshal is unproven; see items.lua for the Amt==1 lie that killed bulk grants once already).
--- Reflected-call volume is bounded: the 300 ms scan reads plain ints off widgets, and live
--- chest calls only happen when the ledger says the item is actually there.
+-- Mechanics per shortfall (host-only): nearest chests first via the chest_index ledger, moved
+-- by `transfer` -- a synchronous inventory-to-inventory hop (chest "Remove Item Amt" Success-
+-- gated, player add recount-verified; see transfer's comment for why DEBUG_SpawnItems is
+-- banned here). Reflected-call volume is bounded: the 300 ms scan reads plain ints off
+-- widgets, and live chest calls only happen when the ledger says the item is actually there.
 local F = {}
 local ctx
 
@@ -24,6 +23,8 @@ local chainTok = 0
 local chainLive = false
 local hooked = {}
 local lastTry = {}    -- clsKey -> os.clock() of the last pull attempt (debounce)
+local pending = {}    -- clsKey -> { expect, at }: a pull happened, HaveAmt should reach expect
+local dead = {}       -- clsKey -> strike count: deliveries that never landed (2 = stop pulling)
 local blindPasses = 0 -- consecutive passes where rows existed but none resolved to a station
 
 local function cmap() return ctx.map.craftpull or {} end
@@ -170,18 +171,83 @@ local function roomFor(pInv, cls)
   return 0
 end
 
--- Pull up to `wantAmt` of cls from nearby chests into the player inventory. Returns how many
--- items actually landed.
-local function pullFromChests(pc, pawn, cls, wantAmt)
+-- Live count of `cls` in any BC_InventorySystem (player or chest) -- the trash-proven
+-- GetAmtOfItem marshal. nil = the count could not be read (then NOTHING may move: every
+-- transfer below is verified by recount, and an unreadable count has no truth to verify
+-- against).
+local function invAmt(inv, cls)
+  local ledger = svc()
+  local out = {}
+  if not (ledger and ctx.uehelp.call(inv, stmap().amtFn, ledger.probeFor(cls), out)) then
+    return nil
+  end
+  return tonumber(unwrap(out.Amount)) or 0
+end
+
+-- Move up to `n` of cls from srcInv into dstInv, SYNCHRONOUSLY, chunked against dst's live
+-- room. This replaced DEBUG_SpawnItems entirely: that call is a WORLD DROP at the player
+-- +500Z with FlyToPlayer=false (bp_controller RE) -- it never touches an inventory, and when
+-- the proximity pickup didn't happen to grab the drop, the 3s debounce re-pulled forever and
+-- drained chests onto the floor (the 18:53 live loop). Here the item only ever exists in the
+-- two inventory arrays. Trust ladder per chunk: src remove is gated on its own Success out
+-- (proven); dst add is `addPlayerFn`/`addFn`, whose outs LIE under this marshal (the items.lua
+-- Amt==1 lesson) -- so the add is verified by RECOUNTING dst, and any shortfall is handed
+-- straight back to src. `intoPlayer` picks the game's own give-the-player path (attributes,
+-- replication) over the bare chest add.
+local function transfer(srcInv, dstInv, cls, n, intoPlayer)
   local ledger = svc()
   if not ledger then return 0 end
+  local moved = 0
+  while moved < n do
+    local room = roomFor(dstInv, cls)
+    if room <= 0 then break end
+    local take = math.min(room, n - moved)
+    local dstBefore = invAmt(dstInv, cls)
+    if dstBefore == nil then break end
+    local outR = {}
+    local okRm = ctx.uehelp.call(srcInv, stmap().removeAmtFn,
+      ledger.probeFor(cls, take), true, outR)
+    if not (okRm and unwrap(outR.Success) == true) then break end
+    if intoPlayer then
+      ctx.uehelp.call(dstInv, stmap().addPlayerFn, ledger.probeFor(cls, take),
+        true, false, {}, {})
+    else
+      ctx.uehelp.call(dstInv, stmap().addFn, ledger.probeFor(cls, take),
+        true, {}, {}, {}, {})
+    end
+    local got = math.max(0, math.min(take, (invAmt(dstInv, cls) or dstBefore) - dstBefore))
+    if got < take then
+      -- dst refused part of the chunk: hand the shortfall straight back to src
+      local back = take - got
+      local srcBefore = invAmt(srcInv, cls)
+      ctx.uehelp.call(srcInv, stmap().addFn, ledger.probeFor(cls, back),
+        true, {}, {}, {}, {})
+      local backGot = srcBefore and math.max(0,
+        math.min(back, (invAmt(srcInv, cls) or srcBefore) - srcBefore)) or -1
+      if backGot < back then
+        ctx.log.warn(string.format("craft_pull: %d item(s) fell out of a transfer and the "
+          .. "give-back also failed -- count your stock", back - math.max(0, backGot)))
+      end
+      moved = moved + got
+      break
+    end
+    moved = moved + got
+  end
+  return moved
+end
+
+-- Pull up to `wantAmt` of cls from nearby chests into the player inventory. Returns how many
+-- items actually landed, plus per-chest {key, entry, n} sources for the borrow ledger.
+local function pullFromChests(pawn, cls, wantAmt)
+  local ledger = svc()
+  if not ledger then return 0, {} end
   local loc = ctx.identity.locationOf(pawn)
-  if not loc then return 0 end
+  if not loc then return 0, {} end
   local okI, pInv = ctx.uehelp.get(pawn, stmap().invProp)
-  if not (okI and ctx.uehelp.isValid(pInv)) then return 0 end
-  if wantAmt <= 0 then return 0 end
+  if not (okI and ctx.uehelp.isValid(pInv)) then return 0, {} end
+  if wantAmt <= 0 then return 0, {} end
   local r = cfgn("craft_pull_range", 5000.0)
-  local moved, full = 0, false
+  local moved, full, srcs = 0, false, {}
   for _, t in ipairs(ledger.chestsNear(loc, r * r)) do
     if moved >= wantAmt or full then break end
     local avail = ledger.amtIn(t.key, t.entry, cls)
@@ -189,30 +255,16 @@ local function pullFromChests(pc, pawn, cls, wantAmt)
       local chest = ledger.actorOf(t.key, t.entry)
       local cInv = chest and ledger.invOf(chest)
       if cInv then
-        -- chunk against the inventory's REAL room, re-measured every round trip
-        while moved < wantAmt and avail > 0 do
-          local room = roomFor(pInv, cls)
-          if room <= 0 then full = true break end
-          local take = math.min(room, avail, wantAmt - moved)
-          local outR = {}
-          local okRm = ctx.uehelp.call(cInv, stmap().removeAmtFn,
-            ledger.probeFor(cls, take), true, outR)
-          if not (okRm and unwrap(outR.Success) == true) then
-            ledger.invalidate(t.key) -- the ledger lied about this chest; re-count it next ask
-            break
-          end
-          local got = 0
-          for _ = 1, take do
-            if pcall(function() pc:DEBUG_SpawnItems(cls, 1) end) then got = got + 1 end
-          end
-          moved, avail = moved + got, avail - take
-          ledger.noteMove(t.key, cls, -take)
-          if got < take then
-            ctx.log.warn(string.format(
-              "craft_pull: chest gave up %d but only %d landed in the inventory", take, got))
-            full = true
-            break
-          end
+        local want = math.min(avail, wantAmt - moved)
+        local got = transfer(cInv, pInv, cls, want, true)
+        if got > 0 then
+          moved = moved + got
+          ledger.noteMove(t.key, cls, -got)
+          srcs[#srcs + 1] = { key = t.key, entry = t.entry, n = got }
+        end
+        if got < want then
+          ledger.invalidate(t.key)  -- whatever stopped the transfer, re-count this chest
+          if roomFor(pInv, cls) <= 0 then full = true end
         end
       end
     end
@@ -220,7 +272,46 @@ local function pullFromChests(pc, pawn, cls, wantAmt)
   if full and moved < wantAmt then
     ctx.log.info("craft_pull: your inventory filled up before the recipe did")
   end
-  return moved
+  return moved, srcs
+end
+
+-- The borrow ledger: what the auto-pull moved into the pack this station session, and from
+-- where. On station close whatever the player did NOT craft away flows back to its chests --
+-- so browsing recipes never leaves their pack cluttered, and the net effect of crafting is
+-- "the chest paid for it". basis = the REAL have before the first pull of that class; the
+-- return is clamp(haveNow - basis, 0, borrowed) per class, so mats the player owned all along
+-- (or picked up meanwhile, or crafted away) are never shipped off to a chest.
+local borrows = {}
+local function returnBorrows()
+  local b = borrows
+  borrows = {}
+  if next(b) == nil then return end
+  local ledger = svc()
+  local _, pawn = localPcAndPawn()
+  if not (ledger and pawn) then return end
+  local okI, pInv = ctx.uehelp.get(pawn, stmap().invProp)
+  if not (okI and ctx.uehelp.isValid(pInv)) then return end
+  local sentTotal = 0
+  for _, e in pairs(b) do
+    local now = invAmt(pInv, e.cls)
+    local give = now and math.max(0, math.min(e.n, now - e.basis)) or 0
+    for _, src in ipairs(e.srcs) do
+      if give <= 0 then break end
+      local chest = ledger.actorOf(src.key, src.entry)
+      local cInv = chest and ledger.invOf(chest)
+      if cInv then
+        local sent = transfer(pInv, cInv, e.cls, math.min(give, src.n), false)
+        give = give - sent
+        sentTotal = sentTotal + sent
+        if sent > 0 then ledger.noteMove(src.key, e.cls, sent) end
+      end
+    end
+    -- source chest gone or full: any leftover simply stays in the pack
+  end
+  if sentTotal > 0 then
+    ctx.log.info(string.format(
+      "craft_pull: returned %d unused material(s) to the chests they came from", sentTotal))
+  end
 end
 
 -- How much of `cls` sits in ledger chests within pull range of the pawn. Cached by the
@@ -251,9 +342,9 @@ end
 
 local function scanPass(tok)
   if tok ~= chainTok then return end
-  if not ctx.config.get("craft_pull") then chainLive = false return end
+  if not ctx.config.get("craft_pull") then chainLive = false returnBorrows() return end
   local stations = openStations()
-  if next(stations) == nil then chainLive = false return end
+  if next(stations) == nil then chainLive = false returnBorrows() return end
   if ctx.net.isHost() then
     local pc, pawn = localPcAndPawn()
     if pc and pawn then
@@ -275,14 +366,44 @@ local function scanPass(tok)
               -- GetFullName on that is the uncatchable AV -- gate, don't trust ~= nil
               if safeForCalls(cls) then
                 local ck = clsKeyOf(cls)
-                if need > have and os.clock() - (lastTry[ck] or -1e9) > 3.0 then
-                  lastTry[ck] = os.clock()
-                  local got = pullFromChests(pc, pawn, cls, need - have)
-                  if got > 0 then
-                    ctx.log.info(string.format(
-                      "craft_pull: fetched %d from nearby chests (%d/%d in hand now)",
-                      got, have + got, need))
-                    have = have + got
+                -- landed-verify: a pull is only a success once HaveAmt actually reaches what
+                -- was promised. Without this, one broken delivery re-pulls every debounce and
+                -- DRAINS the chest (the 18:53 spawn-era loop). The clear MUST happen out here,
+                -- not inside the shortfall branch: a landed delivery reads have==need, the
+                -- shortfall branch is skipped, and a lingering flag then stalls the refill 8s
+                -- (plus a bogus strike) after every CRAFT -- the 19:07 live symptom.
+                local p = pending[ck]
+                if p and have >= p.expect then
+                  pending[ck], dead[ck], p = nil, nil, nil
+                end
+                if need > have then
+                  if p and os.clock() - p.at > 8.0 then
+                    pending[ck], p = nil, nil
+                    dead[ck] = (dead[ck] or 0) + 1
+                    if dead[ck] >= 2 then
+                      ctx.log.warn("craft_pull: the recipe row never noticed materials the " ..
+                        "pull delivered (widget not refreshing?) -- pulling of that item is " ..
+                        "OFF until you reopen the station")
+                    end
+                  end
+                  if not p and (dead[ck] or 0) < 2
+                      and os.clock() - (lastTry[ck] or -1e9) > 3.0 then
+                    lastTry[ck] = os.clock()
+                    local got, srcs = pullFromChests(pawn, cls, need - have)
+                    if got > 0 then
+                      ctx.log.info(string.format(
+                        "craft_pull: fetched %d from nearby chests (%d/%d in hand now)",
+                        got, have + got, need))
+                      local bw = borrows[ck]
+                      if not bw then
+                        bw = { cls = cls, n = 0, basis = have, srcs = {} }
+                        borrows[ck] = bw
+                      end
+                      bw.n = bw.n + got
+                      for _, s in ipairs(srcs) do bw.srcs[#bw.srcs + 1] = s end
+                      pending[ck] = { expect = have + got, at = os.clock() }
+                      have = have + got
+                    end
                   end
                 end
                 stampReach(slot, m, cls, need, have, chestStock(pawn, cls))
@@ -327,6 +448,7 @@ local function startScan()
   if chainLive then return end
   chainLive = true
   chainTok = chainTok + 1
+  pending, dead = {}, {}  -- fresh station open = fresh delivery slate
   local tok = chainTok
   deferOnly(150, function() onGameThread(function() scanPass(tok) end) end)
 end
@@ -397,7 +519,8 @@ function F.init(c)
       deferOnly(4000, function() onGameThread(function()
         if worldChanged() then
           hooked = {}  -- new world = reloaded classes: those registrations are dead
-          lastTry = {}
+          lastTry, pending, dead = {}, {}, {}
+          borrows = {} -- chest handles died with the world; borrowed mats stay in the pack
         end
         armOpenHooks()
       end) end)
