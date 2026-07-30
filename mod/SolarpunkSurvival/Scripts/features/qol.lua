@@ -991,38 +991,153 @@ local function openInvOnShip()
   end)
 end
 
--- Faster recall: the dock's return flight is a timeline paced by its TimelineSpeed double
--- (800.0 stock).
+-- Faster recall, take two. TimelineSpeed is a DEAD variable: BP_Dock's bytecode never reads it
+-- (offline RE 2026-07-29 -- the only references in the whole asset are the property itself and
+-- its 800.0 CDO default). The return flight is really the dock's tick VInterpTo_Constant-ing the
+-- ship, with speed = a timeline curve x MapRangeClamped(distance, 0..2000 -> 30..1000/1200) --
+-- every number a literal baked into bytecode. Writing 16000 into TimelineSpeed changed nothing,
+-- which is exactly what the first live test showed.
 --
--- The multiplier is ALWAYS applied to the dock's remembered STOCK value, never to whatever the
--- property reads right now -- because what it reads right now is usually already ours. Deriving
--- from the live value compounds: the config.changed handler used to clear the memo and re-sweep,
--- so every single qol_* tweak multiplied the dock again (800 -> 2400 -> 7200 -> 21600) until the
--- recall timeline was less a flight than a teleport, and the corrupted value rode into the save.
--- Working from stock also makes the setting reversible: back to x1 and the dock returns to 800.
-local dockStock = {}   -- dock fullname -> the speed the game shipped it with
+-- So the mod flies the assist itself, boost-style: while a return is in flight, a bounded
+-- 150 ms watch amplifies the ship's own frame delta by (mult - 1). Two legs get the treatment,
+-- and both stay phase-safe against the dock's arrival checks (<1000-unit spheres + one exact
+-- NearlyEqualVector) by standing down before them:
+--   * the horizontal travel leg -- push capped so the ship never lands closer than
+--     RECALL_STANDOFF (2D) to the dock;
+--   * the long DESCENT -- "unstuck airship" stages the ship kilometers above the dock and the
+--     return is a straight drop (user-confirmed vanilla behavior 2026-07-29; an earlier build
+--     mistook that altitude for corrupted save data and TELEPORTED the ship to the dock, which
+--     the user immediately called out as cheating -- removed, the flight is the feature) --
+--     amplified only while moving TOWARD the dock's altitude, never through the last
+--     RECALL_Z_STANDOFF of it, so the landing and docking cutscene stay 100% native.
+-- The RAISE stays native either way: it moves AWAY from the dock's altitude, and its
+-- completion checks live in bytecode this RE could not validate.
+-- Host-only: the dock drives the ship on the host, so that is the one machine whose
+-- SetActorLocation means anything. The watch arms off the dock hooks (see armHooks) and
+-- disarms itself when no flight shows up -- never a free-running poll.
+-- "In flight" is AirshipToReturn being non-null -- NOT AirshipCurrentlyReturning_Patrick.
+-- Burned live 2026-07-29: the flag is only raised by the RAISE-first path; the common direct
+-- return (ReturnToHome -> DirectReturnAirship, the exact pair the breadcrumbs caught) flies with
+-- the flag still false, so a flag-gated watch sat blind through the whole flight. AirshipToReturn
+-- is assigned at the top of every return entry and nulled in the one arrival-cleanup block
+-- (right next to the flag's own = false), so presence-of-ship is the signal every path shares.
+local RECALL_STANDOFF   = 2500.0   -- 2D units; > the 1000-unit arrival spheres with margin
+local RECALL_Z_STANDOFF = 3000.0   -- vertical units kept native at the bottom of a descent
+local recallTok   = 0            -- bumping orphans the in-flight watch chain
+local recallUntil = 0            -- os.clock() deadline; a live flight keeps extending it
+local recallLast  = {}           -- dock fullname -> ship position at the previous pass
+local recallSaid  = {}           -- dock fullname -> logged this flight already
+local recallDiagAt = 0           -- TEMP diagnostic throttle (1 line/s while a flight is live)
 
-local function speedDock(dock)
-  local mult = tonumber(ctx.config.get("qol_recall_mult")) or 1.0
-  if not ctx.uehelp.isValid(dock) then return end
-  local fn; pcall(function() fn = dock:GetFullName() end)
-  if not fn or fn:find("Default__", 1, true) then return end   -- never the class template
-  local prop = qmap().dockSpeedProp or "TimelineSpeed"
-  local ok, v = ctx.uehelp.get(dock, prop)
-  if not (ok and type(v) == "number" and v > 0) then return end
-  -- first sighting of this dock: what it reads now IS stock (a world reload hands back the
-  -- shipped value, which is why stock is learned per dock rather than assumed once per session)
-  local stock = dockStock[fn]
-  if not stock then stock = v; dockStock[fn] = stock end
-  local want = stock * math.max(mult, 1.0)
-  if math.abs(v - want) < 0.5 then return end   -- already where we want it
-  if ctx.uehelp.set(dock, prop, want) then
-    ctx.log.info(string.format("qol: airship recall %.0f -> %.0f (x%.1f)", stock, want, mult))
-  end
+-- Pure core (unit-tested): the extra distance to push the ship this pass, or nil to stand down.
+-- dx/dy/dz = the game's own movement since last pass, toDock = 2D distance ship -> dock.
+function F.recallPush(dx, dy, dz, mult, toDock)
+  local m = tonumber(mult) or 1.0
+  if m <= 1.0 then return nil end
+  local hxy = math.sqrt(dx * dx + dy * dy)
+  if hxy < 20.0 then return nil end                    -- idle, or the slow native crawl
+  if hxy <= 2.0 * math.abs(dz) then return nil end     -- raise/lower phase: vertical delta rules
+  local push = hxy * (m - 1.0)
+  local room = (tonumber(toDock) or 0) - RECALL_STANDOFF
+  if room < push then push = room end
+  if push <= 0 then return nil end
+  return push, hxy
 end
 
-local function sweepDocks()
-  for _, d in ipairs(liveInstances(qmap().dockClass)) do speedDock(d) end
+-- Pure core, the vertical twin: extra descent (or climb, for a dock above the ship) this pass,
+-- or nil. Only fires when the delta is vertical-dominant AND headed toward the dock's altitude
+-- -- the raise moves away from it and so never matches.
+function F.recallPushZ(dz, hxy, mult, posZ, dockZ)
+  local m = tonumber(mult) or 1.0
+  if m <= 1.0 then return nil end
+  local adz = math.abs(dz or 0)
+  if adz < 20.0 then return nil end                    -- idle, or the slow native crawl
+  if adz <= 2.0 * (hxy or 0) then return nil end       -- the travel leg owns this pass
+  local toward = (tonumber(dockZ) or 0) - (tonumber(posZ) or 0)
+  if dz * toward <= 0 then return nil end              -- climbing away: the raise stays native
+  local push = adz * (m - 1.0)
+  local room = math.abs(toward) - RECALL_Z_STANDOFF
+  if room < push then push = room end
+  if push <= 0 then return nil end
+  return push
+end
+
+local function recallPass(tok)
+  if tok ~= recallTok then return end
+  local anyReturning = false
+  for _, dock in ipairs(liveInstances(qmap().dockClass)) do
+    local fn; pcall(function() fn = dock:GetFullName() end)
+    if fn then
+      local okS, ship = ctx.uehelp.get(dock, qmap().dockReturnShipProp)
+      if okS and ctx.uehelp.isValid(ship) then
+        anyReturning = true
+        recallUntil = os.clock() + 30
+        local pos
+        pcall(function() pos = ctx.uehelp.vec(ship:K2_GetActorLocation()) end)
+        local last = recallLast[fn]
+        recallLast[fn] = pos
+        local dockPos; pcall(function() dockPos = ctx.uehelp.vec(dock:K2_GetActorLocation()) end)
+        if pos and last and dockPos then
+          local rx, ry = dockPos.X - pos.X, dockPos.Y - pos.Y
+          local toDock = math.sqrt(rx * rx + ry * ry)
+          local dx, dy, dz = pos.X - last.X, pos.Y - last.Y, pos.Z - last.Z
+          local mult = ctx.config.get("qol_recall_mult")
+          local push, hxy = F.recallPush(dx, dy, dz, mult, toDock)
+          local nx
+          if push then
+            nx = { X = pos.X + dx / hxy * push, Y = pos.Y + dy / hxy * push, Z = pos.Z }
+          else
+            push = F.recallPushZ(dz, math.sqrt(dx * dx + dy * dy), mult, pos.Z, dockPos.Z)
+            if push then
+              nx = { X = pos.X, Y = pos.Y, Z = pos.Z + (dz > 0 and push or -push) }
+            end
+          end
+          -- Flight trace, one line per second while a return is live -- debug since the
+          -- player-verified pass (2026-07-29); it earned its keep twice, keep it reachable.
+          if os.clock() - recallDiagAt > 1.0 then
+            recallDiagAt = os.clock()
+            ctx.log.debug(string.format(
+              "qol: recall watch: hxy=%.0f dz=%.0f toDock=%.0f push=%s",
+              math.sqrt(dx * dx + dy * dy), dz, toDock, push and string.format("%.0f", push) or "--"))
+          end
+          if nx then
+            if ctx.uehelp.call(ship, "K2_SetActorLocation", nx, false, {}, true)
+                or ctx.uehelp.call(ship, "K2_SetActorLocation", nx, false, {}, false)
+                or ctx.uehelp.call(ship, "SetActorLocation", nx) then
+              recallLast[fn] = nx   -- next pass's delta = the game's own move, not ours
+              if not recallSaid[fn] then
+                recallSaid[fn] = true
+                ctx.log.info(string.format("qol: recall assist x%.0f riding the return flight",
+                  tonumber(mult) or 1))
+              end
+            else
+              ctx.log.warn("qol: recall assist could not move the ship (SetActorLocation refused)")
+            end
+          end
+        end
+      else
+        recallLast[fn], recallSaid[fn] = nil, nil
+      end
+    end
+  end
+  if not anyReturning and os.clock() > recallUntil then
+    recallLast, recallSaid = {}, {}
+    return   -- disarmed; the next dock interaction re-arms
+  end
+  deferOnly(150, function() onGameThread(function() recallPass(tok) end) end)
+end
+
+-- Called from the dock hook bodies (via deferOnly -- never inline in a hook). Re-arming while a
+-- chain is alive just replaces it; recallLast survives, so no delta base is lost.
+local function armRecallWatch(secs)
+  if not ctx.net.isHost() then return end   -- clients' writes to a replicated ship mean nothing
+  if (tonumber(ctx.config.get("qol_recall_mult")) or 1.0) <= 1.0 then return end
+  local wasDead = os.clock() > recallUntil
+  recallUntil = math.max(recallUntil, os.clock() + (secs or 120))
+  recallTok = recallTok + 1
+  local tok = recallTok
+  if wasDead then ctx.log.info("qol: recall watch armed") end
+  onGameThread(function() recallPass(tok) end)
 end
 
 --------------------------------------------------------------------- overlay: hotbar + drops
@@ -1429,13 +1544,21 @@ end
 
 local function updateLabels(token)
   if token ~= labelToken or labelsBroken then return end
-  if not ctx.config.get("qol_map_labels") then return end
   local wc
   for _, w in ipairs(liveInstances(qmap().mapCompClass)) do
     local vis; pcall(function() vis = w:IsVisible() end)
     if vis then wc = w break end
   end
   if not wc then foldLabels() return end  -- map closed; OpenMap re-arms the chain
+  -- Switched off with the map still OPEN. foldLabels is the only thing that collapses the
+  -- TextBlocks, so returning bare here left every name drawn and frozen at its last position
+  -- for the rest of the session. Keep the chain running (the map is up) so switching it back
+  -- on takes effect live; closing the map still retires it through the branch above.
+  if not ctx.config.get("qol_map_labels") then
+    foldLabels()
+    deferOnly(150, function() updateLabels(token) end)
+    return
+  end
   local canvas
   local okC, cv = ctx.uehelp.get(wc, qmap().mapCanvasProp)
   if okC and ctx.uehelp.isValid(cv) then canvas = cv end
@@ -1443,8 +1566,16 @@ local function updateLabels(token)
     local seen = {}
     for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
       if ctx.uehelp.isValid(pawn) then
-        local pc; pcall(function() pc = pawn:GetController() end)
-        local nm = (pc and ctx.uehelp.isValid(pc)) and playerNameOf(pc) or nil
+        -- The owner comes from the PLAYER STATE, not the controller: APawn::Controller is
+        -- replicated COND_OwnerOnly, so on a client every teammate's pawn reports no
+        -- controller at all -- which is precisely the "some players never show up on the map"
+        -- bug these labels exist to fix. PlayerState is replicated to everyone.
+        local ps; pcall(function() ps = pawn:GetPlayerState() end)
+        local nm = (ps and ctx.uehelp.isValid(ps)) and playerNameOf(ps) or nil
+        if not nm then
+          local pc; pcall(function() pc = pawn:GetController() end)
+          nm = (pc and ctx.uehelp.isValid(pc)) and playerNameOf(pc) or nil
+        end
         local loc = ctx.identity.locationOf(pawn)
         if nm and loc then
           seen[nm] = true
@@ -1455,6 +1586,7 @@ local function updateLabels(token)
             if not tb then
               labelsBroken = true
               ctx.log.warn("qol: map name labels unavailable (TextBlock construction failed)")
+              foldLabels()  -- the latch retires the chain: take the built ones down with it
               return
             end
             l = { tb = tb }
@@ -1686,6 +1818,18 @@ local function armHooks()
     local live = armHook(pawnClass, fnName, "qol.crouchkey", function() onCtrlKeyEvent(isDown) end)
     if live then ctrlHooked = true end
   end
+  -- Recall assist triggers. The interact bound event is the sure thing (component delegates
+  -- broadcast through ProcessEvent, and every retrieve click starts with a hand on the dock);
+  -- the custom events are belt-and-suspenders for whichever of them the dock UI reaches via
+  -- ProcessEvent on this build -- a hook that never fires costs nothing. Bodies schedule only.
+  armHook(qmap().dockClass, qmap().dockInteractFn, "qol.dock", function()
+    deferOnly(0, function() armRecallWatch(120) end)
+  end)
+  for _, fnName in ipairs(qmap().dockRecallFns or {}) do
+    armHook(qmap().dockClass, fnName, "qol.recall", function()
+      deferOnly(0, function() armRecallWatch(300) end)
+    end)
+  end
   -- Dying crouched used to bury the loot chest. Both RPC halves are hooked because which one runs
   -- depends on who is authoritative for this death; the correction itself is idempotent.
   for _, fnName in ipairs(qmap().deathLootStampFns or {}) do
@@ -1725,7 +1869,6 @@ local function applyAll()
   end
   step("qol.applyAll armHooks");   armHooks()
   step("qol.applyAll backpack");   applyBackpack()
-  step("qol.applyAll docks");      sweepDocks()
   step("qol.applyAll chests");     sweepChests()
   step("qol.applyAll drops");      applyDrops()
   step("qol.applyAll hotbar");     syncHotbar()
@@ -1849,8 +1992,10 @@ function F.init(c)
     defer(150, function() sizeChest(obj) end)
     defer(1200, function() sizeChest(obj) end)   -- second pass: save-load init ordering
   end)
-  ctx.uehelp.onNewInstance("/Script/Engine.Actor", qmap().dockClass, function(obj)
-    defer(500, function() speedDock(obj) end)
+  -- a dock built mid-session is the first moment its recall hooks CAN arm (armHook resolves
+  -- the function path off a live instance); armHooks is idempotent, so this costs nothing
+  ctx.uehelp.onNewInstance("/Script/Engine.Actor", qmap().dockClass, function()
+    defer(500, armHooks)
   end)
   -- No `obj` is captured and nothing is touched: the sweep re-finds every marker itself, so a
   -- notify for an actor UE is still building (or about to throw away) costs us nothing.
@@ -1871,12 +2016,10 @@ function F.init(c)
   -- live tuning: any qol_* change re-applies the cheap visual state
   ctx.bus.on("config.changed", function(ev)
     if ev and type(ev.key) == "string" and ev.key:sub(1, 4) == "qol_" then
-      -- NOT dockStock: it holds each dock's SHIPPED speed, and re-learning that from the live
-      -- (already scaled) value is exactly how the recall multiplier used to compound itself on
-      -- every single tweak. speedDock recomputes from stock, so a new multiplier just lands.
+      -- (recall needs no re-apply here: the watch reads qol_recall_mult fresh every pass)
       chestSized = {}
       chestGrowFails = {}
-      onGameThread(function() applyDrops(); syncHotbar(); sweepDocks(); sweepChests() end)
+      onGameThread(function() applyDrops(); syncHotbar(); sweepChests() end)
     end
   end)
 

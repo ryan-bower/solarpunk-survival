@@ -103,13 +103,15 @@ M.defaults = {
   wand_hydrate_thirst  = 50.0,    -- thirst restored on a quenched teammate (AddThirst value)
   wand_pour_radius     = 300.0,   -- cm; how close to the aim point a storage/teammate must be
   wand_water_refill_debounce = 5.0, -- seconds between wade-refill triggers (footstep events spam)
-  -- Right-click DRINKING from the blue rod. Rate is thirst/second; the measure cost is derived
-  -- so a full 0->100% drink spends the whole wand (wand_hydration_max scaled by the player's
-  -- live MaxPlayerThirst). Mode "hold" treats the repeating IA_AltHandInteract events as a
-  -- held-button signal (drink while events keep arriving, wand_drink_grace after the last one);
-  -- if the live build turns out to fire the event only once per press, flip to "toggle"
-  -- (`sps set wand_drink_mode toggle`) -- each right click then starts/stops the drink.
-  wand_drink_mode      = "hold",
+  -- Right-click DRINKING from the blue rod. Rate is percent-of-max thirst/second; the measure
+  -- cost is derived so a full 0->100% drink spends the whole wand (wand_hydration_max scaled
+  -- by the player's live MaxPlayerThirst). The live build binds IA_AltHandInteract to
+  -- ETriggerEvent::Completed ONLY (offline binding-table decode + live guard trace,
+  -- 2026-07-29): the event fires ONCE per click, on RELEASE -- a held button is invisible, so
+  -- "toggle" is the shipping mode: one click starts drinking, it stops on its own at full
+  -- thirst / dry rod, or on a second click. "hold" survives for builds whose event repeats
+  -- while held (drink while events keep arriving, wand_drink_grace after the last one).
+  wand_drink_mode      = "toggle",
   wand_drink_rate      = 25.0,    -- PERCENT of max thirst restored per second while drinking
                                   -- (live saves have MaxPlayerThirst=1000; percent keeps the
                                   -- "kinda quick" 4s full drink at any scale)
@@ -318,9 +320,13 @@ M.defaults = {
   boost_volume        = 1.0,     -- wind loop volume
   boost_key           = "SPACE", -- UE4SS Key name; gated on IsControllingAirship? so on-foot
                                  -- SPACE stays the game's jump untouched
-  qol_recall_mult     = 20.0,    -- airship recall speed multiplier (dock TimelineSpeed, stock 800).
-                                 -- 20 is a deliberate TEST value (user 2026-07-29: "crank it to 20X
-                                 -- so I can really check") -- dial back after the live pass.
+  qol_recall_mult     = 5.0,     -- airship recall multiplier -- the mod's own assist amplifies the
+                                 -- return flight's travel leg AND the long "unstuck" descent (the
+                                 -- raise, the final approach and the docking stay native;
+                                 -- TimelineSpeed turned out to be a dead variable). NEVER a
+                                 -- teleport -- the flight is the feature (user 2026-07-29).
+                                 -- 5 is the user's pick after live-testing at 20 ("it worked!
+                                 -- now bring it down to like 5X", 2026-07-29).
   -- The chest stock ledger (features/chest_index.lua) -- shared by sort_chest + craft_pull.
   chest_index_sweep   = 20.0,    -- secs between world sweeps for chests (lazy: only when asked)
   chest_index_ttl     = 20.0,    -- secs a cached per-(chest,item) amount stays trusted
@@ -444,10 +450,12 @@ M.defaults = {
   fishing_vsync_line  = 3.6,     -- the line's base height, px
   fishing_vsync_grow_rate = 2.0, -- growth per second, in units of the base height
   fishing_vsync_grow_cap  = 9.0, -- growth ceiling, in units of the base height
-  fishing_vsync_period_min = 0.4, -- fastest full ping-pong, seconds (2x the sliding bar's max)
-  fishing_vsync_period_max = 0.8, -- slowest -- the sliding bar's own fastest roll
+  fishing_vsync_period_min = 0.8, -- fastest full ping-pong, seconds (the sliding bar's own
+                                 -- fastest roll -- half the speed this game shipped with)
+  fishing_vsync_period_max = 1.6, -- slowest -- half the fastest, so the band is still 2:1
   fishing_vsync_x     = 840.0,   -- left lane's left edge, canvas px at 1080p design res
-  fishing_vsync_dx    = 130.0,   -- right lane's offset from the left lane
+  fishing_vsync_dx    = 70.0,    -- right lane's offset from the left lane (lanes are
+                                 -- fishing_bar_h=26 wide, so this leaves a 44 px alley)
   fishing_vsync_y     = 300.0,   -- lanes' top edge (420 tall: 300..720, straddling center)
   fishing_vsync_slide_secs = 0.25, -- the click->reveal slide animation length
   fishing_wheel_speed = 360.0,   -- wheel spin, deg/s -- constant on purpose (learnable)

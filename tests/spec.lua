@@ -1037,6 +1037,40 @@ do
   eq(B.rampK(1, 0), 0, "boost: zero-length glide is instant")
 end
 
+------------------------------------------------------------------ recall assist (pure math)
+do
+  local Q = require("features.qol")
+  -- the travel leg: 150 units of the game's own move at x20 pushes 19x further
+  local push, hxy = Q.recallPush(150, 0, 0, 20, 100000)
+  eq(push, 2850.0, "recall: amplifies the game's horizontal delta by (mult-1)")
+  eq(hxy, 150.0, "recall: hands back the delta length for the direction math")
+  -- the standoff cap: never lands closer than 2500 to the dock
+  eq((Q.recallPush(150, 0, 0, 20, 4000)), 1500.0, "recall: push capped to toDock - standoff")
+  eq(Q.recallPush(150, 0, 0, 20, 2500), nil, "recall: at the standoff ring, stands down")
+  eq(Q.recallPush(150, 0, 0, 20, 1000), nil, "recall: inside the ring, stands down")
+  -- phase safety: vertical movement (raise/lower) is never amplified
+  eq(Q.recallPush(0, 0, 180, 20, 100000), nil, "recall: pure vertical raise is left native")
+  eq(Q.recallPush(30, 0, 100, 20, 100000), nil, "recall: vertical-dominant delta is left native")
+  -- off states
+  eq(Q.recallPush(150, 0, 0, 1.0, 100000), nil, "recall: x1 means no assist")
+  eq(Q.recallPush(150, 0, 0, nil, 100000), nil, "recall: unset mult means no assist")
+  eq(Q.recallPush(5, 3, 0, 20, 100000), nil, "recall: a near-idle ship is not amplified")
+  -- the vertical twin: the "unstuck" descent from kilometers above the dock
+  eq(Q.recallPushZ(-310, 11, 20, 348000, -5377), 5890.0,
+     "recallZ: a long descent toward the dock is amplified by (mult-1)")
+  eq(Q.recallPushZ(180, 0, 20, -5000, -5377), nil,
+     "recallZ: the raise climbs AWAY from the dock's altitude -- never amplified")
+  eq(Q.recallPushZ(-100, 5, 20, -2377, -5377), nil,
+     "recallZ: inside the vertical standoff, the landing stays native")
+  eq((Q.recallPushZ(-100, 5, 20, 1623, -5377)), 1900.0,
+     "recallZ: near the standoff the push is amplified but the cap has room")
+  eq(Q.recallPushZ(-30, 100, 20, 348000, -5377), nil,
+     "recallZ: horizontal-dominant deltas belong to the travel leg")
+  eq((Q.recallPushZ(100, 10, 20, -10000, 0)), 1900.0,
+     "recallZ: a dock ABOVE the ship amplifies the climb toward it too")
+  eq(Q.recallPushZ(-310, 11, 1.0, 348000, -5377), nil, "recallZ: x1 means no assist")
+end
+
 ------------------------------------------------------------------ wand drinking (pure math)
 do
   local W = require("features.wand")
@@ -1051,17 +1085,24 @@ do
   end
   ok(math.abs(cur - 100.0) < 1e-6, "drink: reaches full thirst")
   ok(math.abs(spent - 240.0) < 1e-6, "drink: full drink spends exactly the whole wand")
-  eq(steps, 16, "drink: 100 thirst at 25/s in 0.25s ticks = 16 sips")
+  eq(steps, 17, "drink: 100 thirst at 25/s in 0.25s whole-point sips = 17 sips (16x6 + 4)")
+
+  -- WHOLE points only: CurPlayerThirst is an int and AddThirst's Value>0 gate is
+  -- Greater_IntInt -- a fractional sip marshals to 0 and the vessel refuses (the
+  -- drink-never-works bug, live-proven 2026-07-29: 62.5 refused, 62 landed)
+  local sip, cost = W.drinkStep(240.0, 0.0, 1000.0, 25.0, 0.25, 240.0)
+  eq(sip, math.floor(sip), "drink: sips are whole thirst points")
+  eq(sip, 62, "drink: 25%/s of 1000 in 0.25s ticks = 62-point sips")
 
   -- near-full thirst: the sip clamps to the gap, cost scales down with it
-  local sip, cost = W.drinkStep(240.0, 98.0, 100.0, 25.0, 0.25, 240.0)
+  sip, cost = W.drinkStep(240.0, 98.0, 100.0, 25.0, 0.25, 240.0)
   ok(math.abs(sip - 2.0) < 1e-6, "drink: sip clamps to the thirst gap")
   ok(math.abs(cost - 4.8) < 1e-6, "drink: clamped sip costs pro-rata measures")
 
-  -- nearly-dry rod: the sip shrinks to what the rod can pay for
+  -- nearly-dry rod: the last measures buy the whole points they can still afford
   sip, cost = W.drinkStep(3.0, 0.0, 100.0, 25.0, 0.25, 240.0)
   ok(math.abs(cost - 3.0) < 1e-6, "drink: dry rod pays out its last measures")
-  ok(math.abs(sip - 3.0 / 2.4) < 1e-6, "drink: last sip scaled to remaining measures")
+  eq(sip, 1, "drink: last sip floored to the whole points the measures buy")
 
   -- the LIVE scale: MaxPlayerThirst is 1000 in real saves (probed 2026-07-29). rate is percent
   -- of max per second, so the whole-wand invariant and the 4s full drink hold at any scale.
@@ -1073,7 +1114,7 @@ do
   end
   ok(math.abs(cur2 - 1000.0) < 1e-6, "drink: reaches full at the live 1000-point scale")
   ok(math.abs(spent2 - 240.0) < 1e-6, "drink: whole-wand invariant holds at 1000 scale")
-  eq(steps2, 16, "drink: still a 4-second (16-tick) full drink at 1000 scale")
+  eq(steps2, 17, "drink: still a ~4-second (17-tick) full drink at 1000 scale")
 
   -- degenerate guards
   sip, cost = W.drinkStep(0.0, 0.0, 100.0, 25.0, 0.25, 240.0)

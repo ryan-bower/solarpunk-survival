@@ -82,7 +82,8 @@ M.schema = {
                  "snapProp", "previewProp" },
   qol      = { "chestClass", "invSizeProp", "invUpgradeFn", "invLenForTierFn", "airshipClass", "shipChestOpenFn",
                "shipChestCloseFn", "openChestUiFn", "toggleInvFn", "controllingShipFn",
-               "invWidgetProp", "invRowCountFn", "dockClass", "dockSpeedProp", "pingClass", "pingMeshProps",
+               "invWidgetProp", "invRowCountFn", "dockClass", "dockReturningProp", "dockReturnShipProp",
+               "dockInteractFn", "dockRecallFns", "pingClass", "pingMeshProps",
                "overlayClass", "dropsProp", "mapCompClass", "mapOpenFn", "friendsMarkersProp",
                "mapIconImgProp", "mapSelfIconProp", "mapCanvasProp", "mapWorldToMapFn", "palette",
                "pingIconSlot", "pingBeamSlot", "pingHideMat", "pingHideMatDir", "setMaterialFn",
@@ -353,10 +354,13 @@ M.profiles = {
       -- is right click -- the prefix below deliberately does not match it.
       castFnExact  = "PressedHandInteraction",
       castFnPrefix = "InpActEvt_IA_HandInteract",
-      -- Right click, for DRINKING from the blue rod. One handler on the pawn class (offline RE
-      -- 2026-07-29: InpActEvt_IA_AltHandInteract_K2Node_EnhancedInputActionEvent_1; the IA has
-      -- no explicit triggers, so the event repeats while held -- Conv_InputActionValueToBool in
-      -- the body is the press/release split the BP itself uses).
+      -- Right click, for DRINKING from the blue rod. One handler on the pawn class
+      -- (InpActEvt_IA_AltHandInteract_K2Node_EnhancedInputActionEvent_1). The BP's
+      -- EnhancedInputActionDelegateBinding_0 binds it to ETriggerEvent::Completed ONLY
+      -- (offline binding-table decode 2026-07-29; enum idx 16+8 = Completed+Canceled across
+      -- the table, cross-checked against Jump/Sprint pairs): it fires ONCE per click, on
+      -- button RELEASE -- never on press, never repeating. Live guard trace agrees (single
+      -- drinkclick per click, 08:25 + 17:12 sessions). Hence wand_drink_mode "toggle".
       altFnPrefix  = "InpActEvt_IA_AltHandInteract",
       -- Mesh ASSETS by name (loaded-StaticMesh scan; CDO template reads are fatal):
       stickMesh   = "SM_Stick",       -- the wand handle
@@ -660,7 +664,21 @@ M.profiles = {
                             "CLIENT_SetCurLocationAsDeathLootSpawn" },
       deathLootLocProp  = "DeathLootSpawnLocation",
       dockClass     = "BP_Dock_C",
-      dockSpeedProp = "TimelineSpeed",            -- double, stock 800.0 -- paces the recall flight
+      -- Recall (offline RE 2026-07-29, BP_Dock bytecode). TimelineSpeed looked like the pace
+      -- knob and is a LIE -- nothing in the asset ever reads it. The flight is the dock's tick
+      -- VInterpTo_Constant-ing the ship at curve x MapRangeClamped(dist, 0..2000 -> 30..1000/1200),
+      -- all baked literals, so speed is un-tunable from data; features/qol.lua flies the assist
+      -- itself off these:
+      -- NOTE: AirshipCurrentlyReturning_Patrick LIES for the common direct return (only the
+      -- raise-first path raises it -- burned live 2026-07-29); "in flight" is dockReturnShipProp
+      -- being non-null, which every path sets on entry and nulls in the arrival cleanup.
+      dockReturningProp  = "AirshipCurrentlyReturning_Patrick",  -- raise-path only; do not gate on it
+      dockReturnShipProp = "AirshipToReturn",                    -- the ship being flown home
+      -- interact bound event (delegate -> ProcessEvent -> always hookable); the arm trigger
+      dockInteractFn = "BndEvt__BP_Dock_BPC_InteractableLogic_K2Node_ComponentBoundEvent_5" ..
+                       "_OnInteractedWith__DelegateSignature",
+      -- the recall custom events -- whichever of them the dock UI calls via ProcessEvent also arms
+      dockRecallFns  = { "ReturnToHome", "RaiseAndReturnHome", "DirectReturnAirship", "MovetoPoint" },
       pingClass     = "BP_Ping_C",
       pingMeshProps = { "StaticMesh", "SM_Ping", "Mesh" },  -- comp-prop candidates; first hit wins
       overlayClass  = "W_PlayerOverlay_C",

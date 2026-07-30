@@ -75,6 +75,7 @@ local tiers   = {}  -- playerId -> "hydration" | "electrick" (nil = the rod is s
 local charges = {}  -- playerId -> water measures left in the blue rod (hydration tier only)
 local drinking = {} -- playerId -> { last = os.clock() of the newest alt event } while a drink runs
 local drinkSeq = {} -- playerId -> chain token; bumping it orphans any in-flight drink chain
+local holdSpent = {} -- playerId -> os.clock() when a drink ended with the button still held
 local zaps    = {}  -- playerId -> bolts left in the charged rod (wand_electric_charges per fill)
 local barLevel = {} -- playerId -> durability notches the held HYDRATION item currently displays
 local lastSoak = {} -- playerId -> os.clock() of the last wade-refill (footstep events spam)
@@ -811,13 +812,19 @@ local function hydroCast(pawn, id)
   end
   if mate then
     local tpc = pawnController(mate)
-    local amt = ctx.config.get("wand_hydrate_thirst")
+    -- whole points only: AddThirst's Value is an int (fractional marshals to 0 = refused)
+    local amt = math.floor(ctx.config.get("wand_hydrate_thirst"))
     local ok = false
     if tpc and m.player.addThirstFn then
       local okCall, added
       if isLocalPawn(mate) then
-        okCall, added = u.call(tpc, m.player.addThirstFn, amt, true)
+        -- AddThirst's Success is an OUT param (FUNC_HasOutParms): UE4SS needs a fresh table
+        -- in that slot or the whole call throws (the same bug that killed drinking)
+        local out = {}
+        okCall = u.call(tpc, m.player.addThirstFn, amt, true, out)
+        added = out.Success
       elseif m.player.clientAddThirstFn then
+        -- CLIENT_AddThirst(Value, PlaySound) has no out params -- plain call, no verdict
         okCall, added = u.call(tpc, m.player.clientAddThirstFn, amt, true)
       end
       -- u.call's first return is only marshal success; honor the fn's own verdict when it gives
@@ -953,13 +960,17 @@ local function hookCast()
 end
 
 --------------------------------------------------------------------- drinking (right click)
--- Hold right click to DRINK from the blue rod: thirst rises at wand_drink_rate while the rod
+-- Right click to DRINK from the blue rod: thirst rises at wand_drink_rate while the rod
 -- drains at the matching cost -- a full 0->100% drink spends the whole wand (cost per thirst
--- point = wand_hydration_max / MaxPlayerThirst). The IA_AltHandInteract event has no explicit
--- triggers (offline RE 2026-07-29), so it repeats while the button is held; each fire refreshes
--- drinking[id].last and a bounded re-chained one-shot does the actual sipping on the game
--- thread (never a free-running UObject timer). If the live build fires the event only once per
--- press, `sps set wand_drink_mode toggle` makes each click start/stop instead -- same chain.
+-- point = wand_hydration_max / MaxPlayerThirst). The pawn's input-binding table binds
+-- IA_AltHandInteract to ETriggerEvent::Completed ONLY (offline decode 2026-07-29 of
+-- EnhancedInputActionDelegateBinding_0; live-confirmed -- one drinkclick per click in the
+-- guard trace): the event fires ONCE, on button RELEASE. There is no press and no repeat, so
+-- a held button is invisible and "hold" can never work here -- the shipping default is
+-- "toggle": one click tips the rod back, a bounded re-chained one-shot sips on the game
+-- thread (never a free-running UObject timer) until thirst fills, the rod runs dry, or a
+-- second click stops it. Mode "hold" survives for builds whose event does repeat while held
+-- (drink while events keep arriving, wand_drink_grace after the last one).
 -- Pure sip math (unit-tested): one drink step. Returns sip (thirst points to add) and cost
 -- (measures to spend), holding the invariant that a full 0->maxThirst drink spends exactly
 -- wandMax measures, clamped so neither the thirst bar overfills nor the rod goes negative.
@@ -967,22 +978,37 @@ function F.drinkStep(ch, cur, max, rate, tick, wandMax)
   -- `rate` is PERCENT of max thirst per second, not raw points: live saves carry
   -- MaxPlayerThirst = 1000 (probed 2026-07-29), so a flat point rate would drink 10x slower
   -- than the bar suggests. At max = 100 percent and points coincide.
+  -- The sip is FLOORED to whole points: CurPlayerThirst is an INT and AddThirst's Value>0
+  -- gate is Greater_IntInt (bytecode RE 2026-07-29) -- a fractional Value marshals to 0 and
+  -- the vessel refuses (live-proven 2026-07-29: 62.5 -> Success=false, 62 -> Success=true).
   max = (max and max > 0) and max or 100.0
+  wandMax = wandMax or 240.0
   local sip = max * ((rate or 25.0) / 100.0) * (tick or 0.25)
   if cur then sip = math.min(sip, math.max(0, max - cur)) end
-  local cost = sip * ((wandMax or 240.0) / max)
-  if cost > (ch or 0) then
-    if cost <= 0 then return 0, 0 end
-    sip = sip * ((ch or 0) / cost)
+  sip = math.floor(sip)
+  local cost = sip * (wandMax / max)
+  -- epsilon: repeated cost subtraction leaves FP crumbs (240 - 16x14.4 = 9.5999...) that
+  -- must not shove the final full-price sip onto the dry-rod path
+  if cost > (ch or 0) + 1e-6 then
+    -- the rod can't cover the whole sip: pay out everything left for the thirst it buys
+    -- (a remnant too small to buy 1 whole point returns 0,0 -- the chain just stops)
+    sip = math.floor((ch or 0) * (max / wandMax))
+    if sip <= 0 then return 0, 0 end
     cost = ch or 0
   end
   return sip, cost
 end
 
-local function stopDrink(id, why)
+-- `released` marks the one stop that means "the button came up"; every other stop happens with
+-- the button potentially STILL DOWN, and IA_AltHandInteract keeps firing every frame while it
+-- is. Stamping holdSpent on those makes onAltInteract sit the rest of the hold out instead of
+-- restarting the whole chain (and logging two lines) per input event.
+local function stopDrink(id, why, released)
   if not drinking[id] then return end
   drinking[id] = nil
   drinkSeq[id] = (drinkSeq[id] or 0) + 1
+  holdSpent[id] = (not released) and os.clock() or nil
+  mark("drink stop: " .. (why or (released and "released" or "silent")))
   if why then ctx.log.info("wand: " .. why) end
 end
 
@@ -991,7 +1017,7 @@ local function drinkTick(id, seq)
   local grace = tonumber(ctx.config.get("wand_drink_grace")) or 0.4
   if ctx.config.get("wand_drink_mode") ~= "toggle"
       and os.clock() - drinking[id].last > grace then
-    stopDrink(id)  -- button released (events stopped arriving)
+    stopDrink(id, nil, true)  -- button released (events stopped arriving)
     return
   end
   -- every UObject fetched FRESH each tick (the chain outlives any single frame)
@@ -1027,8 +1053,15 @@ local function drinkTick(id, seq)
   if sip <= 0 then stopDrink(id) return end
   local first = not drinking[id].sipped
   drinking[id].sipped = true
-  local okCall, added = ctx.uehelp.call(pc, m.addThirstFn, sip, first)
-  if not (okCall == true and added ~= false) then
+  -- AddThirst(Value, PlaySound) -> Success is an OUT param, not a return (FUNC_HasOutParms,
+  -- offline RE 2026-07-29): UE4SS REQUIRES a fresh Lua table in that slot -- without it the
+  -- call throws and pcall eats it, so EVERY drink died on its first sip as "the vessel
+  -- refused the drink" (the drink-never-works bug, live-confirmed 2026-07-29 19:4x). The out
+  -- value lands in the table keyed by param name.
+  local out = {}
+  local okCall = ctx.uehelp.call(pc, m.addThirstFn, sip, first, out)
+  if not (okCall == true and out.Success ~= false) then
+    mark("drink refused ok=" .. tostring(okCall) .. " Success=" .. tostring(out.Success))
     stopDrink(id, "the vessel refused the drink")
     return
   end
@@ -1049,11 +1082,22 @@ local function onAltInteract(pawn)
   if not (id and drawn[id]) then return end
   if wands[id] ~= "hydration" then return end
   if not ctx.net.isHost() then return end  -- thirst writes are host-side (same rule as casting)
+  local grace = tonumber(ctx.config.get("wand_drink_grace")) or 0.4
+  -- This hold already had its drink (rod ran dry, thirst filled, the vessel refused). The
+  -- event repeats every frame while the button is down, so without this the chain would
+  -- restart -- and log its two lines -- 60-120 times a second until the player let go.
+  if holdSpent[id] then
+    if os.clock() - holdSpent[id] <= grace then holdSpent[id] = os.clock() return end
+    holdSpent[id] = nil  -- the events stopped: the button came up, a new press may drink
+  end
   if ctx.config.get("wand_drink_mode") == "toggle" then
     -- debounced start/stop (the enhanced event can double-fire per press)
     local d = drinking[id]
     if d and os.clock() - d.last < 0.3 then return end
-    if d then stopDrink(id) return end
+    if d then
+      stopDrink(id, string.format("the rod is lowered -- %.0f measures held", charges[id] or 0))
+      return
+    end
     drinking[id] = { last = os.clock() }
   else
     local d = drinking[id]
@@ -1065,6 +1109,42 @@ local function onAltInteract(pawn)
   ctx.log.info("*** the rod tips back -- drinking (" ..
     string.format("%.0f", charges[id] or 0) .. " measures held) ***")
   drinkTick(id, seq)
+end
+
+-- Synthetic test entries (`sps_wand soak|drink`, or the remote channel via
+-- package.loaded["features.wand"]): drinkOnce is EXACTLY what the right-click hook calls, so
+-- it exercises the whole chain -- gates, sip math, AddThirst, bar sync -- minus the mouse.
+function F.soakLocal()
+  local pawn = localPlayerPawn()
+  if not pawn then return end
+  local id = playerIdOf(pawn)
+  if not id then return end
+  charges[id] = ctx.config.get("wand_hydration_max")
+  setState(pawn, "hydration")
+end
+
+function F.drinkOnce()
+  local pawn = localPlayerPawn()
+  if pawn then onAltInteract(pawn) end
+end
+
+-- Every hook* below latches once so a re-arm cannot double-register. A world load reloads the
+-- pawn class and kills those registrations outright, and the latches -- never reset -- kept
+-- them from ever coming back: after loading a save, hold-right-click on the blue rod did
+-- nothing until a full game restart. Drop the latches when the LOCAL CONTROLLER changes, which
+-- is the real "new world" signal; the Character notify alone is not, since it also fires for
+-- respawns and for remote players joining, where the class hooks are still perfectly alive.
+local hookWorldPc = nil
+local function dropDeadHookLatches()
+  local pcNow
+  pcall(function()
+    local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+    pcNow = pc and pc:GetFullName() or nil
+  end)
+  if not (pcNow and pcNow ~= hookWorldPc) then return end
+  hookWorldPc = pcNow
+  castHooked, altHooked, hotbarHooked = false, false, false
+  rebuildHooked, drinkHooked, waterHooked = false, false, false
 end
 
 -- Hook the generic right-click on the pawn (IA_AltHandInteract) -- same recipe as hookCast.
@@ -1704,6 +1784,7 @@ function F.init(c)
   hookWaterTouch()
   ctx.uehelp.onNewInstance("/Script/Engine.Character", ctx.map.pawn.class,
     ctx.log.guard("wand.newpawn", function(p)
+      dropDeadHookLatches()
       hookCast()
       hookAltCast()
       hookHotbar()
@@ -1744,8 +1825,10 @@ function F.init(c)
           else setState(pawn, "mundane") end
         elseif sub == "soak" then
           -- test shortcut for the chicken rite: a full-to-the-brim Hydration Wand
-          charges[id] = ctx.config.get("wand_hydration_max")
-          setState(pawn, "hydration")
+          F.soakLocal()
+        elseif sub == "drink" then
+          -- synthetic right click (the exact hook path, minus the mouse)
+          F.drinkOnce()
         elseif sub == "charge" then
           if wands[id] then setState(pawn, "charged")
           else ctx.log.info("no wand to charge (sps_wand forge first)") end
@@ -1774,7 +1857,7 @@ function F.init(c)
                                            ctx.config.get("wand_hydration_max"))
           end
           if tiers[id] then owned = owned .. " [rung: " .. tiers[id] .. "]" end
-          ctx.log.info("wand: " .. owned .. "  (sps_wand forge|soak|charge|draw|give)")
+          ctx.log.info("wand: " .. owned .. "  (sps_wand forge|soak|charge|draw|drink|give)")
         end
       end)
       return true
