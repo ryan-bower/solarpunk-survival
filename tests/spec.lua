@@ -1166,11 +1166,16 @@ do
   eq(#(m.craftpull.openFns), 3, "craftpull: bench + energy bench + kitchen all hooked")
   ok(m.craftpull.itemActorField:find("^ItemActor_16_") ~= nil,
      "craftpull: item actor field is the S_Item GUID name, not a display name")
+  eq(#(m.craftpull.partSlotClasses), 3,
+     "craftpull: base + DualLine + Vertical part-slot variants all scanned")
+  eq(m.craftpull.needTextProp, "TXT_Needed",
+     "craftpull: the counter TextBlock the reach-stamp rewrites")
   ok(gate.check(m, { "stock.chestClasses", "stock.invProp", "stock.amtFn" }),
      "chest_index: gate sees its keys")
   ok(gate.check(m, { "sortchest.class", "stock.quickStackFn", "stock.totalFn" }),
      "sort_chest: gate sees its keys")
-  ok(gate.check(m, { "craftpull.openFns", "craftpull.partSlotClass", "stock.removeAmtFn" }),
+  ok(gate.check(m, { "craftpull.openFns", "craftpull.partSlotClasses", "craftpull.needTextProp",
+       "stock.removeAmtFn" }),
      "craft_pull: gate sees its keys")
 
   eq(config.get("sort_chest"), true, "sort_chest: enabled by default")

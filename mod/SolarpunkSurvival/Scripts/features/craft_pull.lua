@@ -1,6 +1,8 @@
 -- Crafting AUTO-PULL: while a crafting station is open (bench, energy bench, kitchen), any
 -- recipe you look at has its missing materials PULLED from chests within craft_pull_range into
 -- your inventory -- so the "1/5" you'd have to go ferrying for becomes a real, craftable "5/5".
+-- The row counters also COUNT nearby chest stock ("14/2" with 16 more in a chest reads
+-- "30/2") -- a cosmetic re-stamp of TXT_Needed each pass; the craftable truth stays the pull.
 --
 -- WHY PRE-PULL (and not dressing the numbers): the recipe widgets recompute HaveAmt from the
 -- REAL inventory at times Lua cannot see (their fns are VM-internal, hooks never fire), and the
@@ -42,6 +44,22 @@ local function unwrap(v)
   return v
 end
 
+-- UE4SS hands back a TRUTHY wrapper even when the underlying object pointer is NULL (the
+-- qol tintIcon lesson), and any member call on it -- GetFullName, GetOuter, anything -- is a
+-- NATIVE access violation that pcall cannot catch (two crash dumps, 2026-07-30 00:23 and
+-- 17:01, both dying in UE4SS's UObject member glue reading address 0x20 the moment a
+-- crafting table opened). IsValid is the one probe that null-checks before dereferencing.
+-- Distinction kept: a userdata WITHOUT IsValid (the DB_Items soft-class wrappers, which fail
+-- every method as a plain Lua error) is allowed through -- its failures are catchable.
+local function safeForCalls(o)
+  if o == nil then return false end
+  if type(o) ~= "userdata" then return false end
+  local valid
+  local has = pcall(function() valid = o:IsValid() end)
+  if not has then return true end   -- not a UObject wrapper; worst case is a caught Lua error
+  return valid == true
+end
+
 local function svc() return ctx.services.chestIndex end
 
 local function clsKeyOf(cls)
@@ -79,49 +97,57 @@ local function openStations()
   return out
 end
 
--- Is this part-slot really on screen under a station that is open right now? Two independent
--- gates, because neither alone answers it:
+-- Is this part-slot really on screen under a station that is open right now? One climb up the
+-- LIVE visual tree answers both halves at once:
 --   * UWidget:IsVisible() reports the widget's OWN flag only -- a row parked inside a
 --     collapsed list still says Visible, so every recipe the player has browsed this session
---     would keep qualifying. Walking the PARENT chain is what actually tests "on screen".
---   * the parent chain stops at the owning widget's root, so it cannot tell one station from
---     another; the OUTER chain (slot -> [WidgetTree] -> the station UserWidget) does.
-local ownerBlind = false
-local function slotIsLive(slot, stations)
-  local vis
-  pcall(function() vis = slot:IsVisible() end)
-  if not vis then return false end
+--     would keep qualifying. Checking visibility at every hop is what tests "on screen".
+--   * ownership CANNOT come from the slot's own outer chain: the rows are created at runtime
+--     (W_WorkbenchCrafting's designer tree holds no SW_MissingCraftingPartsSlot at all), so
+--     their outer is the controller/game instance, never the station -- the old outer-only
+--     match rejected every row, live 2026-07-30 ("widget layout unrecognised", 17 rows).
+--     GetParent is what follows where the row was actually ADDED; when it dead-ends at a
+--     widget tree's root, GetOuter hops WidgetTree -> owning UserWidget and the climb resumes
+--     in the tree that hosts it, until a hop's fullname is one of the open stations.
+local function slotIsLive(slot, stations, why)
+  local vis0
+  pcall(function() vis0 = slot:IsVisible() end)
+  if not vis0 then
+    if why then why[#why + 1] = "slot invisible" end
+    return false
+  end
   local node = slot
-  for _ = 1, 24 do
-    local parent
-    pcall(function() parent = node:GetParent() end)
-    if not (parent and ctx.uehelp.isValid(parent)) then break end
-    local pv
-    pcall(function() pv = parent:IsVisible() end)
-    if not pv then return false end
-    node = parent
-  end
-  local o
-  pcall(function() o = slot:GetOuter() end)
-  if not o then
-    -- GetOuter unavailable in this build: keep the feature alive on the visibility chain
-    -- alone rather than pulling nothing forever, but say so once.
-    if not ownerBlind then
-      ownerBlind = true
-      ctx.log.warn("craft_pull: cannot read widget outers -- recipe rows are matched by " ..
-        "visibility only, so a second open station could contribute rows")
+  for _ = 1, 48 do
+    local up
+    pcall(function() up = node:GetParent() end)
+    if not (up ~= nil and safeForCalls(up)) then
+      -- tree root (or a non-widget hop): cross to whoever owns this tree. A stale row from a
+      -- CLOSED station climbs past its dead owner toward the package top, where GetOuter
+      -- returns the truthy NULL wrapper -- one more member call on it kills the game, so
+      -- safeForCalls gates every hop.
+      up = nil
+      pcall(function() up = node:GetOuter() end)
+      if not (up ~= nil and safeForCalls(up)) then
+        if why then why[#why + 1] = "chain died (no parent, no outer)" end
+        return false
+      end
     end
-    return true
-  end
-  for _ = 1, 6 do
+    node = up
+    local vis
+    pcall(function() vis = node:IsVisible() end)
+    if vis == false then   -- nil = not a widget (WidgetTree, controller): pass through
+      if why then
+        local n = "?"; pcall(function() n = node:GetFullName() end)
+        why[#why + 1] = "invisible ancestor " .. tostring(n)
+      end
+      return false
+    end
     local n
-    pcall(function() n = o:GetFullName() end)
+    pcall(function() n = node:GetFullName() end)
     if n and stations[n] then return true end
-    local nxt
-    pcall(function() nxt = o:GetOuter() end)
-    if not nxt then return false end
-    o = nxt
+    if why then why[#why + 1] = tostring(n) end
   end
+  if why then why[#why + 1] = "48 hops without reaching a station" end
   return false
 end
 
@@ -197,6 +223,32 @@ local function pullFromChests(pc, pawn, cls, wantAmt)
   return moved
 end
 
+-- How much of `cls` sits in ledger chests within pull range of the pawn. Cached by the
+-- ledger (20s TTL per chest+class), so per-pass cost is plain Lua on cache hits.
+local function chestStock(pawn, cls)
+  local ledger = svc()
+  if not ledger then return 0 end
+  local loc = ctx.identity.locationOf(pawn)
+  if not loc then return 0 end
+  local r = cfgn("craft_pull_range", 5000.0)
+  local total = 0
+  for _, t in ipairs(ledger.chestsNear(loc, r * r)) do
+    total = total + ledger.amtIn(t.key, t.entry, cls)
+  end
+  return total
+end
+
+-- Rewrite the row's "14/2" counter to count nearby chest stock too ("30/2") -- the display
+-- the player actually asked for. The game recomputes this text from the REAL inventory at
+-- times Lua cannot see, so the stamp is re-applied every pass instead of latched; when the
+-- chests hold none of the item the text is left alone (the game's number is already right).
+local function stampReach(slot, m, cls, need, have, extra)
+  if extra <= 0 then return end
+  local okT, tb = ctx.uehelp.get(slot, m.needTextProp)
+  if not (okT and ctx.uehelp.isValid(tb)) then return end
+  pcall(function() tb:SetText(FText(tostring(have + extra) .. "/" .. tostring(need))) end)
+end
+
 local function scanPass(tok)
   if tok ~= chainTok then return end
   if not ctx.config.get("craft_pull") then chainLive = false return end
@@ -207,7 +259,8 @@ local function scanPass(tok)
     if pc and pawn then
       local m = cmap()
       local saw, took = 0, 0
-      for _, slot in ipairs(ctx.uehelp.findAll(m.partSlotClass)) do
+      for _, cn in ipairs(m.partSlotClasses or {}) do
+      for _, slot in ipairs(ctx.uehelp.findAll(cn)) do
         if ctx.uehelp.isValid(slot) then
           saw = saw + 1
           if slotIsLive(slot, stations) then
@@ -215,24 +268,29 @@ local function scanPass(tok)
             local okN, need = ctx.uehelp.get(slot, m.needProp)
             local okH, have = ctx.uehelp.get(slot, m.haveProp)
             need, have = tonumber(need) or 0, tonumber(have) or 0
-            if okN and okH and need > have then
+            if okN and okH then
               local cls
               pcall(function() cls = slot[m.itemDataProp][m.itemActorField] end)
-              if cls ~= nil then
+              -- an unset ItemActor field reads as the truthy NULL wrapper; clsKeyOf's
+              -- GetFullName on that is the uncatchable AV -- gate, don't trust ~= nil
+              if safeForCalls(cls) then
                 local ck = clsKeyOf(cls)
-                if os.clock() - (lastTry[ck] or -1e9) > 3.0 then
+                if need > have and os.clock() - (lastTry[ck] or -1e9) > 3.0 then
                   lastTry[ck] = os.clock()
                   local got = pullFromChests(pc, pawn, cls, need - have)
                   if got > 0 then
                     ctx.log.info(string.format(
                       "craft_pull: fetched %d from nearby chests (%d/%d in hand now)",
                       got, have + got, need))
+                    have = have + got
                   end
                 end
+                stampReach(slot, m, cls, need, have, chestStock(pawn, cls))
               end
             end
           end
         end
+      end
       end
       -- A station is open and rows exist, yet NOTHING passed the on-screen gate, pass after
       -- pass. That is the gate mis-reading this build's widget layout, not an idle player --
@@ -242,6 +300,20 @@ local function scanPass(tok)
         if blindPasses == 20 then
           ctx.log.warn("craft_pull: a station is open with " .. saw .. " recipe row(s), but " ..
             "none resolve to it -- auto-pull is idle (widget layout unrecognised)")
+          -- one sample climb so the log shows WHERE the gate lost the trail
+          for _, cn in ipairs(m.partSlotClasses or {}) do
+            local done = false
+            for _, slot in ipairs(ctx.uehelp.findAll(cn)) do
+              if ctx.uehelp.isValid(slot) then
+                local why = {}
+                slotIsLive(slot, stations, why)
+                ctx.log.warn("craft_pull: sample row climb: " .. table.concat(why, " | "))
+                done = true
+                break
+              end
+            end
+            if done then break end
+          end
         end
       else
         blindPasses = 0
@@ -315,7 +387,8 @@ function F.init(c)
     return F
   end
   if not ctx.gate.require(ctx.log, ctx.map, "craft_pull",
-      { "craftpull.openFns", "craftpull.partSlotClass", "stock.removeAmtFn" }) then
+      { "craftpull.openFns", "craftpull.partSlotClasses", "craftpull.needTextProp",
+        "stock.removeAmtFn" }) then
     return false
   end
 

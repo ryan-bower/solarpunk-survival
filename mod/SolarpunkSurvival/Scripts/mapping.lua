@@ -32,8 +32,8 @@ M.schema = {
                "freeSlotsFn", "quickStackFn", "removeAmtFn", "addPlayerFn", "addFn" },
   sortchest = { "class", "deviceGetFn", "hasPowerFn", "enoughProp", "consumptionProp",
                 "interactFnHint", "placeablePath" },
-  craftpull = { "openFns", "partSlotClass", "needProp", "haveProp", "itemDataProp",
-                "itemActorField", "stationWidgets" },
+  craftpull = { "openFns", "partSlotClasses", "needProp", "haveProp", "itemDataProp",
+                "itemActorField", "stationWidgets", "needTextProp" },
   smoke    = { "shipDamageVfxFn" },
   net      = { "hasAuthorityFn", "playerStateClass" },
   save     = { "saveFn", "loadFn", "managerClass", "managerProp", "gameStateClass",
@@ -817,11 +817,16 @@ M.profiles = {
     -- CurItemdataInHand, single-struct-prop reads are the PROVEN-safe direction).
     craftpull = {
       openFns = { "UI_OpenCraftingTable", "UI_OpenAdvancedCraftingTable", "UI_OpenCooking" },
-      partSlotClass  = "SW_MissingCraftingPartsSlot_C",
+      -- three sibling classes, NOT subclasses of one another (pak RE 2026-07-30): all carry
+      -- the same NeedAmt/HaveAmt/ItemData props and the same TXT_Needed counter TextBlock
+      partSlotClasses = { "SW_MissingCraftingPartsSlot_C",
+                          "SW_MissingCraftingPartsSlot_DualLine_C",
+                          "SW_MissingCraftingPartsSlot_Vertical_C" },
       needProp       = "NeedAmt",
       haveProp       = "HaveAmt",
       itemDataProp   = "ItemData",
       itemActorField = "ItemActor_16_A80D2B2B49E59CC810744B999AEA8F92",
+      needTextProp   = "TXT_Needed",   -- the "14/2" counter the reach-stamp rewrites
       stationWidgets = { "W_WorkbenchCrafting_C", "W_AdvancedWorkbenchCrafting_C",
                          "W_CookingCrafting_C" },
     },
