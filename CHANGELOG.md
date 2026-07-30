@@ -5,6 +5,35 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
 
 ## [0.1.0] — Unreleased
 
+### Install / tooling cleanup
+- **The installer makes no network requests.** The Visual C++ 2015-2022 x64 runtime UE4SS links
+  against now ships inside `vendor/UE4SS-Solarpunk-runtime.zip` and is placed *app-local* next to
+  the game exe (which is the first directory Windows searches for a non-KnownDLL), so there is no
+  machine-wide install and no UAC prompt. The `aka.ms` download survives only as a fallback for a
+  payload built with `tools/make_ue4ss_runtime.py --no-vcruntime`.
+- **`paks/` is the single source for the content pak.** `install.py` no longer falls back to
+  `tools/pakkit/out/` — that made a working install depend on a 2 GB developer tree being on the
+  same machine, and on any machine without it the installer only *warned* while producing a mod
+  with no wands, no Tempest Codex, no Diamond Fishing Rod and no Sorting Chest. Missing is now a
+  hard error naming `--skip-pak` as the opt-out.
+- **`tools/run.py` deploys the player install by default.** `Scripts/dev` (RE dumper, the
+  `dump/cmd.txt` exec channel, ritual kit, test kit) needs the new `--dev`, and a deploy without
+  it prunes them back out — so every plain `/run` is a real rehearsal of what a player gets.
+  `run.py` also runs the same runtime check `install.py` does.
+- `install.py --status` reports what is installed (UE4SS, mod, dev tools present, pak, last loaded
+  version) and changes nothing. `install.py --purge` removes everything the installer ever wrote —
+  mod, pak, `dwmapi.dll`, the `ue4ss/` tree, the app-local runtime DLLs, a stray mod tree left by
+  a bad `--game-dir`, and the `tools/.gamedir` cache — from a strict allow-list, so the game's own
+  files are never touched.
+- `install.bat`: a double-click launcher that finds a Python ≥ 3.8 and, when there isn't one, says
+  where to get it instead of failing with a syntax error. It holds no install logic.
+- **`sps_testkit`** (dev only, `Scripts/dev/test_kit.lua`): fast-forwards a fresh save to
+  "everything testable" — every research card and recipe id unlocked (which is also how the
+  crafting-table and research-station *tiers* work: they are `DB_Researchables` rows flagged
+  `IsLevel`, not actor properties), backpack to tier 7, the pak items, a power rig, the ship
+  repair kit, both rites' offerings and bulk materials, plus battery charging / forced device
+  power. Symbols live in the new `mapping.progress` section. Host only.
+
 ### Added
 - Repo scaffold and full mod project structure.
 - **Core framework** (`Scripts/core/`): logging, event bus, config loader, authority/replication
@@ -310,6 +339,123 @@ MAJOR = save-schema break, MINOR = new feature/phase, PATCH = re-map for a new g
   (0.34/0.33/0.33); rain/storm skillshot-chance boosts unchanged.
 - **Airship recall at 20×** (`qol_recall_mult = 20`): a deliberate TEST value for the existing
   dock-recall speed-up so the effect is unmissable in play — dial to taste afterwards.
+
+### Added (2026-07-30)
+- **Sit on benches** (`features/bench.lua`): right-click a bench with **empty hands** to sit in
+  an open seat (three side by side; chairs, stools and couches seat too — the per-class seat
+  table covers them at zero cost), right-click again to get up. Sitting never teleports and
+  never changes movement mode — it **pins**: crouched pose (through qol, so the death-loot fix
+  keeps working and the crouch keys can't stand a sitter up), speed capped via
+  `MaxWalkSpeedCrouched` (the one knob the game never writes — sprint can't break the pin),
+  movement input ignored at the controller (jump is blocked by the crouch for free), sitter
+  faced outward. Occupancy is derived from replicated pawn positions — every machine agrees
+  about who sits where with zero custom replication. Auto-releases on death, respawn, bench
+  destroyed, or drifting off the seat; `sps_bench unstick` is the unconditional escape.
+- **The airship passenger bench** (`features/bench.lua`): every ship grows a real bench at the
+  stern (just forward of the storage chest, on the deck; adopt-by-proximity across reloads,
+  never duplicated, Pawn collision knocked off so it can never punt or obstruct). **Up to
+  three other players sit there and ride while the owner flies** — the seats are computed
+  from the ship transform, so they work even on a machine that can't see the prop, and a
+  seated pawn rides the ship through the engine's own based movement (the only network-legal
+  carry for a client). While someone is at the wheel (`ship.PlayerState` — replicated to
+  everyone) sitters are **locked in until the owner parks**; every game eject path and the
+  qol recall assist release the seats first (`bench_lock_mode`: 0 off / 1 piloted / 2 moving /
+  3 either).
+- **Non-owner boarding opened** (`features/bench.lua`): the airship's `NonOwnerBlocker` — a
+  Pawn-only collision capsule enclosing the interior — gets Pawn→Ignore on every machine, and
+  the unblock is **re-asserted** (door-trigger hook + the ship watch, read-before-write) since
+  the game's own controller timer re-arms the wall. Note: an unmodded client on a modded host
+  still can't board — the host's simulation blocks their pawn; both machines need the mod.
+  `bench_open_ship = false` restores the wall.
+- **Ship props are real ship geometry** (`features/bench.lua`, `features/ship_chest.lua`): the
+  stern bench and storage chest are attached to the ship with their pose written in **ship-local
+  space** after the glue — a KeepWorld attach used to freeze whatever world pose existed at that
+  instant, so attaching while the ship lay tilted (login mid-flip) baked the tilt in and the
+  righted ship wore crooked props. They now bank, pitch and right with the hull. And they block
+  **nothing**: the chest's mesh answers every collision channel with **Overlap** (never a
+  blocking hit, so neither the hull sweep nor a pawn is obstructed — it had kept full collision
+  and ground against the hull, shoving the flying ship around) except two trace channels that
+  stay Block: Visibility (pack-up/hand traces) and the game's custom **Interactable** channel —
+  `TraceForInteractable` line-traces TraceTypeQuery3 for the walk-up open, and a single trace is
+  blind to Overlap (all-Ignore killed open while destroy kept working, found live). The
+  Interactable ECC slot is config-assigned, so it's resolved at runtime from the engine's
+  CollisionProfile CDO (fallback GameTraceChannel1). Blocking trace channels can never obstruct
+  movement — sweeps test object channels. Applied on every machine since responses don't replicate;
+  the bench was already collision-free. Players clip through by design — per spec, the props
+  must never obstruct the player or the ship.
+- **Crafting-table crash fixed** (`features/craft_pull.lua`): opening a crafting station could
+  kill the game with a native access violation (two crash dumps, both dying in UE4SS's UObject
+  member glue reading address `0x20` ≈ null + offset, ~150 ms after the open — symbolized with
+  the UE4SS pdb via dbghelp). Root cause: UE4SS returns a **truthy wrapper around a NULL object
+  pointer** (the qol `tintIcon` lesson), and any member call on it is an AV that `pcall` cannot
+  catch. craft_pull's scan hit that two ways: a recipe row with an unset `ItemActor` field
+  passed the `~= nil` gate and `GetFullName` AV'd; and a stale row from a *previously closed*
+  station walked its outer chain past the dead owner to the package top, where `GetOuter`
+  returns the null wrapper and the next `GetFullName` AV'd. Both sites now gate through
+  `safeForCalls` — `IsValid()` (which null-checks before dereferencing) when the wrapper has
+  it, while still letting the DB_Items soft-class wrappers through (their method failures are
+  ordinary, catchable Lua errors).
+  the mapping *profile* but missing from the *schema*, and `mapping.resolve` strictly filters
+  by schema — the dock-map name-label fix read nil for all of them at runtime. Schema now
+  carries them (regression-tested).
+- **The Tempest Handbook** — a second real, readable, placeable book that summarises every
+  finished feature of the mod in eight sections (Storms · Dark Arts · The Unlit · Fishing ·
+  Airship · Homestead · Pack & Person · New Things), 24 pages, written as one settler's notes to
+  another. It is a **starting recipe in the quick-craft (F) menu for 1 log + 2 leaves** — the
+  same cost as the vanilla survival guide and no research card — so a brand-new player can craft
+  the thing that explains the mod in their first minute. The Dark Arts section stays deliberately
+  high level and points the reader at the Tempest Codex for the rites.
+  Under it, `tools/pakkit/build_wand_pak.py`'s codex chain became a **book-spec factory**
+  (`BOOKS` + `_names`): enum, tips table, both widget components, the reader widget, the item BP
+  and the placeable are all generated per slug, so a third book costs one spec. The codex's own
+  cooked assets are byte-identical across the refactor (bar `base_text`'s per-build random
+  localisation keys). Supporting work: `CAT_FNAME` extended to all nine vanilla
+  `EGameplayTipCategory` byte↔FName pairs (decoded from the legacy `.uexp`; **nine sections is
+  the hard ceiling for any book**), `ICON_DIR_OVERRIDES` filled in for every `/Game/UI/ItemIcons`
+  texture including the ones this build stages, a build-time page-icon existence check, and
+  `_check_replaces` — an assert on `clone_asset`'s two ordering invariants (no source a substring
+  of another source; no target containing a later source), because the replace lists are now
+  *generated* from a slug rather than hand-reviewed.
+  The hidden `TempestCodexKeeper` recipe row now carries **one part slot per book**, each holding
+  a reader-widget class ref: a row struct's slot array is walked element-wise by
+  `AddReferencedObjects`, so one row roots every chain and costs no extra recipe id.
+  `features/codex.lua` became a two-book feature: widget, hooks and diagnostics are per book,
+  while input focus and the `UI_SurvivalGuide` repoint stay shared and **arbitrated**, because
+  they are properties of the controller. The arbiter refuses to adopt one of our own widgets as
+  "the real guide" and self-heals from the stashed original — without it, a leaked repoint from
+  book A would be captured by book B and written back on close, orphaning the vanilla survival
+  guide for the rest of the session. New console command `sps_handbook`. New recipe id **10010**,
+  appended last so every existing `Playerdata.UnlockedRecipys` entry keeps its meaning, with an
+  `EXPECTED_IDS` assert in the build to keep it that way; `verify_pak` now also checks the
+  quick-craft contract, the keeper's slot count and each placeable's widget-class import edge.
+- **The P and F7 development binds are gone.** Both were testing controls — P forced a
+  thunderstorm so the strike systems could be exercised on demand, F7 dumped mod status — and
+  both are retired now that that testing is done. Storms arrive with the game's own weather
+  (`storms.lua` already detects them as `naturalStorm` and everything downstream keys off
+  `stormy()`), and `sps` prints the same status F7 did. The `storm_key` and `imgui_key` config
+  keys are removed with them, since a live key name is what registers the bind. Every console
+  command is unchanged, `sps_storm` included. Play binds (V, C / Left Ctrl, B, TAB, SPACE) are
+  untouched.
+- **The vanilla fishing rod is replaced by a modded clone** (`ModFishingRod`, pak + `fishing.lua`).
+  The vanilla rod's class sits inside `UpdateHandMeshesAndModes`' hardcoded tool ladder, so
+  closing any UI destroyed its hand actor and uncast a thrown line (the recast shim was its
+  ceiling), and its VM-internal `Catch()` forced the leaf-swap hack on every skillshot reveal.
+  The clone is the diamond rod's proven row shape at **exactly vanilla stats** (same icon, same
+  "Fishing Rod" name, durability 200, 5% skillshot, no luck bonus): its cast now **survives
+  closing the inventory**, and its minigames run clean — no leaf drop, mod-driven reel, the
+  wheel can hold the line through its slow-down. Replacement is total: the game's own
+  `FishingRod` **recipe end product is repointed** at the clone (same persisted RecipyID — every
+  save keeps its unlock, benches just craft the modded rod now), the **loot tables** drop the
+  clone, and a one-time host sweep at world entry **reforges rods already in any inventory**
+  in place (quantity + durability preserved; hard-gated on the pak class resolving, so a
+  pak-degraded session leaves vanilla rods untouched). The vanilla `DB_Items` row stays so
+  legacy rods keep resolving, and every old vanilla-rod shim survives as the fallback path.
+  The **rod ledger now tracks both pak rods** (the clone inherits the diamond rod's vanish
+  risk; per-kind sidecar flags, `mod_rod_ledger`) and `sps_fish_rescue` reels in both kinds.
+  New config `fishing_rod_replace`, new console command `sps_fish_migrate`.
+- **Diamond rod durability 2000 → 999** (user spec). The pak row, `mapping.fishing
+  .diamondDurability` and the build verify all agree; the migration sweep also clamps over-max
+  diamond rods found in older saves so their bars read sane.
 
 ### Known limitations
 - Mapped and tested against game build `24038177` only; a game update needs a re-map (and a pak

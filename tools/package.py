@@ -41,8 +41,10 @@ def main():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
 
-    # 1) the installer - the only thing a player has to run - and the manifest it reads
+    # 1) the installer - the only thing a player has to run - its double-click launcher, and
+    #    the manifest it reads
     shutil.copy2(REPO / "install.py", stage)
+    shutil.copy2(REPO / "install.bat", stage)
     shutil.copy2(REPO / "manifest.json", stage)
 
     # 2) the vendored UE4SS runtime (trimmed, runtime-only build of the patched UE4SS)
@@ -55,20 +57,20 @@ def main():
     # 3) the Lua mod, in the same mod/ layout install.py reads from a repo clone
     stage_mod(REPO / "mod" / MOD, stage / "mod" / MOD)
 
-    # 4) the content pak, pre-named to its final mount-order name
-    triple = next((c for c in (REPO / "paks" / PAK,
-                               REPO / "paks" / "z_SolarpunkWand_P",
-                               REPO / "tools" / "pakkit" / "out" / "z_SolarpunkWand_P")
-                   if all(c.with_suffix(ext).is_file() for ext in (".utoc", ".ucas", ".pak"))), None)
-    if triple:
+    # 4) the content pak, already named for its final mount order. paks/ is the one place
+    #    install.py looks, so it is the one place this reads from too.
+    triple = REPO / "paks" / PAK
+    if all(triple.with_suffix(ext).is_file() for ext in (".utoc", ".ucas", ".pak")):
         (stage / "paks").mkdir()
         for ext in (".utoc", ".ucas", ".pak"):
             shutil.copy2(triple.with_suffix(ext), stage / "paks" / (PAK + ext))
         print(f"Content pak: {triple}.*")
     else:
         # Game-derived cooked data, not committed to the public repo - it has to be built.
-        print("WARNING: no content pak found - the zip will install the Lua mod only "
-              "(no wands, no codex). Build one first: python tools/pakkit/build_wand_pak.py")
+        sys.exit(f"No content pak at {triple}.*\n"
+                 "Build it (python tools/pakkit/build_wand_pak.py) and copy\n"
+                 f"out/z_SolarpunkWand_P.* into paks/ as {PAK}.* -- a release zip without it\n"
+                 "installs a mod with no wands, no codex, no diamond rod and no sorting chest.")
 
     # 5) docs
     shutil.copy2(REPO / "README.md", stage / "README.txt")

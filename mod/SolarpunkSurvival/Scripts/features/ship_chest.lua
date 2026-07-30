@@ -9,12 +9,14 @@
 -- (DataToJSON/SaveData), replication to friends, and the transfer UI -- W_ChestInventory already
 -- draws the chest grid AND the player's own inventory side by side (GRID_PlayerInventory).
 --
--- The chest is NEVER attached to the ship (the attach family is fatal on this build) and never
--- followed on a timer (polling UObjects on a timer is the mod's oldest crash). It is RE-ANCHORED
--- on events instead: world entry and every ReceiveUnpossessed of the airship (= the player just
--- stopped driving). While the ship is away from its chest, opening the storage from the wheel
--- still works because the UI call only needs the chest's InventorySystem, wherever the actor is;
--- the walk-up interact only matters when parked, which is exactly when the re-anchor has run.
+-- The chest IS attached to the ship (K2_AttachToActor under a poison latch -- one fatal ever,
+-- then event re-anchoring is the fallback) and its pose is authored SHIP-LOCAL after the glue,
+-- so it is real ship geometry: banks, rights and flies with the hull. It never blocks anything
+-- (all collision responses Overlap -- non-blocking but the interact overlap still fires --
+-- except Visibility which stays Block for the pack-up/hand traces; user 2026-07-30) and
+-- is never followed on a timer (polling UObjects on a timer is the mod's oldest crash); ensure
+-- runs on events: world entry and every ReceiveUnpossessed of the airship. Opening the storage
+-- from the wheel works wherever the actor is -- the UI call only needs its InventorySystem.
 --
 -- The anchor is remembered in the mod's sidecar save (save/state.json rides every game save), so
 -- after a reload the chest the game restored at the old spot is recognised and adopted, never
@@ -97,6 +99,75 @@ local function adoptRadius2()
   return r * r
 end
 
+-- The chest must never BLOCK anything (user 2026-07-30: even with the ship's mover ignoring
+-- it, the attached chest ground against the hull and the flying ship jumped around; "it
+-- should not block the player or ship in any way -- don't worry that the player clips
+-- through"). Every response -> OVERLAP on PlaceableMesh (the BP's only collider, offline RE
+-- re_ship/): an overlap never yields a blocking hit, so neither the hull sweep nor the pawn
+-- is obstructed -- but it still FIRES overlap events, which the interact prompt lives on
+-- (BP_MainPlayerCharacter's own InteractionMessageSphere overlapping the interactable is
+-- what shows/arms the walk-up open; all-Ignore proved that live 2026-07-30: destroy kept
+-- working, open died). Visibility stays Block -- pack-up and the hand traces ride it.
+-- Never LESS response than Overlap while bodies may be inside; Block is never restored, so
+-- there is no depenetration launch. Responses do not replicate -- every machine runs this
+-- on its own copy; events are rare enough that re-applying beats a stale-able latch.
+-- The walk-up OPEN is a LineTraceSingle on the game's custom "Interactable" TRACE channel
+-- (TraceForInteractable bytecode: TraceTypeQuery3; the chest mesh's own template Blocks a
+-- channel NAMED Interactable). A single trace needs ECR_Block -- Overlap is invisible to it
+-- -- and blocking a TRACE channel can never obstruct movement (sweeps test OBJECT channels).
+-- The ECC slot of a named custom channel is config-assigned, so resolve it from the engine's
+-- CollisionProfile CDO (DefaultChannelResponses: Name/Channel/bTraceType), trace-type entries
+-- only; ECC_GameTraceChannel1=14 (the first custom slot) is the fallback.
+local interactableECC
+local function interactableChannel()
+  if interactableECC then return interactableECC end
+  pcall(function()
+    local prof = StaticFindObject("/Script/Engine.Default__CollisionProfile")
+    if prof and prof:IsValid() then
+      for _, e in ipairs(ctx.uehelp.arrayItems(prof.DefaultChannelResponses)) do
+        local nm, ch, isTrace
+        pcall(function() nm = e.Name:ToString() end)
+        pcall(function() ch = tonumber(e.Channel) end)
+        pcall(function() isTrace = e.bTraceType == true end)
+        if nm == "Interactable" and ch and isTrace then
+          interactableECC = ch
+          break
+        end
+      end
+    end
+  end)
+  if not interactableECC then
+    ctx.log.warn("ship_chest: could not resolve the Interactable trace channel; assuming ECC 14")
+    interactableECC = 14
+  end
+  ctx.log.debug("ship_chest: Interactable trace channel = ECC " .. tostring(interactableECC))
+  return interactableECC
+end
+
+local function disarmChestCollision(chest)
+  if not ctx.uehelp.isValid(chest) then return end
+  local mesh
+  pcall(function() mesh = chest[(ctx.map.bench and ctx.map.bench.meshProp) or "PlaceableMesh"] end)
+  if not ctx.uehelp.isValid(mesh) then return end
+  ctx.uehelp.call(mesh, "SetCollisionResponseToAllChannels", 1)  -- ECR_Overlap
+  ctx.uehelp.call(mesh, "SetCollisionResponseToChannel", 3, 2)   -- ECC_Visibility=3 -> Block
+  ctx.uehelp.call(mesh, "SetCollisionResponseToChannel", interactableChannel(), 2)  -- open trace
+end
+
+-- Once attached, the chest's pose is authored in SHIP-LOCAL space. The KeepWorld attach
+-- freezes whatever relative offset exists at that instant -- attaching while the ship lay
+-- TILTED (login mid-flip) baked the tilt in, so the righted ship wore a crooked chest
+-- (player 2026-07-30). The explicit relative write makes it real ship geometry: it banks
+-- and rights WITH the hull, whatever pose the attach happened in.
+local function placeChestRelative(chest)
+  local back  = tonumber(ctx.config.get("ship_chest_back"))  or -240.0
+  local right = tonumber(ctx.config.get("ship_chest_right")) or 0.0
+  local up    = tonumber(ctx.config.get("ship_chest_up"))    or 40.0
+  local spin  = tonumber(ctx.config.get("ship_chest_yaw"))   or 90.0
+  pcall(function() chest:K2_SetActorRelativeLocation({ X = back, Y = right, Z = up }, false, {}, false) end)
+  pcall(function() chest:K2_SetActorRelativeRotation({ Pitch = 0.0, Yaw = spin, Roll = 0.0 }, false, {}, false) end)
+end
+
 -- The ship chest, found fresh every time (never cached across ticks): nearest chest to where it
 -- belongs, else nearest to where the sidecar remembers leaving it (the ship flew away, or a
 -- reload restored the chest at its old spot).
@@ -143,11 +214,45 @@ local function ensureChest(reason)
     end
     ctx.log.info("ship_chest: the ship grew a storage chest (" .. tostring(reason) .. ")")
   end
-  ctx.log.step("shipchest.place")
-  pcall(function() chest:K2_SetActorLocation(anchor, false, {}, false) end)
-  if type(yaw) == "number" then
-    local spin = tonumber(ctx.config.get("ship_chest_yaw")) or 90.0
-    pcall(function() chest:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw + spin, Roll = 0.0 }, false) end)
+  -- Non-blocking by spec (see disarmChestCollision); IgnoreActorWhenMoving stays as belt and
+  -- braces for the hull sweep. Runtime state, not saved: re-applied every ensure (idempotent).
+  disarmChestCollision(chest)
+  local shipRoot
+  pcall(function() shipRoot = ship:K2_GetRootComponent() end)
+  if ctx.uehelp.isValid(shipRoot) then
+    ctx.uehelp.call(shipRoot, "IgnoreActorWhenMoving", chest, true)
+  end
+  local attachedParent
+  pcall(function() attachedParent = chest:GetAttachParentActor() end)
+  local attached = ctx.uehelp.isValid(attachedParent) and ctx.uehelp.sameObject(attachedParent, ship)
+  if not attached then
+    ctx.log.step("shipchest.place")
+    pcall(function() chest:K2_SetActorLocation(anchor, false, {}, false) end)
+    if type(yaw) == "number" then
+      local spin = tonumber(ctx.config.get("ship_chest_yaw")) or 90.0
+      pcall(function() chest:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw + spin, Roll = 0.0 }, false) end)
+    end
+    -- REAL attachment (user 2026-07-30: a dock RETRIEVE moved the unmanned ship -- no
+    -- possess/unpossess fires -- and the chest stayed floating in the sky; "they should
+    -- ALWAYS be attached"). KeepWorld attach right after placement, so the engine carries it
+    -- through recall/retrieve with zero hook coverage. The FName arg is the crash-ledger
+    -- family, hence the poison latch: one fatal ever, then the event-driven placement above
+    -- remains the (holey) fallback. Host-only here; movement replication carries clients.
+    if not ctx.log.isPoisoned("chest:attach") then
+      ctx.log.step("shipchest.attach")
+      ctx.log.risky("chest:attach", function()
+        pcall(function() chest:K2_AttachToActor(ship, FName("None"), 1, 1, 1, false) end)
+      end)
+      pcall(function() attachedParent = chest:GetAttachParentActor() end)
+      if ctx.uehelp.isValid(attachedParent) and ctx.uehelp.sameObject(attachedParent, ship) then
+        ctx.log.info("ship_chest: chest attached to the ship (engine-carried from here)")
+      end
+    end
+  end
+  if ctx.uehelp.isValid(attachedParent) and ctx.uehelp.sameObject(attachedParent, ship) then
+    -- ship-local pose is the authority once glued: heals a tilt an earlier attach baked in,
+    -- and doubles as live offset tuning (re-runs on every ensure)
+    placeChestRelative(chest)
   end
   ctx.save.setFlag("ship_chest_at", { X = anchor.X, Y = anchor.Y, Z = anchor.Z })
 end
@@ -189,7 +294,10 @@ local function armShipHook()
   if hookIds then pcall(UnregisterHook, hookIds[3], hookIds[1], hookIds[2]) end
   hookIds = nil
   local ok, pre, post = pcall(RegisterHook, path, ctx.log.guard("shipchest.unpossess", function()
-    deferOnly(800, function() ensureChest("parked") end)
+    deferOnly(800, function()
+      disarmChestCollision(findShipChest(theShip()))   -- every machine: responses don't replicate
+      ensureChest("parked")
+    end)
   end))
   if ok then
     hookedShip, hookIds = shipFn, { pre, post, path }
@@ -219,6 +327,7 @@ function F.init(context)
     (ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C", function()
       deferOnly(4000, function()
         armShipHook()
+        disarmChestCollision(findShipChest(theShip()))   -- every machine: responses don't replicate
         ensureChest("world entry")
       end)
     end)

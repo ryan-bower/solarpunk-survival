@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-"""Solarpunk Survival - the one installer. Pure Python (3.8+), no other downloads, no dev tools.
+"""Solarpunk Survival - the one installer. Pure Python (3.8+), nothing to download, no dev tools.
 
-    python install.py                (Windows;  or:  py install.py)
+    python install.py                (Windows;  or:  py install.py, or double-click install.bat)
     python3 install.py               (Linux / Steam Deck, running the game via Proton)
 
-Everything the mod needs ships in this folder, including a trimmed runtime-only build of the
-Solarpunk-patched UE4SS (vendor/UE4SS-Solarpunk-runtime.zip) - there is nothing to download
-and nothing developer-flavored in what gets installed. The script finds your Solarpunk install
-via Steam, puts UE4SS next to the game exe, copies the Lua mod into UE4SS's Mods folder and
-the content pak into Content/Paks. On Windows it also makes sure the Visual C++ 2015-2022
-runtime UE4SS links against is present (downloaded from Microsoft only if missing).
+Everything the mod needs ships in this folder: a trimmed runtime-only build of the
+Solarpunk-patched UE4SS, the Visual C++ runtime DLLs UE4SS links against (placed app-local, so
+nothing is installed machine-wide), the Lua mod, and the content pak. The script finds your
+Solarpunk install via Steam, puts UE4SS next to the game exe, copies the Lua mod into UE4SS's
+Mods folder and the content pak into Content/Paks. It makes no network requests at all unless
+the bundled runtime DLLs are somehow absent AND the machine lacks the runtime.
 
 Idempotent - re-run any time to update after a `git pull` or over an older release zip.
 
     --game-dir PATH   skip auto-detection (the Solarpunk folder, or its Binaries/Win64)
-    --skip-pak        don't touch Content/Paks (Lua mod only - no wands, no codex)
+    --skip-pak        install the Lua mod only - no wands, no books, no diamond rod
     --no-vcredist     don't check for / install the Visual C++ runtime (Windows)
     --vcrun           Linux: also run `protontricks <appid> vcrun2022` now
     --force           reinstall the UE4SS core even if it is already there
+    --status          report what is currently installed, change nothing
     --uninstall       remove the mod + content pak (leaves UE4SS in place)
+    --purge           remove everything this installer ever puts on disk, UE4SS included
 
 This file doubles as the library tools/run.py (the dev deploy-and-launch flow) imports, so
 player installs and dev deploys can never drift apart.
@@ -46,6 +48,13 @@ IS_WIN = os.name == "nt"
 # Files a re-extraction must not clobber: the user may have tweaked settings, and an existing
 # install's mod lists can reference mods the runtime payload doesn't ship.
 UE4SS_PRESERVE = {"ue4ss/UE4SS-settings.ini", "ue4ss/Mods/mods.txt", "ue4ss/Mods/mods.json"}
+
+# The Visual C++ 2015-2022 x64 runtime UE4SS links against, shipped inside the vendored payload
+# and extracted next to the game exe. Binaries/Win64 IS the exe's own directory, which Windows
+# searches first for non-KnownDLLs, so an app-local copy satisfies the load with no machine-wide
+# install and no UAC prompt. Kept in sync with tools/make_ue4ss_runtime.py's VCRUNTIME.
+VCRUNTIME_DLLS = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+                  "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll")
 
 # UE4SS cannot auto-detect UE 5.7, the AOB scan needs a bigger budget on this game, and the
 # console windows are dev tools (UE4SS.log carries everything they show) - keep them off.
@@ -163,14 +172,34 @@ def get_game_dir(cli_dir=None):
 # --- process control -----------------------------------------------------------------------
 
 def game_running():
+    """Is the game up right now? Everything that writes into the install asks this first.
+
+    /FO CSV is load-bearing. tasklist's default table format truncates the Image Name column to
+    25 characters, and this exe's name is 33 - so it printed "SolarpunkSteam-Win64-Ship" and the
+    obvious `EXE in output` test was ALWAYS False. The filter matched and the row came back; only
+    the name we compared against had been cut. Which meant this returned False with the game
+    running: installs went ahead over locked files, run.py's stop_game() never killed anything
+    (its "UE4SS.log still locked by the old instance" fallback exists because of exactly this),
+    and --purge would have deleted UE4SS out from under a live process. CSV quotes the full name.
+    """
     if IS_WIN:
-        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {EXE}", "/NH"],
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {EXE}", "/NH", "/FO", "CSV"],
                              capture_output=True, text=True).stdout
         return EXE.lower() in out.lower()
     return subprocess.run(["pgrep", "-f", EXE], capture_output=True).returncode == 0
 
 
 # --- UE4SS core (from the vendored runtime payload - nothing to download) ------------------
+
+def vendored_names():
+    """Top-level file names inside the vendored payload - i.e. exactly what an extraction drops
+    into Binaries/Win64. Empty set if the payload is gone, which makes every caller conservative."""
+    try:
+        with zipfile.ZipFile(VENDOR_UE4SS) as z:
+            return {n for n in z.namelist() if "/" not in n.rstrip("/")}
+    except (OSError, zipfile.BadZipFile):
+        return set()
+
 
 def install_ue4ss(win64: Path):
     """Extract the trimmed runtime-only UE4SS next to the game exe. Stock UE4SS cannot scan
@@ -290,24 +319,33 @@ def find_mod_src():
     fail(f"Could not find the mod source (Scripts/main.lua) under {ROOT}")
 
 
-# --- the content pak (wands, Tempest Codex, research card) ---------------------------------
+# --- the content pak (wands, the two books, research card) ---------------------------------
 
 def find_pak_triple():
-    for c in (ROOT / "paks" / PAK, ROOT / "paks" / "z_SolarpunkWand_P",
-              ROOT / "tools" / "pakkit" / "out" / "z_SolarpunkWand_P"):
-        if all(c.with_suffix(ext).is_file() for ext in (".utoc", ".ucas", ".pak")):
-            return c
+    """paks/ is the one canonical home. It used to also fall back to the pak-build toolchain's
+    output folder, which meant an install silently depended on a 2 GB developer tree being
+    present - and produced a half-working mod on any machine without it."""
+    c = ROOT / "paks" / PAK
+    if all(c.with_suffix(ext).is_file() for ext in (".utoc", ".ucas", ".pak")):
+        return c
     return None
 
 
 def install_pak(game_dir: Path):
     triple = find_pak_triple()
     if not triple:
+        # Refuse rather than warn. Half the mod's items live in this pak - the wands, the Tempest
+        # Codex and its research card, the Diamond Fishing Rod, the Sorting Chest, the gold
+        # fishing drops - and a mod installed without them looks broken rather than reduced.
         # Game-derived cooked data, so it is not committed to the public repo: it ships in the
         # release zip, or you build it yourself from an extracted copy of the game's assets.
-        warn("no content pak found - the Tempest Codex, the wands and the research card will be missing")
-        warn("get it from the release zip (paks/), or build it: python tools/pakkit/build_wand_pak.py")
-        return
+        fail(f"No content pak in {ROOT / 'paks'}.\n"
+             f"Expected {PAK}.utoc / .ucas / .pak there.\n\n"
+             "The release zip ships it. From a git clone, build it with\n"
+             "  python tools/pakkit/build_wand_pak.py\n"
+             "and copy out/z_SolarpunkWand_P.* into paks/ under the name above.\n\n"
+             "To install the Lua mod anyway, knowing the wands, both books, the Diamond\n"
+             "Fishing Rod and the Sorting Chest will all be missing:  --skip-pak")
     paks = game_dir / "Content" / "Paks"
     paks.mkdir(parents=True, exist_ok=True)
     fresh = [ext for ext in (".utoc", ".ucas", ".pak")
@@ -332,12 +370,18 @@ def have_vc_runtime():
     return (Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "vcruntime140_1.dll").is_file()
 
 
-def ensure_vc_runtime():
-    """UE4SS links against the VC++ 2015-2022 x64 runtime. Most machines already have it; when
-    it is missing, fetch Microsoft's installer and run it elevated. This is the only network
-    access in the whole install, and only on machines that actually lack the runtime."""
+def ensure_vc_runtime(win64: Path = None):
+    """UE4SS links against the VC++ 2015-2022 x64 runtime. Three ways it can be satisfied, in
+    order of preference: already installed machine-wide (most machines), the app-local copies
+    the vendored payload drops next to the game exe, or - only if both of those fail - fetching
+    Microsoft's installer. That last branch is the sole network access anywhere in the install
+    and should now be unreachable in practice; it stays as a safety net for a payload built with
+    tools/make_ue4ss_runtime.py --no-vcruntime."""
     if have_vc_runtime():
         step("Visual C++ runtime present")
+        return
+    if win64 and (win64 / "vcruntime140_1.dll").is_file():
+        step("Visual C++ runtime supplied app-local (bundled next to the game exe)")
         return
     url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
     import ctypes
@@ -437,23 +481,132 @@ def deploy(game_dir: Path, force=False, skip_pak=False, include_dev=False):
         install_pak(game_dir)
 
 
+def _rm(path: Path, count):
+    """Remove one file or one directory tree, reporting it. Everything the uninstallers touch
+    goes through here and every caller names an exact path - nothing globs, nothing recurses
+    into the game's own files."""
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+        else:
+            return count
+    except OSError as e:
+        warn(f"could not remove {path}: {e}")
+        return count
+    step(f"removed {path}")
+    return count + 1
+
+
+def _remove_mod(game_dir: Path, count=0):
+    count = _rm(game_dir / "Binaries" / "Win64" / "ue4ss" / "Mods" / MOD, count)
+    for ext in (".utoc", ".ucas", ".pak"):
+        count = _rm(game_dir / "Content" / "Paks" / (PAK + ext), count)
+    return count
+
+
 def uninstall(game_dir: Path):
     win64 = game_dir / "Binaries" / "Win64"
-    mod_dst = win64 / "ue4ss" / "Mods" / MOD
-    if mod_dst.is_dir():
-        shutil.rmtree(mod_dst)
-        step(f"removed {mod_dst}")
-    for ext in (".utoc", ".ucas", ".pak"):
-        f = game_dir / "Content" / "Paks" / (PAK + ext)
-        if f.is_file():
-            f.unlink()
-            step(f"removed {f}")
+    _remove_mod(game_dir)
     say()
     say("Mod removed. UE4SS itself was left in place (other mods may use it);")
-    say(f"to remove it too, delete dwmapi.dll and the ue4ss folder from {win64}")
+    say("to remove that too:  python install.py --purge")
+
+
+def purge(game_dir: Path):
+    """Everything this installer has ever written, gone - so a reinstall starts from nothing.
+
+    Strictly an allow-list of paths we create. The game's own files live in the same folders
+    (Solarpunk-Windows_0_P.*, global.u*, the exe and its .pdb, tbb*.dll, D3D12/, DML/) and must
+    survive untouched; a purge that took the folder would cost a full Steam redownload."""
+    win64 = game_dir / "Binaries" / "Win64"
+    n = _remove_mod(game_dir)
+    n = _rm(win64 / "ue4ss", n)
+    n = _rm(win64 / "dwmapi.dll", n)
+    # Only the runtime DLLs THIS payload would have installed. A game that ships its own copy of
+    # msvcp140.dll next to its exe is not unheard of, and purging one we never placed would break
+    # the vanilla game - so ask the vendored zip what it actually carries.
+    for dll in vendored_names() & set(VCRUNTIME_DLLS):
+        n = _rm(win64 / dll, n)
+
+    # A bad --game-dir (or a hand copy) can leave a mod tree one level too deep, at
+    # <game>/Solarpunk/Binaries/Win64/ue4ss. UE4SS never loads it - there is no dwmapi.dll
+    # beside a game exe there - so it is pure litter. Only ever remove a folder that has no
+    # game exe of its own, so this can never eat a real second install.
+    nested = game_dir / "Solarpunk"
+    if (nested / "Binaries" / "Win64").is_dir() and not (nested / "Binaries" / "Win64" / EXE).is_file():
+        n = _rm(nested, n)
+
+    n = _rm(GAMEDIR_CACHE, n)  # so the next install exercises Steam auto-detection for real
+
+    say()
+    say(f"Purged - {n} item{'' if n == 1 else 's'} removed. The game itself is untouched.")
+    say("Saved games are not ours to delete; they live outside the game folder")
+    say(r"(Windows: %LOCALAPPDATA%\Solarpunk\Saved\SaveGames).")
+
+
+def status(game_dir: Path):
+    """Report what is installed without changing anything - the way to check a clean slate
+    before a fresh install, and to confirm the fresh install afterwards."""
+    win64 = game_dir / "Binaries" / "Win64"
+    ue4ss = win64 / "ue4ss"
+    mod_dst = ue4ss / "Mods" / MOD
+
+    def mark(ok):
+        return "yes" if ok else "no "
+
+    say(f"  UE4SS core        {mark((win64 / 'dwmapi.dll').is_file() and ue4ss.is_dir())}"
+        f"  ({win64 / 'dwmapi.dll'})")
+    say(f"  VC++ runtime      {mark(have_vc_runtime() or (win64 / 'vcruntime140_1.dll').is_file())}"
+        f"  ({'machine-wide' if have_vc_runtime() else 'app-local' if (win64 / 'vcruntime140_1.dll').is_file() else 'MISSING'})")
+
+    if mod_dst.is_dir():
+        # Count Scripts/, not the whole folder: dump/, config/ and save/ are the player's own
+        # state and would make the number drift for reasons that say nothing about the install.
+        # And count dev FILES, not the dev folder - sync_mod prunes stale files but never removes
+        # the directory they were in, so an install with every dev tool pruned still has an empty
+        # Scripts/dev/ sitting there. Testing is_dir() here reported "dev tools: yes" on a clean
+        # player install (caught live).
+        scripts = mod_dst / "Scripts"
+        n = sum(1 for f in scripts.rglob("*") if f.is_file()) if scripts.is_dir() else 0
+        dev_dir = scripts / "dev"
+        dev = sum(1 for f in dev_dir.rglob("*") if f.is_file()) if dev_dir.is_dir() else 0
+        say(f"  {MOD:<17} yes  ({n} script files, dev tools: {'yes (%d)' % dev if dev else 'no'})")
+    else:
+        say(f"  {MOD:<17} no")
+
+    triple = [game_dir / "Content" / "Paks" / (PAK + e) for e in (".utoc", ".ucas", ".pak")]
+    if all(f.is_file() for f in triple):
+        say(f"  content pak       yes  ({sum(f.stat().st_size for f in triple) / 1e6:.1f} MB, {PAK}.*)")
+    else:
+        say(f"  content pak       {mark(False)} ({PAK}.* not in Content/Paks)")
+
+    src = ROOT / "paks" / PAK
+    say(f"  pak source ready  {mark(find_pak_triple() is not None)}  ({src}.*)")
+
+    # UE4SS.log is written without line breaks - the whole file is one enormous line, so
+    # splitlines() is useless on it. Pick the startup banner out by its timestamp instead.
+    log = ue4ss / "UE4SS.log"
+    if log.is_file():
+        # timestamp, then the [Lua] [SolarpunkSurvival] [INF] tag run, then the banner
+        hits = re.findall(rf"\[([\d\-]+ [\d:.]+)\](?:\s*\[[^\]]*\])*\s*{MOD} v([\d.]+) starting",
+                          log.read_text(errors="replace"))
+        if hits:
+            when, ver = hits[-1]
+            say(f"  last loaded       v{ver} at {when}")
+        else:
+            say("  last loaded       (no startup line in UE4SS.log yet)")
 
 
 def main():
+    # Before anything else: a version this old cannot run the rest of the file, and the failure
+    # a player would otherwise see is a traceback about syntax.
+    if sys.version_info < (3, 8):
+        sys.exit("This installer needs Python 3.8 or newer (you have %d.%d).\n"
+                 "Windows: get it from https://www.python.org/downloads/ or the Microsoft Store."
+                 % sys.version_info[:2])
+
     ap = argparse.ArgumentParser(
         description="Install the Solarpunk Survival mod (everything is bundled - no downloads).")
     ap.add_argument("--game-dir", metavar="PATH", help="skip auto-detection")
@@ -461,23 +614,34 @@ def main():
     ap.add_argument("--no-vcredist", action="store_true", help="skip the Visual C++ runtime check (Windows)")
     ap.add_argument("--vcrun", action="store_true", help="Linux: run protontricks vcrun2022 now")
     ap.add_argument("--force", action="store_true", help="reinstall the UE4SS core even if present")
+    ap.add_argument("--status", action="store_true", help="report what is installed, change nothing")
     ap.add_argument("--uninstall", action="store_true", help="remove the mod + content pak")
+    ap.add_argument("--purge", action="store_true", help="remove the mod, the pak AND UE4SS itself")
     args = ap.parse_args()
 
     game_dir = get_game_dir(args.game_dir)
     say(f"Game:  {game_dir}")
 
+    if args.status:
+        status(game_dir)
+        return
+
     # The game holds its paks and dwmapi.dll open - nothing can be replaced while it runs.
     if game_running():
         fail("Solarpunk is running - quit the game first (its pak/DLL files are locked while it runs).")
 
+    if args.purge:
+        purge(game_dir)
+        return
     if args.uninstall:
         uninstall(game_dir)
         return
 
-    if IS_WIN and not args.no_vcredist:
-        ensure_vc_runtime()
     deploy(game_dir, force=args.force, skip_pak=args.skip_pak, include_dev=False)
+    # After deploy, not before: the bundled runtime DLLs land during the UE4SS extraction, and
+    # checking first would send a machine that is already covered off to download an installer.
+    if IS_WIN and not args.no_vcredist:
+        ensure_vc_runtime(game_dir / "Binaries" / "Win64")
     if not IS_WIN:
         proton_notes(args.vcrun)
 

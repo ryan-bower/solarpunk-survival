@@ -12,21 +12,22 @@ pak (the new items — wands, the Tempest Codex, its research card).
 
 ## Install
 
-**One command does everything, and everything is bundled** — including a trimmed, runtime-only
-build of the Solarpunk-patched [UE4SS](https://docs.ue4ss.com/) (`vendor/`). There is **nothing
-else to download** and no developer tooling in what gets installed. The installer finds your game
-through Steam, puts UE4SS next to the game exe with the right engine-version settings, and copies
-in both the Lua mod and the content pak.
+**One command does everything, and everything is bundled** — a trimmed, runtime-only build of the
+Solarpunk-patched [UE4SS](https://docs.ue4ss.com/), the Visual C++ runtime it links against, the
+Lua mod and the content pak (`vendor/`, `mod/`, `paks/`). There is **nothing else to download**,
+nothing installed machine-wide, and no developer tooling in what gets installed. The installer
+finds your game through Steam, puts UE4SS next to the game exe with the right engine-version
+settings, and copies in both the Lua mod and the content pak.
 
 You need three things first:
 
 | | |
 |---|---|
 | **Windows** or **Linux / Steam Deck** + **Solarpunk** on Steam | tested against build `24038177`. Linux / Steam Deck run through [Proton](#linux--steam-deck-proton) |
-| **Python 3.8+** | Windows: [python.org](https://www.python.org/downloads/) or the Microsoft Store (`python` in a terminal walks you through it). Linux / Steam Deck already have `python3` |
+| **Python 3.8+** | almost certainly already there — if not, Windows: [python.org](https://www.python.org/downloads/) or the Microsoft Store. Linux / Steam Deck already have `python3`. `install.bat` checks for you and says where to get it |
 | This mod — the **release zip**, or a clone of this repo | a clone has no content pak (game-derived data isn't committed); use the release zip, or build it yourself ([`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)) |
 
-Then, with the game closed:
+Then, with the game closed — double-click **`install.bat`**, or run:
 
 ```
 python install.py
@@ -40,11 +41,13 @@ Launch Solarpunk. `Binaries\Win64\ue4ss\UE4SS.log` logs `SolarpunkSurvival v0.1.
 | Flag | |
 |---|---|
 | `--game-dir <path>` | skip auto-detection — pass the `Solarpunk` folder (or its `Binaries\Win64`) |
-| `--skip-pak` | Lua mod only — no wands, no codex |
+| `--skip-pak` | Lua mod only — no wands, no codex, no diamond rod, no sorting chest |
 | `--no-vcredist` | don't check for / install the Visual C++ runtime (Windows) |
 | `--vcrun` | Linux: also run `protontricks 1805110 vcrun2022` now |
 | `--force` | reinstall the UE4SS core even if it's already there |
+| `--status` | report what's installed and change nothing |
 | `--uninstall` | remove the mod and the content pak (leaves UE4SS in place) |
+| `--purge` | remove everything the installer ever wrote, UE4SS included |
 
 </details>
 
@@ -54,9 +57,11 @@ idempotent, and it leaves your config and mod save alone.
 **Multiplayer:** Solarpunk co-op is a host-authoritative listen server. All the logic runs on the
 host, so **every player in the session needs this same install**. Unmodded clients are unsupported.
 
-**Network access:** none, with one exception — on a Windows machine that's missing the
-Visual C++ 2015-2022 runtime (which UE4SS links against), the installer fetches Microsoft's
-installer from `aka.ms` and runs it. Skip that with `--no-vcredist`.
+**Network access:** none. The Visual C++ 2015-2022 runtime UE4SS links against ships inside the
+bundled payload and is placed *app-local*, next to the game exe — no machine-wide install, no UAC
+prompt. (Only if those bundled DLLs were stripped **and** the machine has no runtime at all does
+the installer fall back to fetching Microsoft's installer from `aka.ms`; `--no-vcredist` skips
+even that.)
 
 ### Linux & Steam Deck (Proton)
 
@@ -85,22 +90,29 @@ Manual steps, troubleshooting and what goes where: [`docs/INSTALL.md`](docs/INST
 
 ## Playing
 
+**Craft the Tempest Handbook first.** It is in the quick-craft (**F**) menu from the start for
+1 log + 2 leaves — place it, press **E**, and it explains everything below in eight sections.
+
 | | |
 |---|---|
-| **P** | toggle the storm (`sps_storm` / `sps_storm_off`; `sps_auto` re-enables hunting auto-strikes) |
 | **V** | draw / stow the wand |
 | **left click** (wand drawn) | cast — a bolt where you look, or a pour / a drink for a teammate |
-| **F7** | in-game config panel |
+| **C** / **Left Ctrl** | crouch (tap to toggle, hold to crouch for the hold) |
+| **B** | open the airship's storage chest |
+| **TAB** (at the airship wheel) | ship ↔ pack transfer view |
+| **SPACE** (at the airship wheel) | boost to 3× speed |
+| **right click** a bench, empty-handed | sit / stand |
 
-Other console commands: `sps_wand` (state, `forge`/`soak`/`charge`/`give`), `sps_codex`,
-`sps_repair`.
+Storms arrive with the game's own weather. Console commands: `sps` (status + unmapped symbols),
+`sps set <key> <value>`, `sps_storm` / `sps_storm_off`, `sps_wand`, `sps_codex`, `sps_handbook`,
+`sps_fish`, `sps_bench`, `sps_trash`, `sps_sort`, `sps_repair`.
 
 The two rites — the chicken's for water, the lamb's for fire — are written up in
-[`docs/DARK-ARTS.md`](docs/DARK-ARTS.md), and in-game in the **Tempest Codex** (a craftable book;
-research *The Dark Arts*, then craft the codex and a Mundane Wand at the bench).
+[`docs/DARK-ARTS.md`](docs/DARK-ARTS.md), and in-game in the **Tempest Codex** (research
+*The Dark Arts*, then craft the codex and a Mundane Wand at the bench).
 
 **Tuning:** every number lives in `Mods/SolarpunkSurvival/config/config.json` (copy
-`config.default.json` next to it and edit), or press **F7**. In co-op the host's values win.
+`config.default.json` next to it and edit), or `sps set`. In co-op the host's values win.
 
 ## What's in it
 
@@ -112,6 +124,7 @@ research *The Dark Arts*, then craft the codex and a Mundane Wand at the bench).
 | **Dark-arts rites** | a pentagram of fences + candles + five offerings around a sacrifice; the bolt that takes it turns every blank wand in the circle. |
 | **Wands** | Mundane → **Hydration** (240 measures: fills growboxes, quenches teammates, refills on drinking/wading) or → **Electrick** (aimed bolts in any weather, recharges near strikes). One nature per rod, forever. |
 | **Tempest Codex** | a real craftable, placeable, readable in-game book — five sections of lore, cooked into the content pak. |
+| **Tempest Handbook** | a second readable book, in the quick-craft menu from the start: eight sections summarising every finished feature, so a new player can find out what changed. |
 
 Design and roadmap: [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/MILESTONE-2.md`](docs/MILESTONE-2.md).
 Working on the mod itself (dev loop, building the content pak, tests): [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).

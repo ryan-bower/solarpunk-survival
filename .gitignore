@@ -24,6 +24,14 @@ ue4ss.log
 /paks/**/*.uasset
 /paks/**/*.umap
 
+# Game-derived mapping dump. Can only be produced from the RUNNING game (the mod's exec channel
+# calls DumpUSMAP), so it is worth keeping locally -- but it is the game's data, not ours.
+*.usmap
+
+# The live exec channel + RE scratch (cmd.txt/result.txt, save backups): runtime game data,
+# machine-local by nature
+/dump/
+
 # Python tooling cruft
 __pycache__/
 *.pyc

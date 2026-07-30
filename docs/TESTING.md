@@ -20,7 +20,7 @@ alongside `luacheck` (Lua static analysis) and Python byte-compile.
 Once UE4SS + the mod are installed (`python tools/run.py` installs, launches and confirms in one
 step; see [`INSTALL.md`](INSTALL.md)) and you launch the game:
 
-- **Status / self-check:** press **F7**, or open the UE4SS console and type `sps`. It prints the
+- **Status / self-check:** open the UE4SS console and type `sps`. It prints the
   detected game build, host-authority state, and the list of still-unmapped symbols.
 - **Reverse-engineering capture** (the step that unblocks real gameplay): load your save, make the
   target exist (start a storm, place a build piece, board the airship...), then in the console:

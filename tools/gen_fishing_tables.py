@@ -32,7 +32,7 @@ STARTER = [
     ("Oak Sapling",         "BP_Sapling_Oak_Item_C",          80, None),
     ("Birch Sapling",       "BP_BirchSapling_Item_C",         80, None),
     ("Chicken Egg",         "BP_Egg_Item_C",                  76, "rare"),
-    ("Fishing Rod (worn)",  "BP_FishingRod_Item_C",           45, "rare"),
+    ("Fishing Rod (worn)",  "BP_ModFishingRod_Item_C",        45, "rare"),
     ("Cotton Seed",         "BP_Seed_Cotton_Item_C",          20, None),
     ("Diamond",             "BP_Diamond_Item_C",              20, "jackpot"),
     ("Diamond Rod (worn)",  "BP_DiamondFishingRod_Item_C",     5, "rare"),
@@ -60,7 +60,7 @@ MID = [
     ("Tomato Seeds",        "BP_Seed_Tomato_Item_C",          80, None),
     ("Paprika Seeds",       "BP_Seed_Paprika_Item_C",         80, None),
     ("Chicken Egg",         "BP_Egg_Item_C",                  76, "rare"),
-    ("Fishing Rod (worn)",  "BP_FishingRod_Item_C",           72, "rare"),
+    ("Fishing Rod (worn)",  "BP_ModFishingRod_Item_C",        72, "rare"),
     ("Truffle",             "BP_Truffle_Item_C",              57, "jackpot"),
     ("Diamond",             "BP_Diamond_Item_C",              40, "jackpot"),
     ("Cable (wire)",        "BP_CableConnectorSmall_Item_C",  40, "rare"),
@@ -89,7 +89,7 @@ LATE = [
     ("Circuitboard",        "BP_Circuitboard_Item_C",        160, "rare"),
     ("Truffle",             "BP_Truffle_Item_C",             152, "jackpot"),
     ("Diamond",             "BP_Diamond_Item_C",             100, "jackpot"),
-    ("Fishing Rod (worn)",  "BP_FishingRod_Item_C",           90, "rare"),
+    ("Fishing Rod (worn)",  "BP_ModFishingRod_Item_C",        90, "rare"),
     ("Battery",             "BP_Battery_Item_C",              80, "rare"),
     ("Cable (wire)",        "BP_CableConnectorSmall_Item_C",  80, "rare"),
     ("Chicken Egg",         "BP_Egg_Item_C",                  57, "rare"),
@@ -113,8 +113,16 @@ def check():
         # bands onto the skillshot chance) must leave the non-bonus pool with weight. Keep the
         # historical x6 headroom anyway so config tweaks can't starve the commons.
         assert bonus * 6 < 10000, f"{name} bonus band {bonus} has no headroom (x6 guard)"
-        # rod split: diamond (worn) must be exactly 10% of total rod-drop weight
-        rods = {t: w for _, c, w, t in tbl if c in ("BP_FishingRod_Item_C",)}
+        # rod split: diamond (worn) must be exactly 10% of total rod-drop weight.
+        # The plain-rod drop is the MOD clone (2026-07-30): the vanilla BP_FishingRod_Item_C is
+        # replaced everywhere -- recipe end product repointed in the pak, inventories migrated by
+        # features/fishing.lua -- because its class sits in the game's hardcoded hand ladder
+        # (UI close uncasts it) and its Catch() is VM-internal (forces the leaf-swap skillshot
+        # hack). The clone row is vanilla-stats (durability 200) with the diamond rod's proven
+        # tool interaction typing.
+        assert not any(c == "BP_FishingRod_Item_C" for _, c, _, _ in tbl), \
+            f"{name} still drops the replaced vanilla rod"
+        rods = {t: w for _, c, w, t in tbl if c in ("BP_ModFishingRod_Item_C",)}
         dia_worn = sum(w for _, c, w, t in tbl if c == "BP_DiamondFishingRod_Item_C" and t == "rare")
         rod_norm = sum(rods.values())
         assert abs(dia_worn / (dia_worn + rod_norm) - 0.10) < 0.005, f"{name} rod split off"

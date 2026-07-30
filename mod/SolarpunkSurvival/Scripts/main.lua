@@ -31,8 +31,8 @@ local ok, err = pcall(function()
   log.info(buildinfo.summary())
   if buildinfo.degraded then
     log.warn("DEGRADED: features disabled until Scripts/mapping.lua is filled for this build")
-    log.warn("see docs/REVERSE-ENGINEERING.md — press " .. tostring(config.get("imgui_key")) ..
-             " in-game for the unmapped-symbol list")
+    log.warn("see docs/REVERSE-ENGINEERING.md — run `sps` in the console for the " ..
+             "unmapped-symbol list")
   end
 
   local uehelp   = require("core.uehelp")
@@ -64,11 +64,15 @@ local ok, err = pcall(function()
     "features.ritual",       -- after storms/wand: consumes services.strikeAt + chargeWands
     "features.evil_animals", -- after storms/ritual: consumes services.damagePlayerBy + the
                              -- ritual.completed unlock; provides services.isEvilAnimal
-    "features.codex",        -- the Tempest Codex: placed-book interact -> reader UI (content pak)
+    "features.codex",        -- the readable books (Tempest Codex + Tempest Handbook): placed-book
+                             -- interact -> reader UI (content pak)
     "features.foundation",   -- snapped foundations skip the corners-touch-ground rule
     "features.qol",          -- chests x2, backpack, crouch, airship QoL, UI fixes, pings, map names
     "features.ship_chest",   -- after qol: provides services.shipChestOpen that qol's wheel keys use
     "features.boost",        -- SPACE at the airship wheel = 3X boost (+FOV, wind loop)
+    "features.bench",        -- after qol: sit on benches (right click), the airship's
+                             -- passenger bench + lock-in, non-owner boarding opened; crouches
+                             -- through services.setCrouch, provides services.benchReleaseAll
     "features.chest_index",  -- the chest stock ledger service (services.chestIndex)
     "features.sort_chest",   -- after chest_index: the blue powered chest that files its
                              -- contents into nearby chests (Quick Stack)
@@ -82,6 +86,7 @@ local ok, err = pcall(function()
     "dev.remote",
     "dev.ritual_test",
     "dev.ritual_kit",        -- `sps_needful hydration|electrick`: stage a rite's animal + rod + offerings
+    "dev.test_kit",          -- `sps_testkit`: unlock all research/recipes, grow the pack, stock it
   }
   for _, name in ipairs(features) do
     local okf, mod = pcall(require, name)

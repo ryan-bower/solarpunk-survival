@@ -567,6 +567,10 @@ end
 -- build shares (see the gotchas memory). pcall catches nothing; there is no safe probe shape, so
 -- the whole poll apparatus is gone rather than latched.
 local holdKeys  = { c = false, ctrl = false, cHeld = false }  -- latch / Ctrl held / letter held
+-- The bench seat's crouch rides THROUGH this module (services.setCrouch) so the death-loot
+-- bookkeeping below stays honest for a seated death, and while it is set the crouch keys
+-- cannot stand a sitter up -- applyHold's reconcile treats it as an unconditional "crouched".
+local benchSeatCrouch = false
 local lastDownAt = { c = -1e9, ctrl = -1e9 }  -- last DOWN event per key, OS repeats included
 local ctrlHooked = false        -- the game's own press/release events are driving Ctrl
 local ctrlPressedAt = -1e9      -- when the Ctrl DOWN edge landed (tap vs hold is a duration)
@@ -596,7 +600,7 @@ local function applyHold()
   local _, isC = ctx.uehelp.get(pawn, "bIsCrouched")
   local half = capsuleHalf(pawn)
   if isC ~= true and half then standHalf = half end   -- standing height, learned (CDOs are poison)
-  local want = holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
+  local want = benchSeatCrouch or holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
   if want == (isC == true) then return end            -- already where the keys say we should be
   if want then ensureCanCrouch(pawn) end
   ctx.uehelp.call(pawn, want and "Crouch" or "UnCrouch", false)
@@ -609,7 +613,7 @@ local function applyHold()
     local nowHalf = capsuleHalf(pawn)
     -- compare against what the keys want NOW, not what they wanted 300ms ago: with hold-to-crouch
     -- a quick tap is released well inside this window, and that is not a failure
-    local stillWant = holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
+    local stillWant = benchSeatCrouch or holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
     if (now == true) ~= stillWant then
       if os.clock() - crouchWarnedAt > 10 then
         crouchWarnedAt = os.clock()
@@ -759,7 +763,7 @@ local function fixDeathLoot()
     half = capsuleHalf(pawn)
   end
   local lift
-  local keysWant = holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
+  local keysWant = benchSeatCrouch or holdKeys.c or holdKeys.ctrl or holdKeys.cHeld
   if isC == true and half and standHalf and standHalf > half then
     lift = standHalf - half
   elseif keysWant and lastCrouchLift then
@@ -1132,6 +1136,12 @@ end
 local function armRecallWatch(secs)
   if not ctx.net.isHost() then return end   -- clients' writes to a replicated ship mean nothing
   if (tonumber(ctx.config.get("qol_recall_mult")) or 1.0) <= 1.0 then return end
+  -- The assist K2_SetActorLocations the ship in multi-thousand-uu steps, and based movement
+  -- moves a rider by the base delta WITH A SWEEP -- a seated passenger would be blocked by
+  -- geometry and stranded or clipped. This releases the HOST's OWN seat only (there is no
+  -- replication channel to remote passengers); a client passenger on a recalled ship is
+  -- released by bench's own seat watch when the teleport carries the slot out from under it.
+  if ctx.services.benchReleaseAll then pcall(ctx.services.benchReleaseAll, "recall") end
   local wasDead = os.clock() > recallUntil
   recallUntil = math.max(recallUntil, os.clock() + (secs or 120))
   recallTok = recallTok + 1
@@ -1472,6 +1482,29 @@ local function playerNameOf(pc)
   return nil
 end
 
+-- SteamID64 -> the human name the game itself shows on nameplates. playerNameOf hands back the
+-- raw UniqueID on this build (live 2026-07-29: labels read '7656119…'), but BP_SkyGameGameState
+-- keeps a REPLICATED UniqueIDToPlayerNames array (rebuilt from the save's LastSeenPlayerName)
+-- with GetPlayerNameFromUniqueID as its lookup -- PlayerName is an OUT param, so the call gets
+-- the AddThirst {} placeholder. Successes cache for the world (applyAll clears); misses retry,
+-- a player's name can land in the table after they do. Palette hashing stays keyed on the RAW
+-- id everywhere so label/tooltip/ping colours keep agreeing.
+local displayNames = {}
+local function displayNameOf(raw)
+  if raw == nil then return raw end
+  raw = tostring(raw)
+  if displayNames[raw] then return displayNames[raw] end
+  if not raw:match("^%d%d%d%d%d%d%d%d%d+$") then return raw end  -- already a name, not an id
+  local gs = ctx.uehelp.findFirst(qmap().gameStateClass)
+  if gs then
+    local out = {}
+    local okCall = ctx.uehelp.call(gs, qmap().nameFromIdFn, raw, out)
+    local nm = okCall and unwrapStr(out.PlayerName) or nil
+    if nm and #nm > 0 then displayNames[raw] = nm return nm end
+  end
+  return raw
+end
+
 local function tintIcon(icon, name)
   if not ctx.uehelp.isValid(icon) then return end
   local pal = name and paletteFor(name)
@@ -1487,7 +1520,7 @@ local function tintIcon(icon, name)
     end
   end
   if name and FText then
-    pcall(function() icon:SetToolTipText(FText(tostring(name))) end)
+    pcall(function() icon:SetToolTipText(FText(tostring(displayNameOf(name)))) end)
   end
 end
 
@@ -1512,7 +1545,7 @@ local function makeLabel(wc, canvas, name)
   local tb
   local ok = pcall(function()
     tb = StaticConstructObject(cls, wc)
-    tb:SetText(FText(tostring(name)))
+    tb:SetText(FText(tostring(displayNameOf(name))))
     local slot = canvas[addFn](canvas, tb)
     -- same anchor recipe the game gives its own icons; alignment (0.5, 1) floats the text
     -- just above the icon centre, autosize fits it to the name
@@ -1542,14 +1575,59 @@ local function foldLabels()
   end
 end
 
-local function updateLabels(token)
-  if token ~= labelToken or labelsBroken then return end
-  local wc
+-- The one map widget the player is actually looking at. The dock/ship-upgrade screen's minimap
+-- is a WC_Map_C SUBCLASS the exact-class scan can never return (user 2026-07-29: dot on the
+-- upgrade-station map, no name); it is checked FIRST, gated on its wrapper -- W_SimpleDock's
+-- own isOpen? compiles to IsVisible && !IsInHideAni, and the wrapper hides ITSELF on close, so
+-- that verdict is trustworthy. The big map's is NOT: WC_Map's own visibility flag reads true
+-- even while its parent screen is hidden (proven live 23:07 -- the picker chose the hidden big
+-- map over the open dock screen and the label landed on an invisible canvas), so the big map
+-- is only ever the fallback, never the winner over an OPEN dock screen.
+local function visibleMapComp()
+  for _, dk in ipairs(liveInstances(qmap().dockUiClass)) do
+    local open
+    pcall(function()
+      open = dk:IsVisible() and not dk[qmap().dockUiHideAniProp or "IsInHideAni"]
+    end)
+    if open then
+      local okM, mw = ctx.uehelp.get(dk, qmap().dockUiMapProp)
+      if okM and ctx.uehelp.isValid(mw) then return mw end
+    end
+  end
   for _, w in ipairs(liveInstances(qmap().mapCompClass)) do
     local vis; pcall(function() vis = w:IsVisible() end)
-    if vis then wc = w break end
+    if vis then return w end
   end
-  if not wc then foldLabels() return end  -- map closed; OpenMap re-arms the chain
+  return nil
+end
+
+-- TEMP DIAG (dock-map labels, 2026-07-29): one line per distinct event per chain, INFO so a
+-- player repro + UE4SS.log tells the whole story. Remove once the station map shows names.
+local labelDiagToken, labelDiagSeen = -1, {}
+local function labelDiag(token, key, msg)
+  if token ~= labelDiagToken then labelDiagToken, labelDiagSeen = token, {} end
+  if labelDiagSeen[key] then return end
+  labelDiagSeen[key] = true
+  ctx.log.info("qol.labels[" .. tostring(token) .. "] " .. msg)
+end
+
+local function updateLabels(token, grace)
+  if token ~= labelToken or labelsBroken then return end
+  local wc = visibleMapComp()
+  if not wc then
+    foldLabels()
+    -- The dock screen opens through an intro animation, and its arm trigger (the dock interact)
+    -- fires before the widget reports visible: a freshly-triggered chain idles through a few
+    -- passes instead of dying on the first. A chain that has already seen its map runs with no
+    -- grace, so closing the map still retires it here; the open triggers re-arm.
+    if (grace or 0) > 0 then
+      labelDiag(token, "nowc", "no visible map widget yet (grace pass)")
+      deferOnly(150, function() updateLabels(token, grace - 1) end)
+    else
+      labelDiag(token, "retired", "chain retired -- no map widget on screen")
+    end
+    return
+  end
   -- Switched off with the map still OPEN. foldLabels is the only thing that collapses the
   -- TextBlocks, so returning bare here left every name drawn and frozen at its last position
   -- for the rest of the session. Keep the chain running (the map is up) so switching it back
@@ -1559,13 +1637,21 @@ local function updateLabels(token)
     deferOnly(150, function() updateLabels(token) end)
     return
   end
+  local wcClass; pcall(function() wcClass = wc:GetClass():GetFName():ToString() end)
+  labelDiag(token, "wc:" .. tostring(wcClass), "map widget on screen: " .. tostring(wcClass))
   local canvas
   local okC, cv = ctx.uehelp.get(wc, qmap().mapCanvasProp)
   if okC and ctx.uehelp.isValid(cv) then canvas = cv end
+  if not canvas then labelDiag(token, "nocanvas", "canvas prop missing/invalid on " .. tostring(wcClass)) end
   if canvas then
+    -- which map widget these labels live on: a TextBlock built for the big map sits on the big
+    -- map's canvas, and repositioning it while the DOCK map is the visible one draws nothing
+    local wcFull; pcall(function() wcFull = wc:GetFullName() end)
     local seen = {}
+    local nPawns, nNamed, nPlaced = 0, 0, 0
     for _, pawn in ipairs(ctx.uehelp.findAll(ctx.map.pawn.class)) do
       if ctx.uehelp.isValid(pawn) then
+        nPawns = nPawns + 1
         -- The owner comes from the PLAYER STATE, not the controller: APawn::Controller is
         -- replicated COND_OwnerOnly, so on a client every teammate's pawn reports no
         -- controller at all -- which is precisely the "some players never show up on the map"
@@ -1578,9 +1664,15 @@ local function updateLabels(token)
         end
         local loc = ctx.identity.locationOf(pawn)
         if nm and loc then
+          nNamed = nNamed + 1
           seen[nm] = true
           local l = mapLabels[nm]
-          if l and not ctx.uehelp.isValid(l.tb) then mapLabels[nm], l = nil, nil end
+          if l and (not ctx.uehelp.isValid(l.tb) or l.wc ~= wcFull) then
+            -- dead, or built for the OTHER map widget (big map <-> dock screen): collapse it on
+            -- the canvas it lives on and rebuild on the one on screen
+            pcall(function() if ctx.uehelp.isValid(l.tb) then l.tb:SetVisibility(1) end end)
+            mapLabels[nm], l = nil, nil
+          end
           if not l then
             local tb = makeLabel(wc, canvas, nm)
             if not tb then
@@ -1589,20 +1681,35 @@ local function updateLabels(token)
               foldLabels()  -- the latch retires the chain: take the built ones down with it
               return
             end
-            l = { tb = tb }
+            l = { tb = tb, wc = wcFull }
             mapLabels[nm] = l
+          end
+          -- the id can resolve to a real name AFTER the label was built (the GameState table
+          -- fills as the save learns players): refresh the text when the resolution changes
+          local disp = displayNameOf(nm)
+          if l.disp ~= disp then
+            pcall(function() l.tb:SetText(FText(tostring(disp))) end)
+            l.disp = disp
           end
           local okW, r = ctx.uehelp.call(wc, qmap().mapWorldToMapFn,
             { X = loc.X, Y = loc.Y, Z = loc.Z })
           if okW and r then
+            nPlaced = nPlaced + 1
+            labelDiag(token, "pos:" .. nm,
+              string.format("label '%s' at map (%.0f, %.0f)", nm, tonumber(r.X) or 0, tonumber(r.Y) or 0))
             pcall(function()
               l.tb:SetRenderTranslation({ X = r.X, Y = r.Y - 16 })
               l.tb:SetVisibility(4)
             end)
+          else
+            labelDiag(token, "nopos:" .. nm, "label '" .. nm .. "' -- " ..
+              tostring(qmap().mapWorldToMapFn) .. " call failed")
           end
         end
       end
     end
+    labelDiag(token, "count:" .. nPawns .. ":" .. nNamed .. ":" .. nPlaced,
+      string.format("pass: %d pawn(s), %d named, %d placed", nPawns, nNamed, nPlaced))
     for nm, l in pairs(mapLabels) do
       if not seen[nm] then
         pcall(function() if ctx.uehelp.isValid(l.tb) then l.tb:SetVisibility(1) end end)
@@ -1617,7 +1724,11 @@ end
 -- local player's icon (WC_MainPlayer) gets their own.
 local function dressMap()
   if not ctx.config.get("qol_map_names") then return end
-  for _, wc in ipairs(liveInstances(qmap().mapCompClass)) do
+  -- both map widgets: the big map, and the dock screen's minimap subclass the exact-class
+  -- scan misses (it inherits FriendsMarkers/WC_MainPlayer, so the same dressing applies)
+  local comps = liveInstances(qmap().mapCompClass)
+  for _, w in ipairs(liveInstances(qmap().dockMapCompClass)) do comps[#comps + 1] = w end
+  for _, wc in ipairs(comps) do
     pcall(function()
       local markers = wc[qmap().friendsMarkersProp]
       if markers and markers.ForEach then
@@ -1796,7 +1907,10 @@ local function armHooks()
     -- and the always-visible name labels (self-terminating chain; token orphans stale chains)
     labelToken = labelToken + 1
     local tok = labelToken
-    deferOnly(200, function() updateLabels(tok) end)
+    deferOnly(200, function()
+      labelDiag(tok, "arm", "chain armed by OpenMap")
+      updateLabels(tok, 3)
+    end)
   end)
   -- The chest UI builds a FIXED 2x6 slot grid -- RowCount/ColumnCount are LITERALS in
   -- W_ChestInventory's bytecode, and the build reaches BPL_UiFunctions through an
@@ -1824,6 +1938,31 @@ local function armHooks()
   -- ProcessEvent on this build -- a hook that never fires costs nothing. Bodies schedule only.
   armHook(qmap().dockClass, qmap().dockInteractFn, "qol.dock", function()
     deferOnly(0, function() armRecallWatch(120) end)
+    -- The dock/ship-upgrade screen carries its own minimap, opened by W_SimpleDock's ubergraph
+    -- calling OpenMap VM-INTERNALLY -- the qol.map hook below never sees it. The interact IS
+    -- that screen's open moment: dress passes for icon tint/tooltips, and a label chain with
+    -- enough grace to outlive the screen's intro animation.
+    deferOnly(400, dressMap)
+    deferOnly(1500, dressMap)
+    labelToken = labelToken + 1
+    local tok = labelToken
+    deferOnly(300, function()
+      labelDiag(tok, "arm", "chain armed by dock interact")
+      updateLabels(tok, 10)
+    end)
+  end)
+  -- The dock screen's Open is a CustomEvent stub the CONTROLLER calls cross-object
+  -- (CLIENT_OpenDock -> UI_SimpleDock.Open: ProcessEvent, the proven-hookable family), so it is
+  -- the precise "station screen just came up" moment. The interact hook above stays as the
+  -- fallback: this one cannot arm until a W_SimpleDock instance exists for findFirst.
+  armHook(qmap().dockUiClass, qmap().dockUiOpenFn, "qol.dockui", function()
+    deferOnly(250, dressMap)
+    labelToken = labelToken + 1
+    local tok = labelToken
+    deferOnly(300, function()
+      labelDiag(tok, "arm", "chain armed by dock-screen Open")
+      updateLabels(tok, 10)
+    end)
   end)
   for _, fnName in ipairs(qmap().dockRecallFns or {}) do
     armHook(qmap().dockClass, fnName, "qol.recall", function()
@@ -1854,6 +1993,7 @@ local function applyAll()
   chestGrowFails = {}
   facing = false     -- the old world's ping-facing loop cannot survive into this one
   mapLabels = {}     -- label widgets died with the old world's map; rebuild on next open
+  displayNames = {}  -- id->name resolutions belong to the old world's GameState/save
   labelToken = labelToken + 1
   -- A new local controller instance = a world was (re)loaded = every class the last world's
   -- registrations lived on may be a dead copy. Drop them all; armHooks below rebuilds. Respawns
@@ -1877,7 +2017,8 @@ local function applyAll()
   step("qol.applyAll myCharacter"); myCharacter()
   -- A fresh pawn (world entry, respawn) is standing and holds no keys: drop any hold state left
   -- over from the last body, and let applyHold re-learn the standing capsule height off this one.
-  holdKeys.c, holdKeys.ctrl, holdKeys.cHeld = false, false, false
+  -- The bench flag comes down with it -- bench releases its own seat on the same notify.
+  holdKeys.c, holdKeys.ctrl, holdKeys.cHeld, benchSeatCrouch = false, false, false, false
   step("qol.applyAll hold");       applyHold()
   step("qol.applyAll done")
   -- the map widget (WC_Map) is created a beat after the pawn, so its OpenMap hook misses the
@@ -2022,6 +2163,72 @@ function F.init(c)
       onGameThread(function() applyDrops(); syncHotbar(); sweepChests() end)
     end
   end)
+
+  -- TEMP DIAG (dock-map labels, 2026-07-29): `sps_maplab` prints every input to the label
+  -- decision on demand; `sps_maplab go` force-arms a fresh chain. Reads live UObjects, so it is
+  -- user-triggered only, on the game thread -- the same work a normal label pass does. Remove
+  -- together with the labelDiag breadcrumbs once the station map shows names.
+  pcall(function()
+    RegisterConsoleCommandHandler("sps_maplab", function(_, params)
+      local sub = (params and params[1]) or "status"
+      onGameThread(function()
+        local L = ctx.log.info
+        L("maplab: qol_map_labels=" .. tostring(ctx.config.get("qol_map_labels")) ..
+          " broken=" .. tostring(labelsBroken) .. " token=" .. tostring(labelToken))
+        local n = 0
+        for _, w in ipairs(liveInstances(qmap().mapCompClass)) do
+          n = n + 1
+          local vis; pcall(function() vis = w:IsVisible() end)
+          L("maplab: big map #" .. n .. " visible=" .. tostring(vis))
+        end
+        if n == 0 then L("maplab: no big-map (" .. tostring(qmap().mapCompClass) .. ") instances") end
+        local d = 0
+        for _, dk in ipairs(liveInstances(qmap().dockUiClass)) do
+          d = d + 1
+          local vis, hide
+          pcall(function() vis = dk:IsVisible() end)
+          pcall(function() hide = dk[qmap().dockUiHideAniProp or "IsInHideAni"] end)
+          local okM, m = ctx.uehelp.get(dk, qmap().dockUiMapProp)
+          local mOk = okM and ctx.uehelp.isValid(m)
+          local cls; pcall(function() cls = mOk and m:GetClass():GetFName():ToString() or nil end)
+          L("maplab: dock UI #" .. d .. " visible=" .. tostring(vis) .. " hideAni=" .. tostring(hide) ..
+            " mapProp=" .. tostring(mOk) .. " mapClass=" .. tostring(cls))
+        end
+        if d == 0 then L("maplab: no dock UI (" .. tostring(qmap().dockUiClass) .. ") instances") end
+        local wc = visibleMapComp()
+        local cls; pcall(function() cls = wc and wc:GetClass():GetFName():ToString() or nil end)
+        L("maplab: visibleMapComp -> " .. tostring(cls))
+        local built = 0
+        for nm, l in pairs(mapLabels) do
+          built = built + 1
+          L("maplab: label '" .. tostring(nm) .. "' valid=" .. tostring(ctx.uehelp.isValid(l.tb)))
+        end
+        L("maplab: " .. built .. " label widget(s) built this world")
+        if sub == "go" then
+          labelToken = labelToken + 1
+          local tok = labelToken
+          L("maplab: chain force-armed, token=" .. tostring(tok))
+          deferOnly(150, function() updateLabels(tok, 20) end)
+        end
+      end)
+      return true
+    end)
+  end)
+
+  -- The bench feature's crouch entry: sitting crouches THROUGH this module so the death-loot
+  -- fix keeps seeing crouch state it can trust, and so the crouch keys reconcile against the
+  -- seat instead of fighting it (applyHold treats the flag as an unconditional "crouched").
+  ctx.services.setCrouch = function(_, want)
+    benchSeatCrouch = want and true or false
+    applyHold()
+  end
+
+  -- The dev test kit's entry point for growing the pack. It goes THROUGH applyBackpack rather
+  -- than calling SetInventoryUpgradeLevel itself for one reason: every guard that keeps a tier
+  -- change from destroying the player save lives in there (host check, the recorded-tier
+  -- comparison, the refusal to shrink onto occupied slots, and the wait for the array to really
+  -- be the tier's length before the record is stamped). Set the config value, then call this.
+  ctx.services.applyBackpack = applyBackpack
 
   -- hot reload mid-session: a pawn may already exist
   defer(1500, onCharacter)

@@ -42,6 +42,13 @@ end
 -- sixty. Every bulk grant in the mod rode on that lie and silently handed the player nothing --
 -- a lightning-felled tree grants `tree_wood_drop` (4) logs and destroyed tech drops its half-cost
 -- salvage, so both logged their success line while dropping not a single item.
+--
+-- And it is NOT an inventory grant (decoded 2026-07-30 from bp_controller.json ubergraph 49144):
+-- it BeginDeferredActorSpawns the ITEM ACTOR at the player's location +500Z with
+-- ManualPickup=false, NoPickupTime=0, FlyToPlayer=FALSE, then FinishSpawningActor. The drop
+-- free-falls; it only reaches the pack if it lands on the player's pickup overlap. A caller that
+-- needs guaranteed delivery must find the dropped actor afterwards and fly it in itself
+-- (fishing.lua deliverRodActor does exactly that).
 local MAX_GRANT = 200   -- runaway-loop backstop; every real caller asks for single digits
 
 local function spawnN(pc, cls, amount)
@@ -65,16 +72,20 @@ end
 -- The ritual offerings (mapping.ritual.*Offerings) are mapped as world item-actor classes, not
 -- DB_Items rows, so M.give's row->class formatting doesn't fit them -- resolve the class directly,
 -- LoadAsset-ing it from the flat item-actor dir if it isn't resident yet.
+-- Returns ok, spawnedCount, why -- why is "class" when the class would not resolve/load at all
+-- (no spawn was even attempted; a pak-degraded session looks exactly like a delivery failure
+-- otherwise) and "spawn" when the spawner ran.
 function M.giveByClass(pc, shortClass, amount)
-  if not (pc and shortClass) then return false end
+  if not (pc and shortClass) then return false, 0, "args" end
   local it = M._map and M._map.items
   local asset
   if it and it.assetDir then
     asset = it.assetDir .. shortClass:gsub("_C$", "") .. "." .. shortClass
   end
   local cls = uehelp.classByName(shortClass, asset)
-  if not cls then return false end
-  return (spawnN(pc, cls, amount))   -- one call per item; see spawnN
+  if not cls then return false, 0, "class" end
+  local ok, got = spawnN(pc, cls, amount)   -- one call per item; see spawnN
+  return ok, got, "spawn"
 end
 
 return M

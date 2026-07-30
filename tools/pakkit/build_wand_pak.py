@@ -235,6 +235,19 @@ def _indigo(book):
         book[i + 2] = min(255, int(L * 0.55 + 10))
     return book
 
+def _verdant(book):
+    """Re-ink an open-book BGRA image living-green, in place. Sibling of _indigo: same open-book
+    silhouette, different ink, so the Codex and the Handbook read as a matched pair on the bar."""
+    for i in range(0, len(book), 4):
+        B, G, R, A = book[i], book[i + 1], book[i + 2], book[i + 3]
+        if A == 0:
+            continue
+        L = 0.299 * R + 0.587 * G + 0.114 * B
+        book[i]     = min(255, int(L * 0.35))
+        book[i + 1] = min(255, int(L * 0.90 + 30))
+        book[i + 2] = min(255, int(L * 0.45 + 10))
+    return book
+
 def make_darkarts_icon():
     """Research-card icon for "The Dark Arts": the indigo book with the stick laid across it --
     alpha-over composite in clean 256x256 BGRA, packed into the stick's uncompressed container."""
@@ -256,6 +269,8 @@ def make_icons():
     # The Tempest Codex inventory icon: the Handbook's open-book art, re-inked storm-indigo
     # (decoded from DXT5 -- see the gotcha above -- and staged uncompressed).
     _stage_bgra_icon("Icon_TempestCodex", _indigo(_handbook_bgra256()))
+    # The Tempest Handbook inventory icon: the same art re-inked living-green.
+    _stage_bgra_icon("Icon_TempestHandbook", _verdant(_handbook_bgra256()))
     make_darkarts_icon()
 
 # ---------------------------------------------------------------- 1c. fishing icons
@@ -553,22 +568,21 @@ def clone_item_row(d, rows, src_name, row_name, display, desc, icon_idx, actor_i
     print(f"row {row_name} (clone of {src_name}) -> icon {icon_idx} actor {actor_idx}"
           + (f" recycler {recycler}" if recycler is not None else ""))
 
-def make_codex_row(d, rows, icon_idx, actor_idx):
-    """TempestCodex item row: a Handbook-shaped placeable book (T10 place-to-read + T0), so the
+def make_book_row(d, rows, row_name, display, desc, icon_idx, actor_idx):
+    """A readable-book item row: a Handbook-shaped placeable book (T10 place-to-read + T0), so the
     game's own placement system handles it -- DB_Buildables maps the row to our placeable clone."""
     hb = next(r for r in rows if r["Name"] == "Handbook")
     row = copy.deepcopy(hb)
-    row["Name"] = "TempestCodex"
+    row["Name"] = row_name
     di = next(i for i, p in enumerate(row["Value"]) if p["Name"].split("_")[0] == "DisplayName")
-    row["Value"][di] = base_text(row["Value"][di]["Name"], "Tempest Codex")
+    row["Value"][di] = base_text(row["Value"][di]["Name"], display)
     de = next(i for i, p in enumerate(row["Value"]) if p["Name"].split("_")[0] == "Description")
-    row["Value"][de] = base_text(row["Value"][de]["Name"],
-                                 "Bound in storm-blackened hide. Place it anywhere, and read what the sky is owed.")
+    row["Value"][de] = base_text(row["Value"][de]["Name"], desc)
     field(row, "Icon")["Value"] = icon_idx
     field(row, "ItemActor")["Value"] = actor_idx
     rows.append(row)
-    add_rowkey_name(d, "TempestCodex")
-    print(f"row TempestCodex -> icon {icon_idx} actor {actor_idx}")
+    add_rowkey_name(d, row_name)
+    print(f"row {row_name} -> icon {icon_idx} actor {actor_idx}")
 
 def patch_db_items():
     src = os.path.join(LEGACY, ITEMS_DIR, "Framework_and_Data", "DB_Items.uasset")
@@ -583,15 +597,15 @@ def patch_db_items():
     icon_blue   = add_texture_import(d, "Icon_Stick", "Icon_StickBlue")
     icon_gold   = add_texture_import(d, "Icon_Stick", "Icon_StickGold")
     icon_yellow = add_texture_import(d, "Icon_Stick", "Icon_StickYellow")
-    # Codex icon: the Handbook's open-book art re-inked indigo, staged in the STICK's dir and
-    # container (uncompressed BGRA -- Icon_Handbook itself is DXT5, see the make_icons gotcha).
-    icon_codex = add_texture_import(d, "Icon_Stick", "Icon_TempestCodex")
+    # Book icons: the Handbook's open-book art re-inked (indigo for the Codex, green for the
+    # Handbook), staged in the STICK's dir and container (uncompressed BGRA -- Icon_Handbook
+    # itself is DXT5, see the make_icons gotcha).
+    book_icons = {b["slug"]: add_texture_import(d, "Icon_Stick", b["item_icon"]) for b in BOOKS}
 
     mund_cls  = add_bp_imports(d, "BP_MundaneWand_Item")
     hydra_cls = add_bp_imports(d, "BP_HydrationWand_Item")
     elec_cls  = add_bp_imports(d, "BP_ElectricWand_Item")
     chg_cls   = add_bp_imports(d, "BP_ChargedElectricWand_Item")
-    codex_cls = add_bp_imports(d, "BP_TempestCodex_Item")
     make_row(d, rows, "MundaneWand", "Mundane Wand",
              "A stick sealed with beeswax. It hums faintly when storms pass. The dark arts know its true name.",
              icon_brown, mund_cls, tools_tab=True)
@@ -612,7 +626,10 @@ def patch_db_items():
     make_row(d, rows, "ChargedElectricWand", "Charged Electrick Wand",
              "The storm sits caged in the rod, yellow-hot and howling. Loose it before it fades.",
              icon_yellow, chg_cls, durability=3)
-    make_codex_row(d, rows, icon_codex, codex_cls)
+    # the readable books (Tempest Codex, Tempest Handbook): Handbook-shaped place-to-read rows
+    for b in BOOKS:
+        make_book_row(d, rows, b["slug"], b["item_display"], b["item_desc"],
+                      book_icons[b["slug"]], add_bp_imports(d, _names(b)["item"]))
 
     # ---- fishing-overhaul items (2026-07-28) ----
     icon_diarod  = add_texture_import(d, "Icon_Stick", "Icon_FishingrodDiamond")
@@ -625,14 +642,30 @@ def patch_db_items():
     # + durability on a NEW row = the proven world-load crash, commit 109fcd9): make_row's
     # wand-proven shape (T5 primary + T1 appended for the Tools tab + durability bar) loads clean,
     # and features/fishing.lua seats the REAL BP_HandItem_FishingRod on equip so it fishes like
-    # the vanilla rod. Durability 2000 = 10x the vanilla rod's 200. interaction=1 (tool) is the
-    # never-uncast fix: rebuilds miss the tool ladder and leave the cast rod actor alone (see
-    # make_row).
+    # the vanilla rod. Durability 999 (user spec 2026-07-30, down from 2000 -- keep in sync with
+    # mapping.fishing.diamondDurability; fishing.lua clamps over-max rods in old saves).
+    # interaction=1 (tool) is the never-uncast fix: rebuilds miss the tool ladder and leave the
+    # cast rod actor alone (see make_row).
     make_row(d, rows, "DiamondFishingRod", "Diamond Fishing Rod",
-             "Two cut diamonds crown the reel. Ten times the endurance of a plain rod, and the"
+             "Two cut diamonds crown the reel. Five times the endurance of a plain rod, and the"
              " deep things rise to meet it: twice the luck for rare and precious catches."
              " Its skillshot demands a finer touch, and pays only in jackpots.",
-             icon_diarod, diarod_cls, durability=2000, tools_tab=True, interaction=1)
+             icon_diarod, diarod_cls, durability=999, tools_tab=True, interaction=1)
+    # THE VANILLA ROD IS REPLACED (user spec 2026-07-30): its class sits inside
+    # UpdateHandMeshesAndModes' hardcoded tool ladder, so a UI close always destroys+respawns
+    # its hand actor (uncasting a thrown line -- the Lua recast shim was its ceiling), and its
+    # VM-internal Catch() forced the leaf-swap hack on every skillshot reveal. This row is the
+    # diamond rod's proven shape at exactly vanilla stats: the vanilla row's own icon, the same
+    # display name, durability 200. The FishingRod RECIPE's end product is repointed at this
+    # class (patch_db_recipes -- crafting yields it), features/fishing.lua's loot tables drop it
+    # and its migration sweep reforges rods already in inventories. The vanilla DB_Items row
+    # stays: legacy/unmigrated rods must keep resolving.
+    modrod_cls = add_bp_imports(d, "BP_ModFishingRod_Item")
+    icon_rod = field(next(r for r in rows if r["Name"] == "FishingRod"), "Icon")["Value"]
+    make_row(d, rows, "ModFishingRod", "Fishing Rod",
+             "Five sticks, two stone and four iron around a patient heart. This one keeps its"
+             " line in the water even when your eyes are in your pack.",
+             icon_rod, modrod_cls, durability=200, tools_tab=True, interaction=1)
     clone_item_row(d, rows, "Egg", "GoldEgg", "Gold Egg",
                    "One egg in twenty comes out gilded. Worth ten times the usual to the recycler.",
                    icon_goldegg, goldegg_cls, recycler=200)
@@ -758,11 +791,36 @@ TIPS_DIR    = "Solarpunk/Content/Code/Misc/GameplayTips"
 PLACE_DIR   = "Solarpunk/Content/Code/Building_Placing/Placeables"
 S_TIP       = os.path.join(LEGACY, TIPS_DIR, "S_GameplayTip.uasset")
 
+def _check_replaces(replaces, where):
+    """clone_asset does ORDERED, UNANCHORED text replaces over the whole round-trip JSON. Two
+    invariants make the result correct AND make list order irrelevant; violate either and you
+    silently cook a corrupt package (an import renamed to an asset that does not exist, or a
+    half-renamed FName):
+      (1) no SOURCE may be a substring of another SOURCE -- otherwise the shorter one eats the
+          longer one's text and list order decides the outcome;
+      (2) no TARGET may contain any LATER SOURCE -- otherwise a later pass rewrites text an
+          earlier pass just produced. (A target containing its OWN source is fine: str.replace
+          is single-pass and never rescans its own output.)
+    Verified 2026-07-30: every existing call site already satisfies both, so the hand-tuned order
+    at build_book_widgets is merely defensive -- 'W_SurvivalGuide' is NOT a substring of
+    'WC_SurvivalGuideCategory' (the W is followed by C, not _). The rule is ASSERTED rather than
+    assumed because the book factory GENERATES these lists from a slug."""
+    srcs = [a for a, _ in replaces]
+    for i, a in enumerate(srcs):
+        for j, c in enumerate(srcs):
+            if i != j and a in c:
+                sys.exit(f"{where}: replace source {a!r} is a substring of {c!r}")
+    for k, (a, t) in enumerate(replaces):
+        for c in srcs[k + 1:]:
+            if c in t:
+                sys.exit(f"{where}: replace target {t!r} contains later source {c!r}")
+
 def clone_asset(src_rel, out_rel, replaces, preloads="", patch=None):
     """tojson -> ordered text replaces -> optional structural patch -> fromjson into staged/."""
     base = os.path.splitext(os.path.basename(src_rel))[0]
     j = os.path.join(OUT, f"clone_{base}.json")
     tojson(os.path.join(LEGACY, src_rel), j, preloads)
+    _check_replaces(replaces, os.path.basename(out_rel))
     text = open(j, encoding="utf-8").read()
     for a, b in replaces:
         text = text.replace(a, b)
@@ -815,21 +873,42 @@ def add_rowkey(d, s, anchor):
         i += 1
     nm.insert(i, s)
 
-# ---- the codex text ----------------------------------------------------------
-# Five sections; each page is one S_GameplayTip row (icon, passage, category).
-# Category BYTE -> ORIGINAL-enum FName (rows use the original S_GameplayTip, whose Category
-# property resolves names against EGameplayTipCategory; its name<->value order is permuted):
+# ---- book text ---------------------------------------------------------------
+# Each page is one S_GameplayTip row (icon, passage, category).
+# Category BYTE -> ORIGINAL-enum FName. Rows keep the ORIGINAL S_GameplayTip row struct, whose
+# Category property resolves names against EGameplayTipCategory -- and that enum's name<->value
+# order is PERMUTED. Decoded straight out of legacy/.../EGameplayTipCategory.uexp (2026-07-30):
+# 9 enumerators, _MAX=9, pairs (nameIdx,value) = (NE0,0)(NE2,1)(NE1,2)(NE4,3)(NE3,4)(NE7,5)
+# (NE8,6)(NE5,7)(NE6,8). NINE is therefore the hard ceiling on sections for ANY book.
 CAT_FNAME = {
-    0: "EGameplayTipCategory::NewEnumerator0",   # byte 0 -> section "Origins"
-    1: "EGameplayTipCategory::NewEnumerator2",   # byte 1 -> "Pentagram"
-    2: "EGameplayTipCategory::NewEnumerator1",   # byte 2 -> "Instruments"
-    3: "EGameplayTipCategory::NewEnumerator4",   # byte 3 -> "Hydration"
-    4: "EGameplayTipCategory::NewEnumerator3",   # byte 4 -> "Electrick"
+    0: "EGameplayTipCategory::NewEnumerator0",
+    1: "EGameplayTipCategory::NewEnumerator2",
+    2: "EGameplayTipCategory::NewEnumerator1",
+    3: "EGameplayTipCategory::NewEnumerator4",
+    4: "EGameplayTipCategory::NewEnumerator3",
+    5: "EGameplayTipCategory::NewEnumerator7",
+    6: "EGameplayTipCategory::NewEnumerator8",
+    7: "EGameplayTipCategory::NewEnumerator5",
+    8: "EGameplayTipCategory::NewEnumerator6",
 }
 CODEX_SECTIONS = ["Origins", "Pentagram", "Instruments", "Hydration", "Electrick"]
 ICONS_ART = "/Game/Art/Textures/Icons/"
-# icons that do NOT live in the Art/Textures/Icons flat dir (verified against the legacy extract)
-ICON_DIR_OVERRIDES = { "Icon_Stick": "/Game/UI/ItemIcons/" }
+# Icons that do NOT live in the Art/Textures/Icons flat dir. /Game/UI/ItemIcons holds only
+# Icon_Chest, Icon_Log, Icon_Stick, Icon_Stone, Icon_Watercan, ItemIcon_Axe and TEMP_* -- PLUS
+# every icon this build stages itself (make_icons/make_fishing_icons/make_sortchest_icon all
+# write into ICONS_DIR). A page icon in the wrong dir ships as a dangling import.
+ICON_DIR_OVERRIDES = {
+    "Icon_Stick": "/Game/UI/ItemIcons/", "Icon_Chest": "/Game/UI/ItemIcons/",
+    "Icon_Log": "/Game/UI/ItemIcons/", "Icon_Stone": "/Game/UI/ItemIcons/",
+    "Icon_Watercan": "/Game/UI/ItemIcons/",
+    # ours (staged by this script into ICONS_DIR = /Game/UI/ItemIcons)
+    "Icon_TempestCodex": "/Game/UI/ItemIcons/", "Icon_TempestHandbook": "/Game/UI/ItemIcons/",
+    "Icon_DarkArts": "/Game/UI/ItemIcons/", "Icon_SortingChest": "/Game/UI/ItemIcons/",
+    "Icon_FishingrodDiamond": "/Game/UI/ItemIcons/", "Icon_EggGold": "/Game/UI/ItemIcons/",
+    "Icon_TruffleGold": "/Game/UI/ItemIcons/", "Icon_StickBrown": "/Game/UI/ItemIcons/",
+    "Icon_StickBlue": "/Game/UI/ItemIcons/", "Icon_StickGold": "/Game/UI/ItemIcons/",
+    "Icon_StickYellow": "/Game/UI/ItemIcons/",
+}
 
 CODEX_PAGES = [
     # -------- ORIGINS --------
@@ -978,17 +1057,293 @@ CODEX_PAGES = [
      " the same."
      "\n\nProbatum est."),
 ]
-def build_codex_enum():
+
+# ---- the Tempest Handbook text -----------------------------------------------
+# The practical companion to the Codex: what this mod actually adds, section by section, in a
+# settler's voice rather than the Codex's archaic one. Counts appear only where they help a
+# player PLAN ("ten times", "three bolts"); no percentages, distances or timings. Deliberately
+# NO controls-reference section and no console commands -- keys are named where they belong.
+HANDBOOK_SECTIONS = ["Storms", "Dark Arts", "The Unlit", "Fishing",
+                     "Airship", "Homestead", "Pack & Person", "New Things"]
+
+HANDBOOK_PAGES = [
+    # -------- STORMS --------
+    ("Hand_S0P1", 0, "Icon_Stormy",
+     "The weather has teeth now."
+     "\n\nWhen a storm holds, bolts come down near whoever is standing under it. You get a"
+     " moment's warning: the ground scorches where the strike means to land, and if you are not"
+     " standing on that mark when it falls, it misses. A few paces is enough. Watch your feet,"
+     " not the sky."
+     "\n\nOne bolt takes most of a person. Two takes all of them. Do not gamble on the second."),
+    ("Hand_S0P2", 0, "Icon_Weather_Sunny",
+     "Open ground is a bad place to be caught in it. Out over open water is worse -- there is"
+     " nothing else out there for the sky to take an interest in. And it keeps a shorter temper"
+     " still for anything already up in the air, so flying through a storm is asking for it."
+     "\n\nAn airship struck loses a third of its hull, and struck enough times it comes down"
+     " wherever it happens to be."
+     "\n\nThere is no shelter rule to memorise. Put something between you and the weather, or be"
+     " somewhere else."),
+    ("Hand_S0P3", 0, "Icon_Battery",
+     "Lightning is not only a danger. It is also, occasionally, generous."
+     "\n\nA battery or a generator struck comes up fully charged. A furnace struck lights as"
+     " though you had fed it wax. Anything else electrical takes it badly: it smokes and stops,"
+     " and a second strike before you repair it destroys the thing outright and leaves half its"
+     " parts lying in the grass."
+     "\n\nGrown trees come down the way an axe would fell them, loot and all. Saplings are too"
+     " small to be worth the trouble. Crops die where they stand and leave no seed."),
+    ("Hand_S0P4", 0, "Icon_Weather",
+     "Build a Weather Station and you have built a lightning rod. That is the whole trick --"
+     " nothing new to research, nothing new to craft."
+     "\n\nAny bolt meant for something near it is taken by the rod instead and put quietly into"
+     " the ground. Set one over your workshop and the workshop stops burning down. Leave a"
+     " battery standing beside it and the battery drinks what the rod catches."
+     "\n\nIt does not wear out. One is enough, if you put it in the right place."),
+
+    # -------- DARK ARTS --------
+    ("Hand_S1P1", 1, "Icon_TempestCodex",
+     "There is an older way of dealing with the sky, and I am not going to set it all down here."
+     " It has its own book."
+     "\n\nResearch the Dark Arts at the station -- it wants a little beeswax, a little clay and a"
+     " leaf -- and you will learn two things: how to bind the Tempest Codex, and how to seal a"
+     " stick with wax into a Mundane Wand."
+     "\n\nCraft the Codex, set it down somewhere dry, and read it. It carries the whole account:"
+     " the circle, the offerings, both rites and what each of them costs. I will not write it"
+     " twice."),
+    ("Hand_S1P2", 1, "Icon_StickBrown",
+     "What is worth knowing before you open that book:"
+     "\n\nA wand is drawn and put away with V. Drawing one stows whatever you were holding, and"
+     " reaching for a tool on the bar puts the wand away again."
+     "\n\nA blank rod is worth nothing until a storm and a circle give it a nature. There are two"
+     " natures, water and fire. A rod takes one of them, once, and keeps it -- so make up your"
+     " mind before you stand in the circle, because the other rite will simply pass your rod"
+     " over."
+     "\n\nThe rest is in the Codex. Go and make it."),
+
+    # -------- THE UNLIT --------
+    ("Hand_S2P1", 2, "AnimalIcon_Sheep",
+     "Give something living to the storm and the storm remembers the species."
+     "\n\nAfter that, every storm brings them back. They come out of the dark well beyond shouting"
+     " distance, black the whole way through, trailing a red light that falls on nothing. They"
+     " call in their own voice pitched far down. You will hear them before you see them."
+     "\n\nThey prowl at twice the pace of an honest animal, and once they have you they come at"
+     " four times that again. The lambs stand the size of a person and they do not bite -- they"
+     " ram, and you will land somewhere you did not choose."),
+    ("Hand_S2P2", 2, "ICON_Torch",
+     "They will not walk into light. A lit torch, a powered lamp or a wireless light holds a wide"
+     " circle clear; a candle or a small lamp holds a narrow one. Ring the places you sleep and"
+     " work and they will go and be born somewhere else."
+     "\n\nIf one reaches you, hit it. Stone hurts, iron hurts more, diamond most, and they flash"
+     " white and stall when struck. A bolt of lightning kills one outright, which is worth"
+     " remembering given the weather they turn up in."
+     "\n\nWhen the storm lifts they lie down and are gone."),
+
+    # -------- FISHING --------
+    ("Hand_S3P1", 3, "Icon_Fishingrod",
+     "You will notice the rivers are not what they were. Every stretch of water keeps its own"
+     " habits -- the home waters are generous with food and scrap, the far ones with circuitry,"
+     " cobalt and cut stones you could not grow or smelt."
+     "\n\nGo down at first light or last and the water is kinder about what it gives up. Rain"
+     " does not change the catch. It only makes the catch argue with you."
+     "\n\nAnd the splash of a bite carries properly now. You do not have to sit and stare."),
+    ("Hand_S3P2", 3, "Icon_Cobalt",
+     "Sometimes the fish fights, and the moment you strike it becomes a contest instead of a"
+     " catch. There are three of them and they come as they please."
+     "\n\nOne is a marker sweeping along a bar: put your click in the gold. One is a needle"
+     " spinning at the crosshair, which slows the same way every single time, so it can be"
+     " learned. The last is a line growing beside a shifting gap; click and it slides across, and"
+     " if you judged it the line drops flush home."
+     "\n\nWin and you are promised something rare. Miss, or dither more than a few seconds, and"
+     " the fish is gone."),
+    ("Hand_S3P3", 3, "Icon_FishingrodDiamond",
+     "There is a better rod. Two cut diamonds at the reel, made at the bench, and the ordinary"
+     " fishing-rod research is all that teaches it."
+     "\n\nIt endures ten times what a plain rod will. It doubles your luck on the rare and the"
+     " precious -- your luck, mind; your friends still fish their own odds. It puts you into that"
+     " contest far more often, gives you a narrower mark to hit, and when you hit it, it pays"
+     " nothing but the best of the water."
+     "\n\nRods you pull out of the river come to you already worn. That seems fair. Somebody"
+     " dropped them."),
+
+    # -------- AIRSHIP --------
+    ("Hand_S4P1", 4, "Icon_Airship_chest",
+     "The airship has somewhere to put things now. Not an upgrade and not a part -- it is simply"
+     " there, at the back of the deck, and it holds through saving, loading and everybody else's"
+     " eyes."
+     "\n\nPress B and it opens: from the deck, from the ground beside it, or from the wheel."
+     "\n\nAt the wheel, TAB lays the ship's hold and your own pack out side by side so you can"
+     " move things across without letting go. TAB or ESC shuts it again."),
+    ("Hand_S4P2", 4, "Icon_Airship_Balloon",
+     "Hold the wheel and press SPACE and the ship goes to three times its usual pace. The view"
+     " opens out, the wind comes up, and it stays there as long as you like -- there is no meter"
+     " to watch."
+     "\n\nSPACE again, or simply pull back, and it settles over a few seconds instead of dropping"
+     " out from under you."
+     "\n\nCalling the ship home is five times quicker than it was, and so is the long climb down"
+     " after a bad parking job. It is still a flight. It will not blink out and reappear beside"
+     " you; that would be cheating, and you would not enjoy it."),
+    ("Hand_S4P3", 4, "Icon_Deco_Bench_White",
+     "There is a bench at the stern of every ship, just forward of the hold. Three can sit on it"
+     " and ride while somebody else flies."
+     "\n\nWhile the owner is at the wheel the passengers stay in their seats, which is rather the"
+     " point of a seat on a moving ship. Once she is parked they get up as they please."
+     "\n\nAnd you no longer have to own a ship to walk onto it. Anyone may board. Both machines"
+     " want this book's mod installed, mind, or the deck stays shut to them."),
+
+    # -------- HOMESTEAD --------
+    ("Hand_S5P1", 5, "Icon_SortingChest",
+     "The blue chest sorts."
+     "\n\nBuild it, run a cable to it like any machine, and empty your pockets into it. Every few"
+     " seconds it takes what is inside and files it into whichever chest nearby already keeps"
+     " that sort of thing. It will not invent a home for something -- it only agrees with the"
+     " homes you already made. Whatever nothing wants stays in the blue chest for you to settle."
+     "\n\nIt draws power while it has work and almost none while it is idle. Cut the cable and it"
+     " stops politely; give it power again and it picks up where it left off."),
+    ("Hand_S5P2", 5, "ICON_Workbench",
+     "Two things about crafting."
+     "\n\nEvery chest holds twice what it used to, including the ones you already filled. Nothing"
+     " was tipped out on the floor to manage it."
+     "\n\nAnd with a bench, an energy bench or a kitchen open, simply looking at a recipe fetches"
+     " its missing pieces out of the chests around you and into your pack. The one-of-five you"
+     " would have gone walking for is five of five by the time you have read it. Fair warning:"
+     " browsing pulls too. Window-shop a recipe and you will find its materials in your pockets"
+     " afterwards."),
+    ("Hand_S5P3", 5, "Icon_Brick_Foundation",
+     "Foundations used to insist that all four corners rest on soil, which made building out over"
+     " a slope an argument you generally lost."
+     "\n\nThey still insist -- but only when standing on their own. The moment a foundation snaps"
+     " onto something you have already built, the rule lifts and it will take the placement."
+     "\n\nBuild outward from what exists, and the ground stops having an opinion."),
+    ("Hand_S5P4", 5, "Icon_Chair",
+     "Sit down. Right-click a bench with empty hands and you will take a seat; right-click again"
+     " and you will get up. Chairs, stools and couches will have you as well, and three can share"
+     " a bench side by side."
+     "\n\nYou get up on your own if you die, if you respawn, or if somebody takes the bench apart"
+     " underneath you."
+     "\n\nAnd whoever is hosting has a Save Game button in the pause menu now, sitting just above"
+     " Resume. It runs the ordinary save, so you get the ordinary 'Saving...' and then you get on"
+     " with your evening."),
+
+    # -------- PACK & PERSON --------
+    ("Hand_S6P1", 6, "Icon_Trashcan",
+     "There is a red slot at the bottom corner of your bag. Put something in it and it is queued"
+     " for the fire. Put a second thing in and the first burns while the second takes its place."
+     "\n\nWhich means the last thing you threw away is always still there if you want it back."
+     " Only the next thing you throw away is final."
+     "\n\nIt is a real slot: it stacks, it splits, it carries, it tells you what is in it. It is"
+     " yours alone -- nobody else can see it -- and it forgets itself when you log out."),
+    ("Hand_S6P2", 6, "Icon_Chest",
+     "The chest window shows everything now. The whole chest on one side and your whole pack on"
+     " the other, in one grid: no third row cut off, no separate backpack tab to remember."
+     "\n\nThe hotbar has come up to sit under the open inventory instead of hiding behind it, and"
+     " it grows with your bag."
+     "\n\nWhat you pick up is announced in the middle of the screen, where you are already"
+     " looking, rather than off in a corner where you are not."),
+    ("Hand_S6P3", 6, "Icon_MapMArker",
+     "Crouch on C or on Left Ctrl. Tap either to stay down; hold either to stay down only as long"
+     " as you hold it -- Ctrl is exact about the release, so use it for the short ones. Dying"
+     " crouched no longer buries your things under the floor."
+     "\n\nA ping turns to face whoever is looking at it, so it never goes edge-on and vanishes,"
+     " and it stands as a tall marker you can pick out from a long way off. It wears the colour"
+     " of whoever set it."
+     "\n\nOn the map, everyone's name floats over where they actually are. No more guessing which"
+     " dot is which."),
+
+    # -------- NEW THINGS --------
+    ("Hand_S7P1", 7, "Icon_TempestHandbook",
+     "A short catalogue, so you know what to look for."
+     "\n\nThe Tempest Handbook -- this. One log and two leaves, in the quick-craft menu, known"
+     " from the start. If somebody joins you and looks lost, hand them one."
+     "\n\nThe Tempest Codex -- a log, two leaves and clay at the bench, after the Dark Arts"
+     " research. The full account of the circle and the rites."
+     "\n\nThe Sorting Chest -- four logs, four iron and two cobalt at the bench. No research"
+     " needed; you have always known how."),
+    # kept under ~590 chars a page: that is the longest the codex ships, and the length the page
+    # widget is known to render without the reader having to scroll
+    ("Hand_S7P2", 7, "Icon_StickBlue",
+     "The Mundane Wand -- a stick and beeswax at the bench, after the Dark Arts research. Dark"
+     " brown, and good for nothing until a storm and a circle give it a nature."
+     "\n\nThe Hydration Wand -- river-blue, out of the rite of water. It waters growboxes, it"
+     " quenches a friend, and you can drink from it yourself. It refills for nothing: drink any"
+     " water, foul or clean, or simply wade in."),
+    ("Hand_S7P3", 7, "Icon_StickYellow",
+     "The Electrick Wand -- yellow-hot, out of the rite of fire. Three bolts, aimed wherever you"
+     " are looking, in any weather at all. Spent, it goes dim gold, and it fills again near"
+     " somebody else's lightning, or shut in a furnace for half a minute."
+     "\n\nThe bars beneath the rods in your pack are honest: pours left, bolts left."),
+    ("Hand_S7P4", 7, "Icon_EggGold",
+     "The Diamond Fishing Rod -- five sticks, two stone, four iron and two cut diamonds at the"
+     " bench, taught by the ordinary fishing-rod research. Or pull one out of the water, if the"
+     " water likes you."
+     "\n\nThe Gold Egg and the Gold Truffle -- jackpot catches, the pair of them. The truffle eats"
+     " exactly like a truffle. Both are worth ten times their plain cousins at the recycler, so"
+     " take care which one you fry."
+     "\n\nThat is everything I know that is worth the writing down. The rest of it you will find"
+     " out in the weather."),
+]
+
+# ---- the books ---------------------------------------------------------------
+# Every readable book is the SAME clone chain off the survival guide, differing only by the
+# fields below. Adding a third book means adding a spec, nothing else.
+#   slug              the one true name: DB_Items row key, BP_%s_Item_C class, DB_Buildables
+#                     row + ItemsNeeded.RowName, recipe row key. It lands in players' saves --
+#                     pick it once; a rename orphans placed books and inventory stacks.
+#   place_mesh        None keeps the donor placeable's SM_Handbook
+#   block_visibility  force the InteractionBox to block the Visibility channel (see build_book_bps)
+BOOKS = [
+    dict(slug="TempestCodex", title="Tempest Codex",
+         sections=CODEX_SECTIONS, pages=CODEX_PAGES,
+         place_mesh="SM_Book_Merchant", block_visibility=True,
+         # shipped before the factory existed as WC_TempestPage, not WC_TempestCodexPage --
+         # pinned so the codex's cooked assets stay byte-identical across this refactor
+         wc_page="WC_TempestPage",
+         item_icon="Icon_TempestCodex",
+         item_display="Tempest Codex",
+         item_desc="Bound in storm-blackened hide. Place it anywhere, and read what the sky is owed."),
+    dict(slug="TempestHandbook", title="Tempest Handbook",
+         sections=HANDBOOK_SECTIONS, pages=HANDBOOK_PAGES,
+         place_mesh=None, block_visibility=False,
+         item_icon="Icon_TempestHandbook",
+         item_display="Tempest Handbook",
+         item_desc="Somebody's working notes on living with the new weather. Place it anywhere and read it."),
+]
+
+def _names(b):
+    """Every derived asset name for a book, in one place so nothing is ever spelled twice."""
+    s = b["slug"]
+    return dict(enum=f"E{s}Category", table=f"DB_{s}", widget=f"W_{s}",
+                wc_cat=f"WC_{s}Category", wc_page=b.get("wc_page") or f"WC_{s}Page",
+                item=f"BP_{s}_Item", place=f"BP_{s}_Placeable",
+                widget_pkg=f"/Game/UI/Widgets/W_{s}", widget_cls=f"W_{s}_C")
+
+def book(slug):
+    return next(b for b in BOOKS if b["slug"] == slug)
+
+def _icon_dir(icon):
+    return ICON_DIR_OVERRIDES.get(icon, ICONS_ART)
+
+def _icon_exists(icon):
+    """A page icon must resolve to a real cooked Texture2D -- either in the game's legacy extract
+    or staged by this build. A typo otherwise ships as a dangling import and the page renders
+    blank (or worse) at runtime, with nothing to see offline. Checked at build time instead."""
+    rel = _icon_dir(icon).replace("/Game/", "Solarpunk/Content/").lstrip("/") + icon + ".uasset"
+    return (os.path.exists(os.path.join(LEGACY, rel))
+            or os.path.exists(os.path.join(STAGED, rel)))
+
+def build_book_enum(b):
+    n_sec, nm = len(b["sections"]), _names(b)
+    if n_sec > len(CAT_FNAME):
+        sys.exit(f"{b['slug']}: {n_sec} sections, but the vanilla EGameplayTipCategory only has "
+                 f"{len(CAT_FNAME)} enumerators to borrow byte values from")
     def patch(d):
         enum = d["Exports"][0]["Enum"]
         tup = "System.Tuple`2[[UAssetAPI.UnrealTypes.FName, UAssetAPI],[System.Int64, System.Private.CoreLib]], System.Private.CoreLib"
-        n = len(CODEX_SECTIONS)
+        n = n_sec
         enum["Names"] = [
-            {"$type": tup, "Item1": f"ETempestCodexCategory::NewEnumerator{i}", "Item2": i}
+            {"$type": tup, "Item1": f"{nm['enum']}::NewEnumerator{i}", "Item2": i}
             for i in range(n)
-        ] + [{"$type": tup, "Item1": "ETempestCodexCategory::ETempestCodexCategory_MAX", "Item2": n}]
+        ] + [{"$type": tup, "Item1": f"{nm['enum']}::{nm['enum']}_MAX", "Item2": n}]
         pairs = []
-        for i, title in enumerate(CODEX_SECTIONS):
+        for i, title in enumerate(b["sections"]):
             key = {"$type": "UAssetAPI.PropertyTypes.Objects.NamePropertyData, UAssetAPI",
                    "Name": "DisplayNameMap", "ArrayIndex": 0, "PropertyGuid": None, "IsZero": False,
                    "PropertyTagFlags": "None", "PropertyTypeName": None,
@@ -996,20 +1351,23 @@ def build_codex_enum():
             pairs.append([key, base_text("DisplayNameMap", title)])
         d["Exports"][0]["Data"][0]["Value"] = pairs
     clone_asset(os.path.join(TIPS_DIR, "EGameplayTipCategory.uasset"),
-                os.path.join(TIPS_DIR, "ETempestCodexCategory.uasset"),
-                [("EGameplayTipCategory", "ETempestCodexCategory")], patch=patch)
+                os.path.join(TIPS_DIR, nm["enum"] + ".uasset"),
+                [("EGameplayTipCategory", nm["enum"])], patch=patch)
 
-def build_codex_table():
+def build_book_table(b):
+    nm = _names(b)
+    bad = sorted({i for _, _, i, _ in b["pages"] if not _icon_exists(i)})
+    if bad:
+        sys.exit(f"{nm['table']}: page icons not found (check ICON_DIR_OVERRIDES): {bad}")
     def patch(d):
         rows = d["Exports"][0]["Table"]["Data"]
         template = copy.deepcopy(rows[0])
         del rows[:]
         icon_idx = {}
-        for _, _, icon, _ in CODEX_PAGES:
+        for _, _, icon, _ in b["pages"]:
             if icon not in icon_idx:
-                idir = ICON_DIR_OVERRIDES.get(icon, ICONS_ART)
-                icon_idx[icon] = add_import_pair(d, idir + icon, icon, "Texture2D")
-        for key, cat, icon, text in CODEX_PAGES:
+                icon_idx[icon] = add_import_pair(d, _icon_dir(icon) + icon, icon, "Texture2D")
+        for key, cat, icon, text in b["pages"]:
             row = copy.deepcopy(template)
             row["Name"] = key
             tip_i = next(i for i, p in enumerate(row["Value"]) if p["Name"].split("_")[0] == "Tip")
@@ -1021,24 +1379,26 @@ def build_codex_table():
             one["Value"] = CAT_FNAME[cat]
             cats["Value"] = [one]
             rows.append(row)
-            add_rowkey(d, key, "DB_TempestCodex")
+            add_rowkey(d, key, nm["table"])
         fix_name_count(d)
-        print(f"codex table: {len(rows)} pages")
+        print(f"{nm['table']}: {len(rows)} pages, {len(b['sections'])} sections")
     clone_asset(os.path.join(TIPS_DIR, "DB_GameplayTips.uasset"),
-                os.path.join(TIPS_DIR, "DB_TempestCodex.uasset"),
-                [("DB_GameplayTips", "DB_TempestCodex")], preloads=S_TIP, patch=patch)
+                os.path.join(TIPS_DIR, nm["table"] + ".uasset"),
+                [("DB_GameplayTips", nm["table"])], preloads=S_TIP, patch=patch)
 
-def build_codex_widgets():
+def build_book_widgets(b):
+    nm = _names(b)
     # widgets carry ByteProperties typed to our cloned enum; UAssetAPI can only re-serialize them
     # unversioned if the enum is registered in the usmap -> preload the STAGED enum clone
     # (wandsmith's preloader registers EnumExports since 2026-07-21)
-    enum_pre = os.path.join(STAGED, TIPS_DIR, "ETempestCodexCategory.uasset")
-    # category chip: label source = the enum DisplayNameMap (Conv_NumericPropertyToText), so only
-    # the enum import needs retargeting
+    enum_pre = os.path.join(STAGED, TIPS_DIR, nm["enum"] + ".uasset")
+    # category chip: label source = the enum DisplayNameMap (Conv_NumericPropertyToText). That is
+    # exactly why this widget CANNOT be shared between books -- a shared chip would render the
+    # other book's section titles.
     clone_asset(os.path.join(WC_DIR, "WC_SurvivalGuideCategory.uasset"),
-                os.path.join(WC_DIR, "WC_TempestCodexCategory.uasset"),
-                [("WC_SurvivalGuideCategory", "WC_TempestCodexCategory"),
-                 ("EGameplayTipCategory", "ETempestCodexCategory")],
+                os.path.join(WC_DIR, nm["wc_cat"] + ".uasset"),
+                [("WC_SurvivalGuideCategory", nm["wc_cat"]),
+                 ("EGameplayTipCategory", nm["enum"])],
                 preloads=enum_pre)
 
     # page widget: text block sized up for the long passages
@@ -1051,13 +1411,14 @@ def build_codex_widgets():
                             if m.get("Name") == "Size":
                                 m["Value"] = 15.0
     clone_asset(os.path.join(WC_DIR, "WC_GameplayTip.uasset"),
-                os.path.join(WC_DIR, "WC_TempestPage.uasset"),
-                [("WC_GameplayTip", "WC_TempestPage")], patch=patch_page)
+                os.path.join(WC_DIR, nm["wc_page"] + ".uasset"),
+                [("WC_GameplayTip", nm["wc_page"])], patch=patch_page)
 
     # the book itself
     def patch_book(d):
         # GenerateCategoryButtons iterates category indexes 0..N-1 with N BAKED at BP compile time
-        # as MakeLiteralInt(9). Patch the ONE literal to our section count. Same-width int const ->
+        # as MakeLiteralInt(9) -- 9 is the VANILLA section count, so the search literal stays 9
+        # whatever we write. Patch the ONE hit to our section count. Same-width int const ->
         # every serialized bytecode offset stays valid.
         gen = next(e for e in d["Exports"]
                    if str(e.get("ObjectName")) == "GenerateCategoryButtons"
@@ -1075,29 +1436,30 @@ def build_codex_widgets():
                     walk(v)
         walk(gen.get("ScriptBytecode") or [])
         if len(hits) != 1:
-            sys.exit(f"W_TempestCodex: expected exactly one MakeLiteralInt(9) in "
+            sys.exit(f"{nm['widget']}: expected exactly one MakeLiteralInt(9) in "
                      f"GenerateCategoryButtons, found {len(hits)}")
-        hits[0]["Value"] = len(CODEX_SECTIONS)
+        hits[0]["Value"] = len(b["sections"])
         # title: the original pulls "Survival Guide" from the ST_ReusableTerms string table;
         # inline ours instead
         tb = next(e for e in d["Exports"] if str(e.get("ObjectName")) == "TextBlock_1")
         for i, p in enumerate(tb.get("Data", [])):
             if p.get("Name") == "Text":
-                tb["Data"][i] = base_text("Text", "Tempest Codex")
+                tb["Data"][i] = base_text("Text", b["title"])
     clone_asset(os.path.join(WIDGETS_DIR, "W_SurvivalGuide.uasset"),
-                os.path.join(WIDGETS_DIR, "W_TempestCodex.uasset"),
-                [("WC_SurvivalGuideCategory", "WC_TempestCodexCategory"),
-                 ("WC_GameplayTip", "WC_TempestPage"),
-                 ("DB_GameplayTips", "DB_TempestCodex"),
-                 ("EGameplayTipCategory", "ETempestCodexCategory"),
-                 ("W_SurvivalGuide", "W_TempestCodex")],
+                os.path.join(WIDGETS_DIR, nm["widget"] + ".uasset"),
+                [("WC_SurvivalGuideCategory", nm["wc_cat"]),
+                 ("WC_GameplayTip", nm["wc_page"]),
+                 ("DB_GameplayTips", nm["table"]),
+                 ("EGameplayTipCategory", nm["enum"]),
+                 ("W_SurvivalGuide", nm["widget"])],
                 preloads=enum_pre, patch=patch_book)
 
-def build_codex_bps():
+def build_book_bps(b):
+    nm = _names(b)
     # the inventory/world item: a Handbook clone (merchant-book mesh, dark tome look)
     clone_asset(os.path.join(ITEMS_DIR, "ItemActors", "BP_Handbook_Item.uasset"),
-                os.path.join(ITEMS_DIR, "ItemActors", "BP_TempestCodex_Item.uasset"),
-                [("BP_Handbook_Item", "BP_TempestCodex_Item")], preloads=MASTER_BP)
+                os.path.join(ITEMS_DIR, "ItemActors", nm["item"] + ".uasset"),
+                [("BP_Handbook_Item", nm["item"])], preloads=MASTER_BP)
     # the placed, readable book. Replaces:
     #   * item ref     -> breaking the placed codex returns a codex, not a handbook
     #   * SM_Handbook  -> SM_Book_Merchant (visually distinct from the placed survival guide)
@@ -1118,7 +1480,7 @@ def build_codex_bps():
     # loads every ImportedPackage.)
     def _patch_placeable(d):
         cls_idx = add_import_pair(
-            d, "/Game/UI/Widgets/W_TempestCodex", "W_TempestCodex_C",
+            d, nm["widget_pkg"], nm["widget_cls"],
             "WidgetBlueprintGeneratedClass", "/Script/UMG")
         # The import edge above only LOADS the widget chain when a placed codex loads -- nothing
         # holds a live reference afterwards, so the post-load GC evicts it minutes later and
@@ -1139,11 +1501,15 @@ def build_codex_bps():
         })
         # PICK-UP FIX (RE'd 2026-07-22): pack-up is a VISIBILITY-channel line trace
         # (BP_MainPlayerCharacter.TraceForPlaceable, simple collision only) gated purely by
-        # IsAxeDestroyable (is a placeable, not a plant, not IUnplaceable) -- but our
+        # IsAxeDestroyable (is a placeable, not a plant, not IUnplaceable) -- but the
         # SM_Book_Merchant mesh ships an EMPTY BodySetup, so the trace passes through the book
-        # and the codex can never be packed up (interact still works: E uses the separate
+        # and the codex could never be packed up (interact still works: E uses the separate
         # Interactable channel the InteractionBox blocks). Make that same box block Visibility
         # too -- the vanilla-furniture-style box approximation for aim/pickup traces.
+        # Only for books that swapped in Merchant: SM_Handbook has real collision, and blocking
+        # the oversized box would only inflate its aim/pack-up hit volume for nothing.
+        if not b["block_visibility"]:
+            return
         box = next(e for e in d["Exports"]
                    if e.get("ObjectName") == "InteractionBox_GEN_VARIABLE")
         def _prop(props, name):
@@ -1153,14 +1519,14 @@ def build_codex_bps():
         vis = next(el for el in ra["Value"]
                    if _prop(el["Value"], "Channel")["Value"] == "Visibility")
         _prop(vis["Value"], "Response")["Value"] = "ECR_Block"
+    reps = [("BP_SurvivalGuide_Placeable", nm["place"]),
+            ("BP_Handbook_Item", nm["item"])]
+    if b["place_mesh"]:
+        reps.append(("SM_Handbook", b["place_mesh"]))
+    reps.append(("UI_OpenSurvivalGuide", "ForceCloseInteractableUIs"))
     clone_asset(os.path.join(PLACE_DIR, "BP_SurvivalGuide_Placeable.uasset"),
-                os.path.join(PLACE_DIR, "BP_TempestCodex_Placeable.uasset"),
-                [("BP_SurvivalGuide_Placeable", "BP_TempestCodex_Placeable"),
-                 ("BP_Handbook_Item", "BP_TempestCodex_Item"),
-                 ("SM_Handbook", "SM_Book_Merchant"),
-                 ("UI_OpenSurvivalGuide", "ForceCloseInteractableUIs")],
-                preloads=place_master,
-                patch=_patch_placeable)
+                os.path.join(PLACE_DIR, nm["place"] + ".uasset"),
+                reps, preloads=place_master, patch=_patch_placeable)
 
 # ---------------------------------------------------------------- 5. the blue sorting chest
 # A powered chest that files its contents into nearby chests (features/sort_chest.lua drives the
@@ -1288,9 +1654,9 @@ def make_sortchest_icon():
 def patch_db_recipes():
     """DB_CraftingRecipes: TempestCodex + MundaneWand, both BENCH-only and NOT starting recipes
     (they are unlocked by the TempestCodex research row -- see patch_db_researchables). The
-    SurvivalGuide row is still the structural template; its hand+bench locations are trimmed to
-    bench (ECraftingLocations::NewEnumerator1) and StartingRecipy flipped false. Returns
-    {row_name: RecipyID} for the research row's UnlockingRecepieIDs."""
+    SurvivalGuide row is still the structural template for every added row; its hand+bench
+    ECraftingLocations pair and its StartingRecipy are rewritten per recipe (see add_recipe).
+    Returns {row_name: RecipyID} for the research row's UnlockingRecepieIDs."""
     rel = "Solarpunk/Content/Code/Crafting/Framework_and_Data"
     src = os.path.join(LEGACY, rel, "DB_CraftingRecipes.uasset")
     j = os.path.join(OUT, "db_recipes_src.json")
@@ -1317,20 +1683,46 @@ def patch_db_recipes():
     next_id = max(field(r, "RecipyID")["Value"] for r in rows) + 1
     recipe_ids = {}
 
-    def add_recipe(row_name, product_cls, parts):
+    def add_recipe(row_name, product_cls, parts, starting=False,
+                   locations=("NewEnumerator1",)):
+        """starting   -- known from the start, no research card needed
+           locations  -- the ECraftingLocations this recipe is offered at, written over the
+                         SurvivalGuide template's hand+bench pair. None keeps that pair verbatim
+                         -- NewEnumerator0 (hand) + NewEnumerator1 (Crafting Table) IS the
+                         quick-craft (F) contract.
+
+                         NewEnumerator2 is the "Energy Crafting Table" (the asset is named
+                         AdvancedCraftingTable; its DB_Items DisplayName is not). Put every
+                         POWERED MACHINE there -- all 16 vanilla machines are NewEnumerator2 and
+                         nothing of the machine EItemType is offered anywhere else. It is also
+                         the robust station: W_AdvancedWorkbenchCrafting drives ONE unfiltered
+                         grid, where W_WorkbenchCrafting fans out per product EItemType
+                         (1 Tools, 3 Plants, 4 Resources, 5 Furniture, 6 Devices, 7 Animals)
+                         plus a whole-DB "All" grid, and the machine type has no tab of its own
+                         there. The sorting chest sat at NewEnumerator1 and the player found it
+                         in no category at all (2026-07-30)."""
+        for loc_name in locations or ():
+            val = f"ECraftingLocations::{loc_name}"
+            if not any(e["Value"] == val for r in rows
+                       for e in field(r, "CraftingLocations")["Value"] or []):
+                sys.exit(f"{row_name}: no vanilla row uses {val}, so it is not in the table's "
+                         "name map -- adding it needs add_rowkey/fix_name_count handling.")
         row = copy.deepcopy(guide)
         row["Name"] = row_name
         rid = field(row, "RecipyID")
         rid["Value"] = next_id + len(recipe_ids)   # sequential in add order
         rid["IsZero"] = False
         recipe_ids[row_name] = rid["Value"]
-        # research-gated: not known from the start, made at the crafting bench only
         sr = field(row, "StartingRecipy")
-        sr["Value"], sr["IsZero"] = False, True
-        loc = field(row, "CraftingLocations")
-        loc["Value"] = [e for e in loc["Value"]
-                        if e["Value"] == "ECraftingLocations::NewEnumerator1"]
-        loc["Value"][0]["Name"] = "0"
+        sr["Value"], sr["IsZero"] = starting, not starting
+        if locations is not None:
+            loc = field(row, "CraftingLocations")
+            template_loc = loc["Value"][0]
+            loc["Value"] = []
+            for loc_name in locations:
+                e = copy.deepcopy(template_loc)
+                e["Value"], e["Name"] = f"ECraftingLocations::{loc_name}", "0"
+                loc["Value"].append(e)
         single = field(row, "SingleRecipies")["Value"][0]
         ep = next(p for p in single["Value"] if p["Name"].split("_")[0] == "Endproduct")
         for f in ep["Value"][0]["Value"]:
@@ -1356,15 +1748,49 @@ def patch_db_recipes():
                [("BP_Stick_Item_C", 5), ("BP_Stone_Item_C", 2), ("BP_Iron_Item_C", 4),
                 ("BP_Diamond_Item_C", 2)])
     # the sorting chest: a chest's worth of wood, a machine's worth of iron, cobalt for the blue.
-    # Appended AFTER the research-gated rows so their persisted RecipyIDs stay stable in saves;
-    # then flipped to a STARTING recipe (no research gate -- bench interact self-heals it into
-    # every save via FixMissingCraftingRecipies).
+    # Appended AFTER the research-gated rows so their persisted RecipyIDs stay stable in saves.
+    # A STARTING recipe (no research gate) at the ENERGY CRAFTING TABLE -- it is a powered
+    # machine, it belongs beside the other machines, and at the plain Crafting Table it appeared
+    # under no category at all (see add_recipe's `locations` note; player-reported 2026-07-30).
     add_recipe("SortingChest", "BP_SortingChest_Item_C",
-               [("BP_Log_Item_C", 4), ("BP_Iron_Item_C", 4), ("BP_Cobalt_Item_C", 2)])
-    sc_sr = field(rows[-1], "StartingRecipy")
-    sc_sr["Value"], sc_sr["IsZero"] = True, False
+               [("BP_Log_Item_C", 4), ("BP_Iron_Item_C", 4), ("BP_Cobalt_Item_C", 2)],
+               starting=True, locations=("NewEnumerator2",))
+    # The Tempest Handbook: the vanilla SurvivalGuide recipe verbatim (1 log + 2 leaves), left as
+    # a HAND recipe -- quick-craft (F) AND bench -- and known from the start, so a brand-new
+    # player can craft the thing that explains the mod in their first minute. Appended LAST so
+    # every earlier RecipyID stays byte-identical: ids are positional and are persisted into
+    # Playerdata.UnlockedRecipys, never re-derived from row names.
+    add_recipe("TempestHandbook", "BP_TempestHandbook_Item_C",
+               [("BP_Log_Item_C", 1), ("BP_Leaf_Item_C", 2)], starting=True, locations=None)
 
-    # The keeper: a hidden row whose one "ingredient" slot holds the W_TempestCodex_C class ref.
+    # Pin the ladder. These numbers live in players' saves; only ever APPEND above this line.
+    EXPECTED_IDS = {"TempestCodex": 10006, "MundaneWand": 10007, "DiamondFishingRod": 10008,
+                    "SortingChest": 10009, "TempestHandbook": 10010}
+    if recipe_ids != EXPECTED_IDS:
+        sys.exit(f"RecipyID drift: {recipe_ids} != {EXPECTED_IDS} -- these ids are persisted into "
+                 "Playerdata.UnlockedRecipys. Reordering add_recipe() rewrites what existing "
+                 "saves think they know how to build.")
+
+    # THE VANILLA ROD IS REPLACED (2026-07-30): the game's own FishingRod recipe row keeps its
+    # RecipyID (persisted in saves -- everyone who researched the rod keeps the unlock, no
+    # migration) but its END PRODUCT is repointed at the pak's ModFishingRod clone: every bench
+    # that knew how to make a rod now makes the modded one. The crafting UI reads the end
+    # product's DB_Items row for name/icon/tab, so the menu entry looks identical (same display
+    # name, the vanilla row's own icon import). The vanilla DB_Items row itself stays -- loose
+    # and unmigrated rods must keep resolving; features/fishing.lua sweeps them into the clone.
+    vrod = next(r for r in rows if r["Name"] == "FishingRod")
+    vsingle = field(vrod, "SingleRecipies")["Value"][0]
+    vep = next(p for p in vsingle["Value"] if p["Name"].split("_")[0] == "Endproduct")
+    for f in vep["Value"][0]["Value"]:
+        if f["Name"].split("_")[0] == "Item":
+            old_name = str(d["Imports"][-f["Value"] - 1]["ObjectName"])
+            if old_name != "BP_FishingRod_Item_C":
+                sys.exit(f"FishingRod recipe end product is {old_name}, expected the vanilla rod"
+                         " -- refusing to repoint blind (game update changed the row?)")
+            f["Value"] = cls_idx("BP_ModFishingRod_Item_C")
+    print("recipe FishingRod: end product repointed -> BP_ModFishingRod_Item_C (same RecipyID)")
+
+    # The keeper: a hidden row whose "ingredient" slots hold every book's reader-widget class ref.
     # Purpose is GC ROOTING, not crafting: DataTable row object refs are GC-visible (this is how
     # DB_Items keeps every item BP class resident all session), so the always-loaded recipe table
     # pins the codex reader chain -- the widget class's own baked refs then hold DB_TempestCodex,
@@ -1387,13 +1813,23 @@ def patch_db_recipes():
     for f in ep["Value"][0]["Value"]:
         if f["Name"].split("_")[0] == "Item":
             f["Value"] = cls_idx("BP_TempestCodex_Item_C")
-    widget_idx = add_import_pair(d, "/Game/UI/Widgets/W_TempestCodex", "W_TempestCodex_C",
-                                 "WidgetBlueprintGeneratedClass", "/Script/UMG")
+    # ONE row, one slot per book: a row struct's TArray<S_InventorySlotSlim> is walked
+    # element-wise by AddReferencedObjects, so slot[1] is exactly as rooted as slot[0]. A second
+    # keeper ROW would cost another row key (another add_rowkey boundary risk), another id in the
+    # persisted-id space, and one more row for every full-table loop in SkygameExtraFunctions to
+    # skip. Nothing ever reads these slots.
     cp = next(p for p in single["Value"] if p["Name"].split("_")[0] == "CraftingParts")
-    cp["Value"] = [part_slot(cp["Value"][0], widget_idx, 0)]
+    tmpl = cp["Value"][0]
+    cp["Value"] = [part_slot(tmpl, add_import_pair(d, _names(b)["widget_pkg"],
+                                                   _names(b)["widget_cls"],
+                                                   "WidgetBlueprintGeneratedClass", "/Script/UMG"), 0)
+                   for b in BOOKS]
+    for i, slot in enumerate(cp["Value"]):
+        slot["Name"] = str(i)
     rows.append(keeper)
     add_rowkey(d, "TempestCodexKeeper", "DB_CraftingRecipes")
-    print("recipe TempestCodexKeeper: hidden GC-keeper row roots W_TempestCodex_C")
+    print("recipe TempestCodexKeeper: hidden GC-keeper row roots "
+          + ", ".join(_names(b)["widget_cls"] for b in BOOKS))
 
     fix_name_count(d)
     jout = os.path.join(OUT, "db_recipes_patched.json")
@@ -1498,63 +1934,62 @@ def patch_db_researchables(recipe_ids):
     # S_Researchable is a standalone struct asset (NOT cooked in-package like S_CraftingRecipy)
     fromjson(jout, os.path.join(STAGED, rel, "DB_Researchables.uasset"),
              preloads=os.path.join(LEGACY, rel, "S_Researchable.uasset"))
-    print(f"DB_Researchables patched: {len(rows)} rows, research id {rid['Value']}, "
-          f"unlocks recipes {sorted(recipe_ids.values())}")
+    # NB only these are research-gated. SortingChest and TempestHandbook are StartingRecipy rows
+    # and are deliberately in NO card's UnlockingRecepieIDs.
+    print(f"DB_Researchables patched: {len(rows)} rows, research id {rid['Value']} unlocks "
+          f"{[recipe_ids['TempestCodex'], recipe_ids['MundaneWand']]}, "
+          f"FishingRod also unlocks {recipe_ids.get('DiamondFishingRod')}")
 
 def patch_db_buildables():
-    """DB_Buildables: the TempestCodex placeable row (SurvivalGuide-shaped; items are matched by
-    DB_Items ROW NAME via ItemsNeeded, so the row key + RowName both say TempestCodex)."""
+    """DB_Buildables: one placeable row per book plus the sorting chest. Items are matched by
+    DB_Items ROW NAME via ItemsNeeded, so each row key and its RowName are the same slug."""
     rel = "Solarpunk/Content/Code/Building_Placing/Framework_and_Data"
     src = os.path.join(LEGACY, rel, "DB_Buildables.uasset")
     j = os.path.join(OUT, "db_buildables_src.json")
     tojson(src, j)
     d = json.load(open(j, encoding="utf-8"))
     rows = d["Exports"][0]["Table"]["Data"]
-    guide = next(r for r in rows if r["Name"] == "SurvivalGuide")
-    row = copy.deepcopy(guide)
-    row["Name"] = "TempestCodex"
-    field(row, "Actor")["Value"] = add_import_pair(
-        d, "/Game/Code/Building_Placing/Placeables/BP_TempestCodex_Placeable",
-        "BP_TempestCodex_Placeable_C", "BlueprintGeneratedClass")
-    field(row, "Mesh")["Value"] = add_import_pair(
-        d, "/Game/Art/StaticMeshes/SM_Book_Merchant", "SM_Book_Merchant", "StaticMesh")
-    for slot in field(row, "ItemsNeeded")["Value"]:
-        for f in slot["Value"]:
-            if f["Name"].split("_")[0] == "Item":
-                for inner in f["Value"]:
-                    if inner.get("Name") == "RowName":
-                        inner["Value"] = "TempestCodex"
-    rows.append(row)
-    add_rowkey(d, "TempestCodex", "DB_Buildables")
+
+    def add_buildable(donor_name, row_name, actor_cls, mesh_name):
+        donor = next(r for r in rows if r["Name"] == donor_name)
+        row = copy.deepcopy(donor)
+        row["Name"] = row_name
+        field(row, "Actor")["Value"] = add_import_pair(
+            d, f"/Game/Code/Building_Placing/Placeables/{actor_cls[:-2]}", actor_cls,
+            "BlueprintGeneratedClass")
+        field(row, "Mesh")["Value"] = add_import_pair(
+            d, f"/Game/Art/StaticMeshes/{mesh_name}", mesh_name, "StaticMesh")
+        for slot in field(row, "ItemsNeeded")["Value"]:
+            for f in slot["Value"]:
+                if f["Name"].split("_")[0] == "Item":
+                    for inner in f["Value"]:
+                        if inner.get("Name") == "RowName":
+                            inner["Value"] = row_name
+        rows.append(row)
+        add_rowkey(d, row_name, "DB_Buildables")
+
+    # the books: SurvivalGuide-shaped placement (a small prop you set down and read). The ghost
+    # mesh must match what the placeable actually shows -- the codex swapped in SM_Book_Merchant,
+    # the handbook kept the donor's SM_Handbook.
+    for b in BOOKS:
+        add_buildable("SurvivalGuide", b["slug"], _names(b)["place"] + "_C",
+                      b["place_mesh"] or "SM_Handbook")
     # the sorting chest: EnergyFurnace is the buildable donor (powered-machine placement rules,
     # slope/rotation taxonomy); actor -> our clone, ghost mesh -> the wood crate it really shows
-    furnace = next(r for r in rows if r["Name"] == "EnergyFurnace")
-    sc = copy.deepcopy(furnace)
-    sc["Name"] = "SortingChest"
-    field(sc, "Actor")["Value"] = add_import_pair(
-        d, "/Game/Code/Building_Placing/Placeables/BP_SortingChest_Placeable",
-        "BP_SortingChest_Placeable_C", "BlueprintGeneratedClass")
-    field(sc, "Mesh")["Value"] = add_import_pair(
-        d, "/Game/Art/StaticMeshes/SM_Crate_Wood", "SM_Crate_Wood", "StaticMesh")
-    for slot in field(sc, "ItemsNeeded")["Value"]:
-        for f in slot["Value"]:
-            if f["Name"].split("_")[0] == "Item":
-                for inner in f["Value"]:
-                    if inner.get("Name") == "RowName":
-                        inner["Value"] = "SortingChest"
-    rows.append(sc)
-    add_rowkey(d, "SortingChest", "DB_Buildables")
+    add_buildable("EnergyFurnace", "SortingChest",
+                  "BP_SortingChest_Placeable_C", "SM_Crate_Wood")
     fix_name_count(d)
     jout = os.path.join(OUT, "db_buildables_patched.json")
     json.dump(d, open(jout, "w", encoding="utf-8"), indent=1)
     fromjson(jout, os.path.join(STAGED, rel, "DB_Buildables.uasset"), preloads=src)
     print(f"DB_Buildables patched: {len(rows)} rows")
 
-def build_codex():
-    build_codex_enum()
-    build_codex_table()
-    build_codex_widgets()
-    build_codex_bps()
+def build_books():
+    for b in BOOKS:
+        build_book_enum(b)
+        build_book_table(b)
+        build_book_widgets(b)
+        build_book_bps(b)
     recipe_ids = patch_db_recipes()
     patch_db_researchables(recipe_ids)
     patch_db_buildables()
@@ -1608,21 +2043,86 @@ def verify_pak():
                  os.path.join(OUT, "db_buildables_patched.json"), "DB_Buildables")
     check_prefix("Solarpunk/Content/Code/Research/Framework/DB_Researchables.uasset",
                  os.path.join(OUT, "db_research_patched.json"), "DB_Researchables")
-    pages = check_prefix(TIPS_DIR + "/DB_TempestCodex.uasset",
-                         os.path.join(OUT, "DB_TempestCodex.json"), "DB_TempestCodex")
-    for key, _, _, _ in CODEX_PAGES:
-        assert key in pages, f"DB_TempestCodex lost page key {key}"
-    # the widget + enum + BPs just need to round-trip parse (widgets carry ByteProperties typed to
-    # the cloned enum -> preload it for the read too)
-    enum_pre = os.path.join(STAGED, TIPS_DIR, "ETempestCodexCategory.uasset")
-    for rel, pre in ((WIDGETS_DIR + "/W_TempestCodex.uasset", enum_pre),
-                     (TIPS_DIR + "/ETempestCodexCategory.uasset", ""),
-                     (PLACE_DIR + "/BP_TempestCodex_Placeable.uasset", ""),
-                     (PLACE_DIR + "/BP_SortingChest_Placeable.uasset", ""),
-                     (ITEMS_DIR + "/ItemActors/BP_SortingChest_Item.uasset", "")):
+    for b in BOOKS:
+        nm = _names(b)
+        pages = check_prefix(TIPS_DIR + f"/{nm['table']}.uasset",
+                             os.path.join(OUT, nm["table"] + ".json"), nm["table"])
+        for key, _, _, _ in b["pages"]:
+            assert key in pages, f"{nm['table']} lost page key {key}"
+    # the widgets + enums + BPs just need to round-trip parse (widgets carry ByteProperties typed
+    # to the cloned enum -> preload it for the read too)
+    reads = [(PLACE_DIR + "/BP_SortingChest_Placeable.uasset", ""),
+             (ITEMS_DIR + "/ItemActors/BP_SortingChest_Item.uasset", ""),
+             (ITEMS_DIR + "/ItemActors/BP_ModFishingRod_Item.uasset", "")]
+    for b in BOOKS:
+        nm = _names(b)
+        enum_pre = os.path.join(STAGED, TIPS_DIR, nm["enum"] + ".uasset")
+        reads += [(WIDGETS_DIR + f"/{nm['widget']}.uasset", enum_pre),
+                  (TIPS_DIR + f"/{nm['enum']}.uasset", ""),
+                  (PLACE_DIR + f"/{nm['place']}.uasset", ""),
+                  (ITEMS_DIR + f"/ItemActors/{nm['item']}.uasset", "")]
+    for rel, pre in reads:
         vj = os.path.join(OUT, "verify_" + os.path.basename(rel) + ".json")
         run(WS, "tojson", USMAP, os.path.join(vd, rel), vj, "VER_UE5_6", pre)
-    print("verify: all tables + widgets survive the zen round-trip")
+        # the GC root edge: while any book stands placed, its placeable's import table is what
+        # drags the reader chain in. Imports survive the legacy round trip even though exports
+        # come back raw, so this is cheap to assert -- and losing it is a silent brick.
+        if rel.startswith(PLACE_DIR) and "Placeable" in rel:
+            want = next((_names(b)["widget_cls"] for b in BOOKS
+                         if _names(b)["place"] in rel), None)
+            if want:
+                imps = json.load(open(vj, encoding="utf-8")).get("Imports") or []
+                if not any(str(e.get("ObjectName")) == want for e in imps):
+                    sys.exit(f"{os.path.basename(rel)}: lost the {want} import edge -- the reader "
+                             "chain would never load and the book would be a brick")
+
+    # The quick-craft contract, read back structurally: silently breakable, and the whole point of
+    # the Tempest Handbook is that a new player finds it in the F menu.
+    rd = json.load(open(os.path.join(OUT, "db_recipes_patched.json"), encoding="utf-8"))
+    rrows = rd["Exports"][0]["Table"]["Data"]
+    hb = next(r for r in rrows if r["Name"] == "TempestHandbook")
+    locs = {e["Value"] for e in field(hb, "CraftingLocations")["Value"]}
+    if not field(hb, "StartingRecipy")["Value"]:
+        sys.exit("TempestHandbook: StartingRecipy is False -- it would need a research card")
+    if "ECraftingLocations::NewEnumerator0" not in locs:
+        sys.exit(f"TempestHandbook: not a quick-craft (F) recipe, locations = {sorted(locs)}")
+    # The sorting chest is a powered machine and must stay at the Energy Crafting Table with the
+    # other machines -- at the plain Crafting Table the player could not find it in any category.
+    sc = next(r for r in rrows if r["Name"] == "SortingChest")
+    sc_locs = {e["Value"] for e in field(sc, "CraftingLocations")["Value"]}
+    if not field(sc, "StartingRecipy")["Value"]:
+        sys.exit("SortingChest: StartingRecipy is False -- no research card unlocks it")
+    if sc_locs != {"ECraftingLocations::NewEnumerator2"}:
+        sys.exit(f"SortingChest: must be Energy-Crafting-Table only, locations = {sorted(sc_locs)}")
+    # The vanilla-rod replacement, read back structurally: the FishingRod recipe must yield the
+    # mod clone (or crafting silently hands back the ladder-cursed vanilla rod), and the clone's
+    # row must carry interaction=1 (or a UI close uncasts it -- the whole point of the swap).
+    vrod = next(r for r in rrows if r["Name"] == "FishingRod")
+    vep = next(p for p in field(vrod, "SingleRecipies")["Value"][0]["Value"]
+               if p["Name"].split("_")[0] == "Endproduct")
+    item_idx = next(f["Value"] for f in vep["Value"][0]["Value"]
+                    if f["Name"].split("_")[0] == "Item")
+    got = str(rd["Imports"][-item_idx - 1]["ObjectName"])
+    if got != "BP_ModFishingRod_Item_C":
+        sys.exit(f"FishingRod recipe crafts {got} -- the vanilla-rod replacement did not take")
+    idd = json.load(open(os.path.join(OUT, "db_items_patched.json"), encoding="utf-8"))
+    mrow = next(r for r in idd["Exports"][0]["Table"]["Data"] if r["Name"] == "ModFishingRod")
+    if field(mrow, "ItemInteractionType")["Value"] != "EItemInteractionType::NewEnumerator1":
+        sys.exit("ModFishingRod row lost interaction=1 (tool) -- a UI close would uncast it")
+    drow = next(r for r in idd["Exports"][0]["Table"]["Data"] if r["Name"] == "DiamondFishingRod")
+    ddur = field(drow, "DefaultAttribues")["Value"][0]
+    dval = next(f["Value"] for f in ddur["Value"] if f["Name"].split("_")[0] == "Value")
+    if int(dval) != 999:
+        sys.exit(f"DiamondFishingRod durability is {dval}, expected 999 (keep mapping.lua in sync)")
+
+    keeper = next(r for r in rrows if r["Name"] == "TempestCodexKeeper")
+    slots = next(p for p in field(keeper, "SingleRecipies")["Value"][0]["Value"]
+                 if p["Name"].split("_")[0] == "CraftingParts")["Value"]
+    if len(slots) != len(BOOKS):
+        sys.exit(f"keeper roots {len(slots)} widget classes, expected {len(BOOKS)} -- a book's "
+                 "reader chain would be GC'd mid-session")
+    print("verify: all tables + widgets survive the zen round-trip; "
+          f"{len(BOOKS)} books rooted, quick-craft contract intact")
 
 # ---------------------------------------------------------------- 3. pack + install
 def pack():
@@ -1647,13 +2147,15 @@ if __name__ == "__main__":
     clone_bp("BP_ChargedElectricWand_Item")
     # fishing-overhaul: the diamond rod + the gilded catches
     clone_item_bp("BP_FishingRod_Item", "BP_DiamondFishingRod_Item")
+    # vanilla-rod replacement (2026-07-30): same clone recipe, vanilla stats (see patch_db_items)
+    clone_item_bp("BP_FishingRod_Item", "BP_ModFishingRod_Item")
     clone_item_bp("BP_Egg_Item", "BP_GoldEgg_Item")
     clone_item_bp("BP_Truffle_Item", "BP_GoldTruffle_Item")
     make_icons()
     make_fishing_icons()
     make_sortchest_icon()
     build_sorting_chest()
-    build_codex()
+    build_books()
     patch_db_items()
     patch_db_smeltables()
     patch_db_consumables()

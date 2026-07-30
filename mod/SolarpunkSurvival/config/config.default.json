@@ -1,6 +1,5 @@
 {
   "log_level": "info",
-  "imgui_key": "F7",
 
   "lightning_chance": 1.0,
   "strike_interval": 4.0,

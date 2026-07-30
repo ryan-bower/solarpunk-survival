@@ -11,10 +11,17 @@ DLL/paks cannot be overwritten while the game runs) -> deploy -> launch via Stea
 ue4ss/UE4SS.log until the mod logs "SolarpunkSurvival vX.Y.Z starting".
 
 All install logic lives in install.py (the player installer) and is imported from there -
-this script only adds: kill-then-relaunch, dev tools in the sync (Scripts/dev, which player
-installs never get), and the log tail. Everything is bundled - the UE4SS runtime extracts
-from vendor/, so a fresh machine needs nothing beyond Steam+game+Python.
---no-install relaunches without touching the install at all.
+this script only adds kill-then-relaunch and the log tail. What it deploys is BYTE-FOR-BYTE
+the player install, so running it is a real rehearsal of what someone else would get.
+Everything is bundled - the UE4SS runtime extracts from vendor/, so a fresh machine needs
+nothing beyond Steam+game+Python.
+
+    --dev          also deploy Scripts/dev: the RE dumper (sps_dump / F8), the dump/cmd.txt
+                   remote exec channel that live hot-loading rides on, the ritual dev kit and
+                   the test kit (sps_testkit). Player installs never get these, and a deploy
+                   WITHOUT --dev prunes them back out - so the exec channel goes quiet until
+                   the next --dev deploy.
+    --no-install   relaunch without touching the install at all.
 """
 
 import argparse
@@ -120,7 +127,8 @@ def report(log: Path, ready: bool, elapsed: float, wait_s: int, baseline: int = 
         for l in lines[-15:]:
             say(f"  {l}")
         say()
-        say("Load a save (the menu has no pawn, so most features need a world), then press P for a storm.")
+        say("Load a save (the menu has no pawn, so most features need a world). `sps_storm` in the")
+        say("UE4SS console forces weather; `sps` prints status.")
         return 0
     say(f'! Did not see "{MOD} vX.Y.Z starting" within {wait_s}s.')
     say(f"! Check the log at: {log}")
@@ -136,6 +144,8 @@ def report(log: Path, ready: bool, elapsed: float, wait_s: int, baseline: int = 
 def main():
     ap = argparse.ArgumentParser(description="Deploy the mod, launch Solarpunk, confirm it loaded.")
     ap.add_argument("--no-install", action="store_true", help="relaunch without redeploying")
+    ap.add_argument("--dev", action="store_true",
+                    help="also deploy Scripts/dev (RE dumper, exec channel, sps_testkit)")
     ap.add_argument("--force", action="store_true", help="reinstall the UE4SS core even if it is already there")
     ap.add_argument("--wait", type=int, default=120, metavar="N", help="seconds to wait for the mod (default 120)")
     ap.add_argument("--game-dir", metavar="PATH", help="skip auto-detection")
@@ -145,7 +155,11 @@ def main():
     say(f"Game:  {game_dir}")
     stop_game()
     if not args.no_install:
-        inst.deploy(game_dir, force=args.force, include_dev=True)
+        inst.deploy(game_dir, force=args.force, include_dev=args.dev)
+        # Same check the player installer runs, so /run cannot pass on a machine a player
+        # install would fail on. A no-op wherever the runtime is already satisfied.
+        if IS_WIN:
+            inst.ensure_vc_runtime(game_dir / "Binaries" / "Win64")
 
     log = game_dir / "Binaries" / "Win64" / "ue4ss" / "UE4SS.log"
     baseline = 0

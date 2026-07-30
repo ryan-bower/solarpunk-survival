@@ -24,11 +24,11 @@ Steam registry keys and `libraryfolders.vdf`, so second drives and non-default l
 
 | Dependency | Where it goes | Automatic? |
 |---|---|---|
-| **Visual C++ 2015-2022 x64 runtime** — UE4SS links against it | system | yes, downloaded from `aka.ms` and installed silently (one UAC prompt) if missing — the only network access in the whole install |
+| **Visual C++ 2015-2022 x64 runtime** — UE4SS links against it | `<game>\Binaries\Win64\` (app-local, beside the exe) | yes — bundled in the UE4SS payload and copied in. No machine-wide install, no UAC prompt, no network. Only if those DLLs are missing *and* the machine has no runtime at all does it fall back to downloading from `aka.ms` |
 | **UE4SS** (Solarpunk-patched, runtime-only) | `<game>\Binaries\Win64\` — `dwmapi.dll` + `ue4ss\` beside the exe | yes — extracted from the bundled `vendor/UE4SS-Solarpunk-runtime.zip`; no downloads, no dev tooling (no debug symbols, debugger DLLs, or dumper configs) |
 | **UE4SS settings** | `<game>\Binaries\Win64\ue4ss\UE4SS-settings.ini` | yes — console windows off, engine pinned to 5.7, scan budget 120 s |
 | **The Lua mod** | `<game>\Binaries\Win64\ue4ss\Mods\SolarpunkSurvival\` | yes |
-| **The content pak** (wands, Tempest Codex) | `<game>\Content\Paks\Solarpunk-Windows_1_P.{utoc,ucas,pak}` | yes, if the pak is present in the release zip's `paks\` or in `tools\pakkit\out\` |
+| **The content pak** (wands, Tempest Codex, Diamond Rod, Sorting Chest) | `<game>\Content\Paks\Solarpunk-Windows_1_P.{utoc,ucas,pak}` | yes, from `paks\` — the one place it looks. Missing it is a hard error, not a warning; `--skip-pak` is the opt-out |
 | **`SolarpunkSteam-Win64-Shipping.pdb`** — UE4SS resolves symbols from it | ships with the game, beside the exe | verified; you're warned if it's gone |
 
 Two settings in that ini matter and are easy to get wrong by hand: the game is **UE 5.7.1**, which
@@ -42,17 +42,19 @@ nothing.
 
 ## Doing it by hand
 
-1. Install the [VC++ 2015-2022 x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe).
-2. Unzip `vendor\UE4SS-Solarpunk-runtime.zip` and copy `dwmapi.dll` and the `ue4ss\` folder into
-   `<game>\Binaries\Win64\`.
-3. In `ue4ss\UE4SS-settings.ini` set `MajorVersion = 5`, `MinorVersion = 7`,
+1. Unzip `vendor\UE4SS-Solarpunk-runtime.zip` and copy `dwmapi.dll`, the `msvcp140*.dll` /
+   `vcruntime140*.dll` / `concrt140.dll` files and the `ue4ss\` folder into
+   `<game>\Binaries\Win64\`. (Those runtime DLLs are the VC++ 2015-2022 x64 redistributable,
+   carried app-local. If your machine already has the runtime installed system-wide you can skip
+   them; if not, they are what lets UE4SS load without installing anything.)
+2. In `ue4ss\UE4SS-settings.ini` set `MajorVersion = 5`, `MinorVersion = 7`,
    `SecondsToScanBeforeGivingUp = 120`, and `ConsoleEnabled` / `GuiConsoleEnabled` /
    `GuiConsoleVisible` to `0` (they open extra dev console windows next to the game; everything
    they show also lands in `ue4ss\UE4SS.log` — set them to `1` only if you want them for debugging).
-4. Copy `mod\SolarpunkSurvival\` into `<game>\Binaries\Win64\ue4ss\Mods\`, delete its
+3. Copy `mod\SolarpunkSurvival\` into `<game>\Binaries\Win64\ue4ss\Mods\`, delete its
    `Scripts\dev\` folder (developer tools — the mod skips them when absent), and create an empty
    `dump\` folder inside it (the mod writes diagnostics there and can't create it itself).
-5. Copy the pak triple into `<game>\Content\Paks\`, renamed `Solarpunk-Windows_1_P.utoc` / `.ucas` /
+4. Copy the pak triple into `<game>\Content\Paks\`, renamed `Solarpunk-Windows_1_P.utoc` / `.ucas` /
    `.pak`.
 
 The mod ships an `enabled.txt`, which is what actually enables it — that file **overrides**
@@ -121,7 +123,7 @@ Load a save (the menu has no pawn, so most commands need a world), then press **
 ## Configuration
 
 Copy `config\config.default.json` to `config\config.json` in the installed mod folder and edit it,
-or press **F7** in-game. Unknown keys are ignored, a malformed file falls back to the defaults, and
+or use `sps set <key> <value>` in the UE4SS console. Unknown keys are ignored, a malformed file falls back to the defaults, and
 in co-op the host's values are the ones that count.
 
 ## Troubleshooting
@@ -144,7 +146,7 @@ installed. Check for `Content\Paks\Solarpunk-Windows_1_P.*` — and make sure it
 **`sps_wand give` warns that the class can't be found.** Same cause: the pak isn't mounted.
 
 **The mod logs `DEGRADED` and disables features.** It couldn't resolve the game symbols it needs —
-usually a game update. Press **F7** for the missing-symbol list, then re-map from a fresh dump
+usually a game update. Run `sps` in the console for the missing-symbol list, then re-map from a fresh dump
 (**F8** in a loaded world) per [`REVERSE-ENGINEERING.md`](REVERSE-ENGINEERING.md).
 
 **Symbols look wrong / UE4SS scan fails.** Confirm `SolarpunkSteam-Win64-Shipping.pdb` is still
@@ -157,10 +159,20 @@ beside the exe; Steam > Solarpunk > Properties > Installed Files > Verify integr
 ## Uninstall
 
 ```
-python install.py --uninstall
+python install.py --uninstall     # the mod + the content pak; leaves UE4SS alone
+python install.py --purge         # the above AND UE4SS itself, back to a vanilla game
 ```
 
-Removes the mod folder and the content pak; UE4SS itself is left in place (other mods may be using
-it) — to remove that too, delete `dwmapi.dll` and the `ue4ss\` folder from `Binaries\Win64`.
+`--uninstall` leaves UE4SS in place, since other mods may be using it. `--purge` removes
+everything the installer has ever written — the mod folder, the pak triple, `dwmapi.dll`, the
+whole `ue4ss\` tree, the app-local runtime DLLs, a stray mod tree left by a bad `--game-dir`, and
+the cached game path in `tools\.gamedir`. It works from a strict list of paths we create, so the
+game's own files (`Solarpunk-Windows_0_P.*`, `global.u*`, the exe and its `.pdb`, `tbb*.dll`,
+`D3D12\`, `DML\`) are never touched and no Steam redownload is needed.
+
+Neither one deletes save games — those live outside the game folder, at
+`%LOCALAPPDATA%\Solarpunk\Saved\SaveGames` on Windows.
 
 Back up your save first: the mod adds persistent state to the host save.
+
+`python install.py --status` shows what's installed at any point without changing anything.

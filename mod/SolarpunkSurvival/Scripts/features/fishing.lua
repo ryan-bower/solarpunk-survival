@@ -9,10 +9,19 @@
 --     (multiplicative); commons shrink to keep the table at 10000. Tables are rebuilt on every
 --     state flip (IsDay watchdog, hand rebuild). Rain/storm do NOT touch the bands -- wet
 --     weather adds fishing_minigame_weather_bonus (+5pp) to the SKILLSHOT chance instead.
---   * DIAMOND ROD: the content-pak row (10x durability) is T5-typed -- new cooked TOOL rows are
---     the proven world-load crash -- so the game's two hardcoded class switches don't know it.
---     The mod seats the real BP_HandItem_FishingRod_C on equip and routes clicks to the pawn's
---     own Interaction_FishingRod(), which drains OUR item's durability through the shared path.
+--   * SEATED RODS (the pak rods -- DiamondFishingRod AND the vanilla-replacing ModFishingRod):
+--     the content-pak rows are T5-typed -- new cooked TOOL rows are the proven world-load
+--     crash -- so the game's two hardcoded class switches don't know them. The mod seats the
+--     real BP_HandItem_FishingRod_C on equip and routes clicks to the pawn's own
+--     Interaction_FishingRod(), which drains OUR item's durability through the shared path.
+--   * THE VANILLA ROD IS REPLACED (user spec 2026-07-30): the pak repoints the FishingRod
+--     recipe's end product at ModFishingRod (same persisted RecipyID -- saves keep the unlock),
+--     the loot tables below drop the clone instead, and migrateVanillaRods swaps rods already
+--     sitting in ANY inventory at world entry (host, in-place overwrite, durability preserved).
+--     ModFishingRod is vanilla stats (durability 200, same icon and display name) on the
+--     diamond rod's row typing, so it keeps its cast through UI closes and runs the mod's
+--     minigames with no leaf-swap hack. "vanilla" remains a live kind only for legacy/pakless
+--     sessions -- all its old shims (recast, leaf swap) stay as its fallback path.
 --   * BITE SPLASH: the game plays S_FishingRod_Splash at 1.0 exactly when a fish bites; the mod
 --     layers (fishing_splash_gain - 1) more on top at the bobber -- "300% splash when you hook".
 --   * SKILLSHOT: 5% of bites (diamond rod: 25%, fishing_minigame_chance_diamond), the catch
@@ -25,14 +34,15 @@
 --     core/animator; the click is judged at the os.clock() STAMPED IN THE HOOK BODY against
 --     the same clock+formula that draws, so what the player saw when they clicked is what is
 --     judged -- no scheduler latency in either direction.
---     Vanilla rod: the game's own Catch() is VM-internal (unhookable), so its unavoidable
---     reveal-catch is fed a worthless leaf by swapping the bobber's river to an all-leaf table,
---     then restoring. Diamond rod: the game ignores the click entirely, so the bar reveals with
---     no drop at all. While the bar is up the water sits still (the rod's bite roll is parked,
---     see suppressBites) and the resolve click reels the line in -- win reels in the prize.
+--     Vanilla rod (legacy): the game's own Catch() is VM-internal (unhookable), so its
+--     unavoidable reveal-catch is fed a worthless leaf by swapping the bobber's river to an
+--     all-leaf table, then restoring. Seated rods (modded/diamond): the game ignores the click
+--     entirely, so the bar reveals with no drop at all. While the bar is up the water sits
+--     still (the rod's bite roll is parked, see suppressBites) and the resolve click reels the
+--     line in -- win reels in the prize.
 --   * The TAB inventory (any hand rebuild) can kill the rod actor, uncasting a thrown line.
---     DIAMOND rod: fixed at the DATA level -- its row keeps the wand-safe ItemType (T5 primary;
---     the full tool taxonomy is the 109fcd9 world-load crash) but carries the TOOL
+--     SEATED rods: fixed at the DATA level -- their rows keep the wand-safe ItemType (T5
+--     primary; the full tool taxonomy is the 109fcd9 world-load crash) but carry the TOOL
 --     ItemInteractionType (make_row interaction=1 in tools/pakkit/build_wand_pak.py), so
 --     UpdateHandMeshesAndModes takes the tool branch, misses its hardcoded class ladder, and
 --     returns WITHOUT touching the hand actor: closing the inventory never uncasts it. (The old
@@ -71,7 +81,7 @@ local TABLES = {
     { cls = "BP_Sapling_Oak_Item_C", w = 80 },  -- Oak Sapling
     { cls = "BP_BirchSapling_Item_C", w = 80 },  -- Birch Sapling
     { cls = "BP_Egg_Item_C", w = 76, tier = "rare" },  -- Chicken Egg
-    { cls = "BP_FishingRod_Item_C", w = 45, tier = "rare" },  -- Fishing Rod (worn)
+    { cls = "BP_ModFishingRod_Item_C", w = 45, tier = "rare" },  -- Fishing Rod (worn)
     { cls = "BP_Seed_Cotton_Item_C", w = 20 },  -- Cotton Seed
     { cls = "BP_Diamond_Item_C", w = 20, tier = "jackpot" },  -- Diamond
     { cls = "BP_DiamondFishingRod_Item_C", w = 5, tier = "rare" },  -- Diamond Rod (worn)
@@ -98,7 +108,7 @@ local TABLES = {
     { cls = "BP_Seed_Tomato_Item_C", w = 80 },  -- Tomato Seeds
     { cls = "BP_Seed_Paprika_Item_C", w = 80 },  -- Paprika Seeds
     { cls = "BP_Egg_Item_C", w = 76, tier = "rare" },  -- Chicken Egg
-    { cls = "BP_FishingRod_Item_C", w = 72, tier = "rare" },  -- Fishing Rod (worn)
+    { cls = "BP_ModFishingRod_Item_C", w = 72, tier = "rare" },  -- Fishing Rod (worn)
     { cls = "BP_Truffle_Item_C", w = 57, tier = "jackpot" },  -- Truffle
     { cls = "BP_Diamond_Item_C", w = 40, tier = "jackpot" },  -- Diamond
     { cls = "BP_CableConnectorSmall_Item_C", w = 40, tier = "rare" },  -- Cable (wire)
@@ -126,7 +136,7 @@ local TABLES = {
     { cls = "BP_Circuitboard_Item_C", w = 160, tier = "rare" },  -- Circuitboard
     { cls = "BP_Truffle_Item_C", w = 152, tier = "jackpot" },  -- Truffle
     { cls = "BP_Diamond_Item_C", w = 100, tier = "jackpot" },  -- Diamond
-    { cls = "BP_FishingRod_Item_C", w = 90, tier = "rare" },  -- Fishing Rod (worn)
+    { cls = "BP_ModFishingRod_Item_C", w = 90, tier = "rare" },  -- Fishing Rod (worn)
     { cls = "BP_Battery_Item_C", w = 80, tier = "rare" },  -- Battery
     { cls = "BP_CableConnectorSmall_Item_C", w = 80, tier = "rare" },  -- Cable (wire)
     { cls = "BP_Egg_Item_C", w = 57, tier = "rare" },  -- Chicken Egg
@@ -352,6 +362,17 @@ function F.miniChance(isDiamond, base, diamondChance)
   return c
 end
 
+-- Rod kinds: "vanilla" = the game's own BP_FishingRod_Item (legacy -- replaced 2026-07-30,
+-- survives only in pakless sessions and unmigrated corners), "modded" = the pak's
+-- vanilla-stats replacement, "diamond" = the upgrade. SEATED kinds are the mod-driven pak
+-- rods: the game's hardcoded switches don't know their rows, so the mod seats the real hand
+-- actor and drives clicks itself -- and their cast survives every hand rebuild (interaction=1
+-- row typing). Diamond-only STATS (x2 luck, 25% skillshot, jackpot pool) stay keyed on
+-- "diamond"; this predicate keys the MECHANICS.
+function F.seatedRod(kind)
+  return kind == "diamond" or kind == "modded"
+end
+
 -- A fished-up rod's remaining durability from a 0..1 roll.
 function F.wornDurability(r, maxDur, minFrac, maxFrac)
   local frac = (minFrac or 0.1) + r * ((maxFrac or 0.6) - (minFrac or 0.1))
@@ -443,7 +464,8 @@ local mgActive = false
 local mgToken = 0
 local mgStart = 0
 local mgCenter, mgWidth = 0.5, 0.18
-local mgDiamond = false
+local mgDiamond = false  -- diamond STATS for this skillshot (harder zone, jackpot-only pool)
+local mgSeated = false   -- mod-driven rod (modded/diamond): no leaf swap, we reel the line
 local mgGroup = "starter"
 local mgRiver = nil      -- the leaf-swapped river actor (restored on resolve)
 local mgRod = nil        -- the rod actor whose bite roll we parked (see suppressBites)
@@ -485,6 +507,19 @@ local function resolveClass(short)
   local cls = ctx.uehelp.classByName(short, path)
   classCache[short] = cls or false
   return cls
+end
+
+-- Short class names of the two pak rods (nil while the mapping rows are absent = no pak).
+local function diamondShort()
+  local m = ctx.map.fishing
+  if not (ctx.map.items and ctx.map.items.classFmt and m.diamondRow) then return nil end
+  return string.format(ctx.map.items.classFmt, m.diamondRow)
+end
+
+local function modShort()
+  local m = ctx.map.fishing
+  if not (ctx.map.items and ctx.map.items.classFmt and m.modRodRow) then return nil end
+  return string.format(ctx.map.items.classFmt, m.modRodRow)
 end
 
 --------------------------------------------------------------------- table writer
@@ -654,7 +689,7 @@ local function itemStructMembers(pawn)
   return structMembers or nil
 end
 
--- "vanilla" | "diamond" | nil for the item currently in this pawn's hand.
+-- "vanilla" | "modded" | "diamond" | nil for the item currently in this pawn's hand.
 local function heldRodKind(pawn)
   local m = ctx.map.fishing
   local wm = ctx.map.wand
@@ -670,7 +705,9 @@ local function heldRodKind(pawn)
   local cn
   pcall(function() cn = ia:GetFName():ToString() end)
   if cn == m.rodItemClass then return "vanilla" end
-  if m.diamondRow and cn == string.format(classFmt, m.diamondRow) then return "diamond" end
+  local ds, ms = diamondShort(), modShort()
+  if ds and cn == ds then return "diamond" end
+  if ms and cn == ms then return "modded" end
   return nil
 end
 
@@ -682,9 +719,10 @@ end
 
 local function rodShortNames()
   local m = ctx.map.fishing
-  local classFmt = ctx.map.items and ctx.map.items.classFmt
   local names = { [m.rodItemClass] = "vanilla" }
-  if classFmt and m.diamondRow then names[string.format(classFmt, m.diamondRow)] = "diamond" end
+  local ds, ms = diamondShort(), modShort()
+  if ds then names[ds] = "diamond" end
+  if ms then names[ms] = "modded" end
   return names
 end
 
@@ -728,10 +766,10 @@ local function freshRods(pawn)
   return out
 end
 
--- Stamp every fresh rod that APPEARED since the bite snapshot. Vanilla rods are always worn;
--- diamond rods roll worn-vs-full by the table entries' weight ratio (or by what the skillshot
--- said it granted). Runs a few spaced passes -- the spawned loot flies to the player, but a slow
--- pickup must not slip through at full durability.
+-- Stamp every fresh rod that APPEARED since the bite snapshot. Plain rods (modded, or a legacy
+-- vanilla one) are always worn; diamond rods roll worn-vs-full by the table entries' weight
+-- ratio (or by what the skillshot said it granted). Runs a few spaced passes -- the spawned
+-- loot flies to the player, but a slow pickup must not slip through at full durability.
 local function sweepNewRods(pawn, group, tok)
   if tok ~= sweepToken or not ctx.uehelp.isValid(pawn) then return end
   local m = ctx.map.fishing
@@ -741,7 +779,9 @@ local function sweepNewRods(pawn, group, tok)
   for idx, kind in pairs(now) do
     if not freshRodSlots[idx] then
       freshRodSlots[idx] = kind -- one stamp per slot per bite window
-      local short = (kind == "diamond") and string.format(ctx.map.items.classFmt, m.diamondRow) or m.rodItemClass
+      local short = (kind == "diamond") and diamondShort()
+                 or (kind == "modded") and modShort()
+                 or m.rodItemClass
       local maxDur = (kind == "diamond") and m.diamondDurability or m.rodDurability
       local worn = true
       if kind == "diamond" then
@@ -751,6 +791,9 @@ local function sweepNewRods(pawn, group, tok)
         else
           worn = math.random() < F.wornShare(group or "starter", short)
         end
+      else
+        mgKnownReward = nil -- worn-vs-full only distinguishes diamond entries; never let a
+                            -- plain-rod grant leave a stale verdict for the next diamond
       end
       if worn then
         local dur = F.wornDurability(math.random(), maxDur,
@@ -802,30 +845,45 @@ end
 --   * snapshotRods: cheap PLAYER-inventory count+durability snapshot -- rides the daywatch tick
 --     and every game save -- persisted as a sidecar flag (write is host-gated by core/save, so
 --     the ledger is effectively host-only; on clients it is a harmless in-memory no-op).
---   * rodLedgerSweep (world entry, once): audits the WHOLE world -- every BC_InventorySystem
---     (players, chests, ship, deathloot, trash backing store) plus rod item actors on the
---     ground. Rods the ledger promised that exist NOWHERE are re-granted with their recorded
---     durability, loudly. The log then dates the loss: gone at entry = load-time; a daywatch
---     "LEFT the player inventory" line mid-session = something ate it live.
+--   * rodLedgerSweep (world entry, once): audits every BC_InventorySystem (players, chests,
+--     ship, deathloot, trash backing store). Rods the ledger promised that no INVENTORY holds
+--     are restored loudly with their recorded durability -- loose ground rods don't settle the
+--     debt, they get flown back into the pack first (see restoreRods). The log then dates the
+--     loss: gone at entry = load-time; a daywatch "LEFT the player inventory" line mid-session
+--     = something ate it live.
 -- Snapshots are GATED until the entry audit ran (ledgerDone) -- else the first post-load
 -- snapshot would record the loss as the new truth before the sweep could act on it.
-local LEDGER_FLAG = "diamond_rod_ledger"
+-- BOTH pak rods are tracked (2026-07-30): the ModFishingRod replacement is a pak row too and
+-- inherits the diamond rod's vanish risk wholesale. One flag per kind; the diamond flag keeps
+-- its historical name so live saves carry their promise across this refactor.
 local INV_SYS_CLASS = "BC_InventorySystem_C" -- every inventory in the game is this component
 local ledgerDone = false
 local ledgerToken = 0
-local ledgerHold = false -- a restore is unverified (or failed): snapshots must NOT overwrite
-                         -- the promise with the still-rodless truth (live-burned 2026-07-30:
+local ledgerHolds = 0    -- restores unverified (or failed): snapshots must NOT overwrite a
+                         -- promise with the still-rodless truth (live-burned 2026-07-30:
                          -- DEBUG_SpawnItems "succeeded", delivered nothing, and the instant
-                         -- snapshot zeroed the ledger -- the rod debt was erased)
+                         -- snapshot zeroed the ledger -- the rod debt was erased). A COUNT,
+                         -- not a flag: the two kinds restore independently.
 
-local function diamondShort()
+-- The ledger'd rod kinds this session (absent mapping rows drop out = no pak, no ledger).
+local function ledgerKinds()
   local m = ctx.map.fishing
-  if not (ctx.map.items and ctx.map.items.classFmt and m.diamondRow) then return nil end
-  return string.format(ctx.map.items.classFmt, m.diamondRow)
+  local out = {}
+  local ds = diamondShort()
+  if ds then
+    out[#out + 1] = { kind = "diamond", flag = "diamond_rod_ledger", short = ds,
+                      maxDur = m.diamondDurability or 999, label = "diamond rod" }
+  end
+  local ms = modShort()
+  if ms then
+    out[#out + 1] = { kind = "modded", flag = "mod_rod_ledger", short = ms,
+                      maxDur = m.rodDurability or 200, label = "fishing rod" }
+  end
+  return out
 end
 
--- Durabilities (full max when fresh) of every diamond rod in ONE inventory component.
-local function rodsInInventory(inv, target)
+-- Durabilities (full max when fresh) of every `target`-class rod in ONE inventory component.
+local function rodsInInventory(inv, target, maxDur)
   local out = {}
   local m, wm = ctx.map.fishing, ctx.map.wand
   pcall(function()
@@ -845,7 +903,7 @@ local function rodsInInventory(inv, target)
             local raw = e[wm.slotSavedataField]
             sd = (type(raw) == "string") and raw or raw:ToString()
           end)
-          out[#out + 1] = F.durabilityFromSavedata(sd) or m.diamondDurability or 2000
+          out[#out + 1] = F.durabilityFromSavedata(sd) or maxDur or 999
         end
       end
     end)
@@ -854,31 +912,31 @@ local function rodsInInventory(inv, target)
 end
 
 snapshotRods = function(reason)
-  if not (ledgerDone and cfg("fishing_rod_ledger")) or ledgerHold then return end
-  local target = diamondShort()
-  if not target then return end
+  if not (ledgerDone and cfg("fishing_rod_ledger")) or ledgerHolds > 0 then return end
   local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
   if not ctx.uehelp.isValid(pawn) then return end
   local inv
   pcall(function() inv = pawn[ctx.map.wand.inventorySystemProp or "InventorySystem"] end)
   if not ctx.uehelp.isValid(inv) then return end
-  local dur = rodsInInventory(inv, target)
-  local prev = ctx.save.getFlag(LEDGER_FLAG)
-  local prevN = (type(prev) == "table" and tonumber(prev.n)) or 0
-  if #dur < prevN then
-    ctx.log.warn(string.format(
-      "fishing: rod ledger -- %d diamond rod(s) LEFT the player inventory mid-session (%s), %d -> %d (stored/traded is fine; if not, this line dates the loss)",
-      prevN - #dur, tostring(reason), prevN, #dur))
-  end
-  local same = (#dur == prevN)
-  if same and type(prev) == "table" and type(prev.dur) == "table" then
-    for i = 1, #dur do
-      if dur[i] ~= tonumber(prev.dur[i]) then same = false; break end
+  for _, spec in ipairs(ledgerKinds()) do
+    local dur = rodsInInventory(inv, spec.short, spec.maxDur)
+    local prev = ctx.save.getFlag(spec.flag)
+    local prevN = (type(prev) == "table" and tonumber(prev.n)) or 0
+    if #dur < prevN then
+      ctx.log.warn(string.format(
+        "fishing: rod ledger -- %d %s(s) LEFT the player inventory mid-session (%s), %d -> %d (stored/traded is fine; if not, this line dates the loss)",
+        prevN - #dur, spec.label, tostring(reason), prevN, #dur))
     end
-  elseif prevN > 0 or #dur > 0 then
-    same = false
+    local same = (#dur == prevN)
+    if same and type(prev) == "table" and type(prev.dur) == "table" then
+      for i = 1, #dur do
+        if dur[i] ~= tonumber(prev.dur[i]) then same = false; break end
+      end
+    elseif prevN > 0 or #dur > 0 then
+      same = false
+    end
+    if not same then ctx.save.setFlag(spec.flag, { n = #dur, dur = dur }) end
   end
-  if not same then ctx.save.setFlag(LEDGER_FLAG, { n = #dur, dur = dur }) end
 end
 
 -- How many diamond rods the player carries right now (-1 = inventory unreadable).
@@ -889,27 +947,66 @@ local function playerRodCount(pawn, target)
   return #rodsInInventory(inv, target)
 end
 
--- Re-grant `missing` rods and put the recorded wear back on the fresh grants. DEBUG_SpawnItems
--- returning cleanly proves NOTHING (it "succeeded" and delivered zero rods live 2026-07-30 --
--- the same session whose LOAD dropped the rod, so the two failures likely share a root) --
--- delivery is VERIFIED by recounting, retried twice, and on final failure the ledger keeps its
--- promise (ledgerHold) so the next session's audit tries again.
-local function restoreRods(missing, durs)
-  local target = diamondShort()
+-- Every `target`-class rod ITEM ACTOR lying loose in the world (non-CDO). DEBUG_SpawnItems makes
+-- exactly these (decoded 2026-07-30 from bp_controller.json: it spawns the item actor at the
+-- player's location +500Z with FlyToPlayer=FALSE and never touches an inventory) -- so a loose
+-- rod is either the vanish bug's leavings or this ledger's own earlier litter.
+local function groundRodActors(target)
+  local out = {}
+  for _, a in ipairs(ctx.uehelp.findAll(target)) do
+    if ctx.uehelp.isValid(a) then
+      local fn = ""
+      pcall(function() fn = a:GetFullName() end)
+      if not fn:find("Default__", 1, true) then out[#out + 1] = a end
+    end
+  end
+  return out
+end
+
+-- Hand a loose rod actor to the player through the game's own pickup path: park it on the pawn
+-- (fresh pickup overlap) with FlyToPlayer set -- the same flag the game's fishing loot rides.
+local function deliverRodActor(a, pawn)
+  if not (ctx.uehelp.isValid(a) and ctx.uehelp.isValid(pawn)) then return false end
+  local loc
+  pcall(function() loc = ctx.uehelp.vec(pawn:K2_GetActorLocation()) end)
+  if not loc then return false end
+  ctx.uehelp.set(a, "ManualPickup", false)
+  ctx.uehelp.set(a, "NoPickupTime", 0)
+  ctx.uehelp.set(a, "FlyToPlayer", true)
+  local at = { X = loc.X, Y = loc.Y, Z = loc.Z + 120 }
+  return ctx.uehelp.call(a, "K2_SetActorLocation", at, false, {}, false)
+      or ctx.uehelp.call(a, "K2_SetActorLocation", at, true)
+end
+
+-- Make good on `missing` rods, preferring rods already lying in the world over fresh spawns.
+-- DEBUG_SpawnItems is a WORLD DROP at the player (see groundRodActors) -- the 2026-07-30 dock
+-- incident was this very function "restoring" one rod three spawn-rounds in a row onto the dock
+-- in front of a boarding player, while its pack-only recount kept scoring every round a failure.
+-- So now: fresh spawns are capped at `missing` for the WHOLE session, every round first
+-- re-delivers loose rods via deliverRodActor, fresh drops get flown in the same way 700ms after
+-- spawning, and only the pack recount decides success. On final failure the ledger keeps its
+-- promise (the hold is kept) so the next session's audit tries again.
+local function restoreRods(spec, missing, durs)
+  local target = spec.short
   local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
   local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
   if not (target and ctx.uehelp.isValid(pawn) and ctx.uehelp.isValid(pc)) then return end
-  local m, wm = ctx.map.fishing, ctx.map.wand
+  local wm = ctx.map.wand
   local before = freshRods(pawn) -- pre-grant: pristine rods the player already owned stay theirs
   local baseCount = playerRodCount(pawn, target)
   if baseCount < 0 then return end
-  ledgerHold = true
+  ledgerHolds = ledgerHolds + 1
+  local holdDropped = false
+  local function dropHold()
+    if not holdDropped then holdDropped = true; ledgerHolds = math.max(0, ledgerHolds - 1) end
+  end
+  local spawnBudget = missing -- hard cap on NEW world drops across ALL rounds this session
 
   local function stampWear()
     local worn = {}
     for _, d in ipairs(durs or {}) do
       local n = tonumber(d)
-      if n and n < (m.diamondDurability or 2000) then worn[#worn + 1] = n end
+      if n and n < spec.maxDur then worn[#worn + 1] = n end
     end
     if #worn == 0 or not (wm and wm.overwriteSlotFn and wm.slotItemField
                           and wm.slotQtyField and wm.slotSavedataField) then
@@ -922,7 +1019,7 @@ local function restoreRods(missing, durs)
     if not (ctx.uehelp.isValid(inv) and cls) then return end
     local wi = 1
     for idx, kind in pairs(now) do
-      if kind == "diamond" and not before[idx] and wi <= #worn then
+      if kind == spec.kind and not before[idx] and wi <= #worn then
         local slot = {
           [wm.slotItemField] = cls,
           [wm.slotQtyField] = 1,
@@ -935,29 +1032,60 @@ local function restoreRods(missing, durs)
 
   local attempt
   attempt = function(round)
-    if not ctx.uehelp.isValid(pawn) then ledgerHold = false; return end
+    if not ctx.uehelp.isValid(pawn) then dropHold(); return end
     local owed = missing - (math.max(0, playerRodCount(pawn, target)) - baseCount)
-    for _ = 1, owed do ctx.items.giveByClass(pc, target, 1) end
-    defer(2000, ctx.log.guard("fishing.ledgerverify", function()
+    if owed > 0 then
+      -- loose rods first: they ARE the debt (or our own earlier drops) -- fly them in
+      local preNames, sent = {}, 0
+      for _, a in ipairs(groundRodActors(target)) do
+        local fn = ""
+        pcall(function() fn = a:GetFullName() end)
+        preNames[fn] = true
+        if sent < owed and deliverRodActor(a, pawn) then sent = sent + 1 end
+      end
+      local toSpawn = math.min(owed - sent, spawnBudget)
+      local failWhy
+      for _ = 1, toSpawn do
+        local ok, _, why = ctx.items.giveByClass(pc, target, 1)
+        if ok then spawnBudget = spawnBudget - 1 else failWhy = why end
+      end
+      if failWhy == "class" then
+        ctx.log.warn("fishing: rod ledger -- the rod's item class would not load at all"
+          .. " (pak not mounted this session?) -- no spawn attempted, the debt stands")
+      end
+      if toSpawn > 0 then
+        -- the fresh drops fell at the player's feet with FlyToPlayer=false: fly them in too
+        defer(700, ctx.log.guard("fishing.ledgerfly", function()
+          onGameThread(function()
+            for _, a in ipairs(groundRodActors(target)) do
+              local fn = ""
+              pcall(function() fn = a:GetFullName() end)
+              if not preNames[fn] then deliverRodActor(a, pawn) end
+            end
+          end)
+        end))
+      end
+    end
+    defer(2500, ctx.log.guard("fishing.ledgerverify", function()
       onGameThread(function()
-        if not ctx.uehelp.isValid(pawn) then ledgerHold = false; return end
+        if not ctx.uehelp.isValid(pawn) then dropHold(); return end
         local landed = math.max(0, playerRodCount(pawn, target)) - baseCount
         if landed >= missing then
           ctx.log.warn(string.format(
-            "fishing: rod ledger -- %d diamond rod(s) returned to your pack (verified)", landed))
+            "fishing: rod ledger -- %d %s(s) returned to your pack (verified)", landed, spec.label))
           stampWear()
-          ledgerHold = false
+          dropHold()
           snapshotRods("restore")
         elseif round < 3 then
           ctx.log.info(string.format(
-            "fishing: rod ledger -- the spawner delivered %d of %d, asking again (round %d)",
+            "fishing: rod ledger -- %d of %d landed in the pack, re-delivering (round %d)",
             landed, missing, round + 1))
           attempt(round + 1)
         else
           ctx.log.warn(string.format(
-            "fishing: rod ledger -- the spawner refused the rod this session (%d of %d landed after 3 rounds) -- the debt stands and the next load will try again",
-            landed, missing))
-          -- ledgerHold stays true: the promise survives this broken session untouched
+            "fishing: rod ledger -- %s delivery failed this session (%d of %d in the pack after 3 rounds) -- the debt stands and the next load will try again",
+            spec.label, landed, missing))
+          -- the hold is never dropped: the promise survives this broken session untouched
         end
       end)
     end))
@@ -970,50 +1098,182 @@ end
 local function rodLedgerSweep(tok)
   if tok ~= ledgerToken or ledgerDone then return end
   if not cfg("fishing_rod_ledger") then ledgerDone = true; return end
-  local target = diamondShort()
-  if not target then ledgerDone = true; return end
+  local specs = ledgerKinds()
+  if #specs == 0 then ledgerDone = true; return end
   local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
   if not ctx.uehelp.isValid(pawn) then return end
-  local prev = ctx.save.getFlag(LEDGER_FLAG)
-  local promised = (type(prev) == "table" and tonumber(prev.n)) or 0
-  if promised <= 0 then
+  local anyPromised = false
+  for _, spec in ipairs(specs) do
+    spec.prev = ctx.save.getFlag(spec.flag)
+    spec.promised = (type(spec.prev) == "table" and tonumber(spec.prev.n)) or 0
+    spec.invTotal = 0
+    if spec.promised > 0 then anyPromised = true end
+  end
+  if not anyPromised then
     ledgerDone = true
     snapshotRods("entry")
     return
   end
   local systems = ctx.uehelp.findAll(INV_SYS_CLASS)
-  local live, total = 0, 0
+  local live = 0
   for _, sys in ipairs(systems) do
     if ctx.uehelp.isValid(sys) then
       local fn = ""
       pcall(function() fn = sys:GetFullName() end)
       if not fn:find("Default__", 1, true) then
         live = live + 1
-        total = total + #rodsInInventory(sys, target)
+        for _, spec in ipairs(specs) do
+          if spec.promised > 0 then
+            spec.invTotal = spec.invTotal + #rodsInInventory(sys, spec.short, spec.maxDur)
+          end
+        end
       end
     end
   end
   if live < 4 then return end -- chests not streamed in yet; the later pass retries
-  for _, a in ipairs(ctx.uehelp.findAll(target)) do -- rods lying on the ground are still rods
-    if ctx.uehelp.isValid(a) then
-      local fn = ""
-      pcall(function() fn = a:GetFullName() end)
-      if not fn:find("Default__", 1, true) then total = total + 1 end
+  ledgerDone = true
+  -- Only rods in an INVENTORY keep the promise (stored/moved/traded is fine). A rod on the
+  -- ground does not -- the player doesn't have it; restoreRods flies it back in as delivery
+  -- stock before it ever spawns a fresh one (the 2026-07-30 dock litter counted here as
+  -- "accounted for" while the player stood over three rods they could not pick up).
+  for _, spec in ipairs(specs) do
+    if spec.promised > 0 then
+      local ground = groundRodActors(spec.short)
+      local missing = spec.promised - spec.invTotal
+      if missing <= 0 then
+        ctx.log.info(string.format(
+          "fishing: rod ledger -- all %d promised %s(s) accounted for (%d inventories)",
+          spec.promised, spec.label, live))
+        if #ground > 0 then
+          ctx.log.info(string.format(
+            "fishing: rod ledger -- %d loose %s(s) also lying in the world (sps_fish_rescue reels them in)",
+            #ground, spec.label))
+        end
+      else
+        ctx.log.warn(string.format(
+          "fishing: rod ledger -- %d %s(s) VANISHED across the reload (inventories hold %d of the %d promised, %d loose on the ground; %d inventories swept) -- restoring",
+          missing, spec.label, spec.invTotal, spec.promised, #ground, live))
+        restoreRods(spec, missing, (type(spec.prev) == "table" and spec.prev.dur) or {})
+      end
     end
   end
-  ledgerDone = true
-  local missing = promised - total
-  if missing <= 0 then
-    ctx.log.info(string.format(
-      "fishing: rod ledger -- all %d promised diamond rod(s) accounted for (%d inventories)",
-      promised, live))
-    snapshotRods("entry")
+  -- restores in flight hold this off (ledgerHolds); a clean audit snapshots the entry truth
+  snapshotRods("entry")
+end
+
+--------------------------------------------------------------------- vanilla-rod migration
+-- THE VANILLA ROD IS REPLACED (user spec 2026-07-30): the pak repoints the FishingRod recipe
+-- at ModFishingRod (same persisted RecipyID -- saves keep their unlock and craft the clone),
+-- the loot tables drop the clone, and this one-time-per-world sweep swaps rods that already
+-- exist in ANY inventory (players, chests, ship, deathloot) via the wand's proven in-place
+-- slot overwrite -- quantity and Durability savedata preserved byte-for-byte. Host-gated:
+-- inventories are host-authoritative and the host sees them all. HARD GATE on the clone's
+-- class resolving: migrating into an unloadable class would BE the vanish bug, deliberately.
+-- The same walk also CLAMPS diamond rods whose recorded durability exceeds the new max
+-- (user spec 2026-07-30: 2000 -> 999) so old saves' bars don't read overfull.
+local migrateDone = false
+local migrateToken = 0
+
+local function migrateVanillaRods(tok)
+  if tok ~= migrateToken or migrateDone then return end
+  if not (cfg("fishing_enabled") and cfg("fishing_rod_replace")) then migrateDone = true; return end
+  if not ctx.net.isHost() then migrateDone = true; return end
+  local m, wm = ctx.map.fishing, ctx.map.wand
+  local ms = modShort()
+  if not (ms and wm and wm.overwriteSlotFn and wm.slotItemField and wm.slotQtyField
+          and wm.slotSavedataField) then
+    migrateDone = true
     return
   end
-  ctx.log.warn(string.format(
-    "fishing: rod ledger -- %d diamond rod(s) VANISHED across the reload (world holds %d of the %d promised; %d inventories swept) -- the load dropped them, restoring",
-    missing, total, promised, live))
-  restoreRods(missing, (type(prev) == "table" and prev.dur) or {})
+  local cls = resolveClass(ms)
+  if not cls then
+    migrateDone = true
+    ctx.log.warn("fishing: ModFishingRod class would not load (pak absent?) -- vanilla rods left alone this session")
+    return
+  end
+  local ds = diamondShort()
+  local diaCls = ds and resolveClass(ds) or nil
+  local diaMax = m.diamondDurability or 999
+  local systems = {}
+  for _, sys in ipairs(ctx.uehelp.findAll(INV_SYS_CLASS)) do
+    if ctx.uehelp.isValid(sys) then
+      local fn = ""
+      pcall(function() fn = sys:GetFullName() end)
+      if not fn:find("Default__", 1, true) then systems[#systems + 1] = sys end
+    end
+  end
+  if #systems < 4 then return end -- world still streaming in; the later pass retries
+  migrateDone = true
+  local swapped, clamped, failed = 0, 0, 0
+  for _, sys in ipairs(systems) do
+    -- collect first, overwrite after the walk -- never mutate the array under its own ForEach
+    local hits = {}
+    pcall(function()
+      local arr = sys[m.invArrayProp]
+      local i = 0
+      arr:ForEach(function(_, el)
+        local e = el
+        pcall(function() e = el:get() end)
+        if e == nil then e = el end
+        local it
+        pcall(function() it = e[wm.slotItemField] end)
+        if ctx.uehelp.isValid(it) then
+          local cn
+          pcall(function() cn = it:GetFName():ToString() end)
+          if cn == m.rodItemClass or (ds and cn == ds) then
+            local qty, sd = 1, ""
+            pcall(function() qty = tonumber(e[wm.slotQtyField]) or 1 end)
+            pcall(function()
+              local raw = e[wm.slotSavedataField]
+              sd = (type(raw) == "string") and raw or raw:ToString()
+            end)
+            if cn == m.rodItemClass then
+              hits[#hits + 1] = { idx = i, qty = qty, sd = sd or "", to = cls, why = "swap" }
+            else
+              local d = F.durabilityFromSavedata(sd)
+              if d and d > diaMax and diaCls then
+                hits[#hits + 1] = { idx = i, qty = qty, sd = durabilitySavedata(diaMax),
+                                    to = diaCls, why = "clamp" }
+              end
+            end
+          end
+        end
+        i = i + 1
+      end)
+    end)
+    for _, h in ipairs(hits) do
+      local slot = {
+        [wm.slotItemField] = h.to,
+        [wm.slotQtyField] = h.qty,
+        [wm.slotSavedataField] = h.sd,
+      }
+      if ctx.uehelp.call(sys, wm.overwriteSlotFn, slot, h.idx) then
+        if h.why == "swap" then swapped = swapped + 1 else clamped = clamped + 1 end
+      else
+        failed = failed + 1
+      end
+    end
+  end
+  if swapped > 0 or clamped > 0 or failed > 0 then
+    ctx.log.info(string.format(
+      "fishing: rod migration -- %d vanilla rod(s) reforged to the mod's pattern, %d diamond rod(s) clamped to %d durability (%d inventories%s)",
+      swapped, clamped, diaMax, #systems,
+      failed > 0 and string.format(", %d overwrites FAILED and were left as-is", failed) or ""))
+    -- the local hotbar may be showing a swapped slot: redraw it (the wand's authority lesson)
+    local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
+    if ctx.uehelp.isValid(pawn) then
+      local pc
+      pcall(function() pc = pawn[wm.localControllerProp or "LocalController"] end)
+      local hb
+      if ctx.uehelp.isValid(pc) then pcall(function() hb = pc[wm.hotbarWidgetProp or "UI_Hotbar"] end) end
+      if ctx.uehelp.isValid(hb) and wm.hotbarRefreshFn then ctx.uehelp.call(hb, wm.hotbarRefreshFn) end
+      local inv
+      pcall(function() inv = pawn[wm.inventorySystemProp or "InventorySystem"] end)
+      if ctx.uehelp.isValid(inv) and wm.invChangedFn then ctx.uehelp.call(inv, wm.invChangedFn) end
+    end
+  else
+    ctx.log.debug("fishing: rod migration -- nothing to reforge")
+  end
 end
 
 --------------------------------------------------------------------- skillshot bar (UI)
@@ -1074,10 +1334,11 @@ local function restoreMgRiver()
   end
 end
 
--- The bite that arms the skillshot. VANILLA rod: the game's own input will catch on the next
--- click no matter what, so the bobber's river is swapped to all-leaf -- the "catch" lands a
--- worthless leaf and the bar reveals. DIAMOND rod: the game ignores its clicks entirely (we
--- drive them), so nothing needs swapping and NOTHING drops when the bar appears.
+-- The bite that arms the skillshot. VANILLA rod (legacy): the game's own input will catch on
+-- the next click no matter what, so the bobber's river is swapped to all-leaf -- the "catch"
+-- lands a worthless leaf and the bar reveals. SEATED rods (modded/diamond): the game ignores
+-- their clicks entirely (we drive them), so nothing needs swapping and NOTHING drops when the
+-- bar appears.
 local function armMinigame(pawn)
   if not mgReady then return end
   local m = ctx.map.fishing
@@ -1087,9 +1348,10 @@ local function armMinigame(pawn)
   if not loc then return end
   local baked = F.nearestRiver(loc.X, loc.Y)
   if not baked then return end
-  local isDiamond = (heldRodKind(pawn) == "diamond")
+  local kind = heldRodKind(pawn)
+  local seated = F.seatedRod(kind)
   local river = nil
-  if not isDiamond then
+  if not seated then
     local bestD
     for _, r in ipairs(ctx.uehelp.findAll(m.riverClass)) do
       local rl
@@ -1109,7 +1371,8 @@ local function armMinigame(pawn)
   end
   mgRiver = river
   mgGroup = baked.group
-  mgDiamond = isDiamond
+  mgDiamond = (kind == "diamond")
+  mgSeated = seated
   mgPending = true
   mgToken = mgToken + 1
   local tok = mgToken
@@ -1132,18 +1395,45 @@ local function grantReward(pawn)
     if resolveClass(e.cls) then live[#live + 1] = e end
   end
   local e = F.weightedPick(live, math.random())
-  if not e then return end
+  if not e then
+    ctx.log.warn("fishing: skillshot won but no prize class resolves (pak not mounted?) -- nothing to give")
+    return
+  end
   local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
-  if not ctx.uehelp.isValid(pc) then return end
-  local m = ctx.map.fishing
-  local isRod = (e.cls == m.rodItemClass)
-    or (ctx.map.items and e.cls == string.format(ctx.map.items.classFmt, m.diamondRow))
+  if not ctx.uehelp.isValid(pc) then
+    ctx.log.warn("fishing: skillshot won but no local controller -- the prize was lost")
+    return
+  end
+  local isRod = rodShortNames()[e.cls] ~= nil
   if isRod then mgKnownReward = (e.tier == "jackpot") and "full" or "worn" end
   freshRodSlots = freshRods(pawn) -- pre-grant snapshot: only the granted rod reads as "new"
-  if ctx.items.giveByClass(pc, e.cls, 1) then
-    ctx.log.info("*** SKILLSHOT! the waters yield: " .. e.cls:gsub("^BP_", ""):gsub("_Item_C$", "") .. " ***")
-    if isRod then scheduleSweeps(pawn, mgGroup) else mgKnownReward = nil end
+  -- DEBUG_SpawnItems is a WORLD DROP (+500Z, FlyToPlayer=false -- see core/items.lua): won over
+  -- water, the prize free-falls past the pickup overlap and sinks (live 2026-07-30: "the waters
+  -- yield: Diamond", the player got nothing). Snapshot the class's loose actors, then fly the
+  -- fresh drop to the pawn exactly the way the rod ledger delivers its restores.
+  local preNames = {}
+  for _, a in ipairs(groundRodActors(e.cls)) do
+    local fn = ""
+    pcall(function() fn = a:GetFullName() end)
+    preNames[fn] = true
   end
+  local ok, _, why = ctx.items.giveByClass(pc, e.cls, 1)
+  if not ok then
+    ctx.log.warn("fishing: skillshot prize refused to spawn (" .. tostring(why) .. ")")
+    return
+  end
+  ctx.log.info("*** SKILLSHOT! the waters yield: " .. e.cls:gsub("^BP_", ""):gsub("_Item_C$", "") .. " ***")
+  if isRod then scheduleSweeps(pawn, mgGroup) else mgKnownReward = nil end
+  defer(700, ctx.log.guard("fishing.prizefly", function()
+    onGameThread(function()
+      if not ctx.uehelp.isValid(pawn) then return end
+      for _, a in ipairs(groundRodActors(e.cls)) do
+        local fn = ""
+        pcall(function() fn = a:GetFullName() end)
+        if not preNames[fn] then deliverRodActor(a, pawn) end
+      end
+    end)
+  end))
 end
 
 -- The bar folds a beat after the resolve flash; token-guarded so a delayed fold can never tear
@@ -1166,10 +1456,10 @@ local function logBarStats()
 end
 
 -- The decisive click also reels the line in: the game's own input already does it for the
--- vanilla rod (line out, no catch window = reel), the seated diamond rod only moves when we
+-- legacy vanilla rod (line out, no catch window = reel), a seated rod only moves when we
 -- drive it. Inside the bite's ~1 s catch window that same call would CATCH instead -- wait it out.
 local function reelLine(pawn)
-  if not mgDiamond then return end
+  if not mgSeated then return end
   local m = ctx.map.fishing
   local rod
   pcall(function() rod = pawn[ctx.map.wand.handItemProp or "CurHandItemFirstPerson"] end)
@@ -1322,7 +1612,7 @@ local function timeoutMinigame()
   mgClickAt, mgAwaitClick, mgSlow, mgSlide = nil, false, nil, nil
   mgLate = { untilT = os.clock() + 0.4, kind = mgKind, start = mgStart,
              center = mgCenter, width = mgWidth, period = mgPeriod, wheel = mgWheel,
-             vs = mgVs, diamond = mgDiamond, group = mgGroup }
+             vs = mgVs, diamond = mgDiamond, seated = mgSeated, group = mgGroup }
   UI.flash("timeout")
   logBarStats()
   foldSoon(150)
@@ -1599,7 +1889,7 @@ local function onClick(pawn, clickAt)
     end
     if hit then
       mgGroup, mgDiamond = late.group, late.diamond
-      if late.diamond then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
+      if late.seated then ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn) end -- reel the prize in
       lineOut = false
       ctx.log.info("fishing: right at the buzzer -- the click counts")
       grantSoon(pawn)
@@ -1609,9 +1899,9 @@ local function onClick(pawn, clickAt)
     return
   end
   if mgPending and clickAt - lastBiteAt < 1.4 then
-    -- vanilla rod: this click is the game's own Catch() and it lands the placeholder leaf.
-    -- Diamond rod: the game ignores the click and we deliberately do NOT drive it -- the bar
-    -- reveals with no drop at all; the bite's catch window shuts itself.
+    -- legacy vanilla rod: this click is the game's own Catch() and it lands the placeholder
+    -- leaf. Seated rods: the game ignores the click and we deliberately do NOT drive it -- the
+    -- bar reveals with no drop at all; the bite's catch window shuts itself.
     mgPending = false
     defer(1200, ctx.log.guard("fishing.mgrestore", function()
       -- linger past the ~1 s catch window so a lightning second click can only ever land
@@ -1715,10 +2005,9 @@ local function onClick(pawn, clickAt)
   end
 
   local kind = heldRodKind(pawn)
-  if kind == "diamond" and cfg("fishing_enabled") then
-    -- the game's switches don't know our row -- drive its own event (cast/reel + durability)
-    local m = ctx.map.fishing
-    ctx.uehelp.call(pawn, m.useRodFn)
+  if F.seatedRod(kind) and cfg("fishing_enabled") then
+    -- the game's switches don't know our rows -- drive its own event (cast/reel + durability)
+    ctx.uehelp.call(pawn, ctx.map.fishing.useRodFn)
   end
   if kind then
     -- the toggle has settled by now (the game ran first, or we just drove it): the actor's own
@@ -1742,10 +2031,12 @@ local function onClick(pawn, clickAt)
   end
 end
 
---------------------------------------------------------------------- diamond rod equip shim
+--------------------------------------------------------------------- seated rod equip shim
 local function armRodHook() end -- forward decl (defined under hooks below)
 
-local function seatDiamond(pawn)
+-- Seat the game's own rod hand actor for a pak rod (modded/diamond) -- the game's equip
+-- switch doesn't know their rows, so the mod does what its fishing branch would have done.
+local function seatRod(pawn, kind)
   local m = ctx.map.fishing
   local wm = ctx.map.wand
   if os.clock() - lastSeatAt < 0.5 then return end
@@ -1765,7 +2056,12 @@ local function seatDiamond(pawn)
     local anim = pawn[m.handsMeshProp]:GetAnimInstance()
     if anim then anim[m.animItemEnumProp] = m.animItemEnumValue end
   end)
-  ctx.log.info("fishing: the diamond rod gleams in your hand")
+  if kind == "diamond" then
+    ctx.log.info("fishing: the diamond rod gleams in your hand")
+  else
+    -- the modded rod is the everyday rod now -- an info line per equip would be spam
+    ctx.log.debug("fishing: rod seated (mod drives the line)")
+  end
   defer(200, armRodHook)
 end
 
@@ -1839,8 +2135,8 @@ end
 -- Deferred body of the UpdateHandMeshesAndModes hook -- the ONE equip chokepoint (hotbar
 -- switches AND every UI close funnel through it). Deferred on purpose: the chokepoint re-enters
 -- itself, and sync UObject work inside that nested dispatch is the proven AV crash class (see
--- the header). The diamond rod's actor SURVIVES a UI-close rebuild (I1 row typing, see header):
--- seatDiamond sees it live and stands down, recastAfterRebuild retires on RodInUse?. The
+-- the header). A seated rod's actor SURVIVES a UI-close rebuild (I1 row typing, see header):
+-- seatRod sees it live and stands down, recastAfterRebuild retires on RodInUse?. The legacy
 -- vanilla rod's actor is already gone by the time this runs -- its cast line is re-thrown by
 -- recastAfterRebuild below, not rescued.
 local function onHandRebuilt(pawn)
@@ -1875,8 +2171,8 @@ local function onHandRebuilt(pawn)
   end
   local was = diamondHeld
   diamondHeld = (kind == "diamond")
-  if kind == "diamond" then
-    seatDiamond(pawn)
+  if F.seatedRod(kind) then
+    seatRod(pawn, kind)
   elseif kind == "vanilla" then
     defer(200, armRodHook) -- the game seats its own rod actor; hook its ChanceForLoot
   else
@@ -2011,12 +2307,22 @@ local function applyAll()
     stormNow = (ctx.services.isStormy and ctx.services.isStormy()) or false
     -- rod ledger: audit the fresh world once its chests have streamed in (two chances)
     ledgerDone = false
-    ledgerHold = false
+    ledgerHolds = 0
     ledgerToken = ledgerToken + 1
     local ltok = ledgerToken
     for _, ms in ipairs({ 15000, 45000 }) do
       defer(ms, ctx.log.guard("fishing.ledger", function()
         onGameThread(function() rodLedgerSweep(ltok) end)
+      end))
+    end
+    -- vanilla-rod replacement: reforge inventories once the world has streamed in (two chances,
+    -- interleaved with the ledger passes -- both are idempotent and order-independent)
+    migrateDone = false
+    migrateToken = migrateToken + 1
+    local mtok = migrateToken
+    for _, ms in ipairs({ 12000, 40000 }) do
+      defer(ms, ctx.log.guard("fishing.migrate", function()
+        onGameThread(function() migrateVanillaRods(mtok) end)
       end))
     end
   end
@@ -2087,16 +2393,50 @@ function F.init(c)
   pcall(function()
     RegisterConsoleCommandHandler("sps_fish", function()
       local mult, twilight = currentMult()
-      local led = ctx.save.getFlag(LEDGER_FLAG)
+      local led = {}
+      for _, spec in ipairs(ledgerKinds()) do
+        local v = ctx.save.getFlag(spec.flag)
+        led[#led + 1] = string.format("%s=%s", spec.kind,
+          tostring(type(v) == "table" and v.n or 0))
+      end
       ctx.log.info(string.format(
-        "fishing: mult x%.1f (diamond=%s storm=%s twilight=%s) tables=%s minigame=%s ledger=%s/%s",
+        "fishing: mult x%.1f (diamond=%s storm=%s twilight=%s) tables=%s minigame=%s ledger=%s/%s migrated=%s",
         mult, tostring(diamondHeld), tostring(stormNow), tostring(twilight),
         tablesBroken and "BROKEN" or "ok", tostring(mgReady),
-        tostring(type(led) == "table" and led.n or 0), ledgerDone and "audited" or "pre-audit"))
+        table.concat(led, ","), ledgerDone and "audited" or "pre-audit",
+        tostring(migrateDone)))
       return true
     end)
     RegisterConsoleCommandHandler("sps_fish_tables", function()
       onGameThread(function() F.applyTables("console") end)
+      return true
+    end)
+    -- reels every loose pak rod (diamond or modded) in the world into the player's pack via
+    -- the game's own pickup path -- the manual cleanup for ledger litter and stranded rods
+    RegisterConsoleCommandHandler("sps_fish_rescue", function()
+      onGameThread(ctx.log.guard("fishing.rescue", function()
+        local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
+        if not ctx.uehelp.isValid(pawn) then
+          ctx.log.info("fishing: rescue -- no player pawn yet")
+          return
+        end
+        local n = 0
+        for _, spec in ipairs(ledgerKinds()) do
+          for _, a in ipairs(groundRodActors(spec.short)) do
+            if deliverRodActor(a, pawn) then n = n + 1 end
+          end
+        end
+        ctx.log.info(string.format(
+          "fishing: rescue -- %d loose rod(s) sent flying to your pack", n))
+      end))
+      return true
+    end)
+    -- force the vanilla-rod migration sweep now (live testing / re-run after a failed pass)
+    RegisterConsoleCommandHandler("sps_fish_migrate", function()
+      migrateDone = false
+      migrateToken = migrateToken + 1
+      local mtok = migrateToken
+      onGameThread(ctx.log.guard("fishing.migrate", function() migrateVanillaRods(mtok) end))
       return true
     end)
     RegisterConsoleCommandHandler("sps_fish_mini", function()
@@ -2131,7 +2471,7 @@ function F.init(c)
   end)
 
   applyAll()
-  ctx.log.info("fishing: ready -- new tables, twilight/diamond luck, wet-weather skillshots, worn rods")
+  ctx.log.info("fishing: ready -- new tables, twilight/diamond luck, wet-weather skillshots, worn rods, vanilla rod replaced")
   return true
 end
 

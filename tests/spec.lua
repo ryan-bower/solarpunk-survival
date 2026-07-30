@@ -186,6 +186,39 @@ do
      "mapping: S_SavedResearch id field carries its BP suffix")
   ok(m.codex.researchFieldDone:find("^Researched_") ~= nil,
      "mapping: S_SavedResearch done field carries its BP suffix")
+  -- the Tempest Handbook: the SECOND readable book (quick-craft, no research card)
+  eq(m.handbook.itemRow, "TempestHandbook", "mapping: handbook item row (pak)")
+  eq(m.handbook.widgetClass, "W_TempestHandbook_C", "mapping: handbook reader widget class")
+  eq(m.handbook.widgetPath, "/Game/UI/Widgets/W_TempestHandbook.W_TempestHandbook_C",
+     "mapping: handbook widget LoadAsset path")
+  eq(m.handbook.placeableClass, "BP_TempestHandbook_Placeable_C", "mapping: placed handbook class")
+  eq(m.handbook.placeablePath,
+     "/Game/Code/Building_Placing/Placeables/BP_TempestHandbook_Placeable.BP_TempestHandbook_Placeable_C",
+     "mapping: placed handbook LoadAsset path")
+  eq(m.handbook.interactFnHint, "OnInteractedWith", "mapping: handbook interact bound-event hint")
+  eq(m.handbook.openFn, "Open", "mapping: handbook reader show fn")
+  eq(string.format(m.items.classFmt, m.handbook.itemRow), "BP_TempestHandbook_Item_C",
+     "mapping: handbook row resolves to its cooked BP class")
+  -- the two books must be DIFFERENT assets all the way down (copy-paste guard): a shared reader
+  -- would render the other book's sections, and a shared placeable would open the wrong one
+  for _, k in ipairs({ "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath" }) do
+    ok(m.handbook[k] ~= m.codex[k], "mapping: books have distinct " .. k)
+  end
+  -- ...but they MUST ride the same controller slot and the same input pair: one screen, one
+  -- input mode, one close chokepoint, arbitrated in features/codex.lua
+  eq(m.handbook.guideProp, m.codex.guideProp, "mapping: both books repoint the same controller slot")
+  eq(m.handbook.inputUiFn, m.codex.inputUiFn, "mapping: one input-mode entry for both books")
+  eq(m.handbook.inputGameFn, m.codex.inputGameFn, "mapping: one close chokepoint for both books")
+  eq(m.handbook.wblPath, m.codex.wblPath, "mapping: one CreateWidget entry for both books")
+  -- no research card -- the migration must stay switched off for this book
+  ok(m.handbook.researchId == nil, "mapping: the handbook is ungated (no research card)")
+  -- M.resolve STRICTLY filters by M.schema: a key present in the profile but absent from the
+  -- schema is silently dropped and the feature dies quietly. This has bitten before.
+  for _, k in ipairs({ "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath",
+                       "interactFnHint", "openFn", "wblPath", "closeFns", "inputUiFn",
+                       "inputGameFn", "guideProp" }) do
+    ok(m.handbook[k] ~= nil, "mapping: handbook." .. k .. " survives the schema filter")
+  end
   -- foundation snap rule bypass
   eq(#m.foundation.previewPaths, 4, "mapping: all four foundation previews are hooked")
   for _, p in ipairs(m.foundation.previewPaths) do
@@ -276,6 +309,12 @@ local config = require("core.config").init("./__no_such_modroot__/")
 do
   eq(config.get("player_strike_pct"), 0.70, "config: default strike pct")
   eq(config.get("lightning_rod_range"), 2500.0, "config: default rod range")
+  -- the development binds are gone: P (force a storm) and F7 (status dump) were testing
+  -- controls, retired once testing was done. Their config keys must not come back -- a live key
+  -- name here is what re-registers the bind.
+  ok(config.get("storm_key") == nil, "config: no storm keybind (P was a test control)")
+  ok(config.get("imgui_key") == nil, "config: no status-dump keybind (F7 was a test control)")
+  eq(config.get("wand_draw_key"), "V", "config: the wand draw key is real play, and stays")
   eq(config.get("wand_cobalt_scale"), 0.75, "config: cobalt tip is dropped-model / 4")
   eq(config.get("wand_in_hand"), true, "config: wand defaults to the game's hand slots")
   eq(config.get("wand_from_item"), true, "config: the real cooked item drives the in-hand rig")
@@ -740,7 +779,8 @@ do
   eq(m.fishing.useRodFn, "Interaction_FishingRod",
      "fishing: diamond-rod clicks drive the game's own pawn event (durability drains free)")
   eq(m.fishing.rodDurability, 200, "fishing: vanilla rod durability")
-  eq(m.fishing.diamondDurability, 2000, "fishing: diamond rod = 10x durability (user spec)")
+  eq(m.fishing.diamondDurability, 999, "fishing: diamond rod durability (user spec 2026-07-30)")
+  eq(m.fishing.modRodRow, "ModFishingRod", "fishing: the vanilla rod's pak replacement row")
   eq(m.fishing.userWidgetPath, "/Script/UMG.UserWidget", "fishing: own-widget shell class")
   eq(m.fishing.canvasPanelPath, "/Script/UMG.CanvasPanel", "fishing: raw canvas class")
   eq(m.fishing.wblPath, "/Script/UMG.Default__WidgetBlueprintLibrary", "fishing: widget library CDO")
@@ -910,13 +950,26 @@ do
   -- worn-rod durability roll and the worn-vs-full diamond split
   eq(fishing.wornDurability(0, 200, 0.1, 0.6), 20, "fishing: worst fished rod keeps 10%")
   eq(fishing.wornDurability(1, 200, 0.1, 0.6), 120, "fishing: best fished rod keeps 60%")
-  ok(fishing.wornDurability(0, 2000, 0.1, 0.6) == 200, "fishing: diamond wear scales off its own max")
+  ok(fishing.wornDurability(0, 999, 0.1, 0.6) == 99, "fishing: diamond wear scales off its own max")
   eq(fishing.wornShare("starter", "BP_DiamondFishingRod_Item_C"), 0.5,
      "fishing: starter diamond rods split worn/full 50/50 (5w vs 5w)")
   ok(math.abs(fishing.wornShare("late", "BP_DiamondFishingRod_Item_C") - 1 / 3) < 1e-9,
      "fishing: late diamond rods are full 2 times in 3 (10w worn vs 20w full)")
-  eq(fishing.wornShare("late", "BP_FishingRod_Item_C"), 1.0,
-     "fishing: a fished vanilla rod is ALWAYS worn (no full entry exists)")
+  eq(fishing.wornShare("late", "BP_ModFishingRod_Item_C"), 1.0,
+     "fishing: a fished plain rod is ALWAYS worn (no full entry exists)")
+
+  -- the vanilla rod is REPLACED (user spec 2026-07-30): craft/catch yield the pak clone only
+  local vanillaInTables = false
+  for _, tbl in pairs(fishing.TABLES) do
+    for _, e in ipairs(tbl) do
+      if e.cls == "BP_FishingRod_Item_C" then vanillaInTables = true end
+    end
+  end
+  ok(not vanillaInTables, "fishing: no loot table drops the replaced vanilla rod")
+  ok(fishing.seatedRod("diamond") and fishing.seatedRod("modded"),
+     "fishing: both pak rods are mod-seated (mechanics parity)")
+  ok(not fishing.seatedRod("vanilla") and not fishing.seatedRod(nil),
+     "fishing: the legacy vanilla rod and bare hands are not seated")
 
   -- luck multiplier ladder
   eq(fishing.luckMult(false, false), 1.0, "fishing: calm daylight bare rod = x1")
@@ -1191,6 +1244,144 @@ do
   ok(pcall(require, "features.craft_pull"), "craft_pull: module loads")
   local CI = require("features.chest_index")
   eq(type(CI.probeFor), "function", "chest_index: probe builder exported for its consumers")
+end
+
+------------------------------------------------------------------ bench seating (pure math)
+do
+  local B = require("features.bench")
+  local function near(a, b, msg) ok(math.abs((a or 1e9) - b) < 1e-6, (msg or "near") ..
+    " (got " .. tostring(a) .. ", want " .. tostring(b) .. ")") end
+
+  -- aim: dot and distance from plain tables
+  local dot, dist = B.aimScore({ X = 0, Y = 0, Z = 0 }, { X = 1, Y = 0, Z = 0 }, { X = 100, Y = 0, Z = 0 })
+  near(dot, 1.0, "bench: dead-ahead aim scores dot 1"); near(dist, 100.0, "bench: aim distance")
+  dot = B.aimScore({ X = 0, Y = 0, Z = 0 }, { X = 1, Y = 0, Z = 0 }, { X = 0, Y = 100, Z = 0 })
+  near(dot, 0.0, "bench: perpendicular aim scores dot 0")
+
+  -- pick: nearest qualifying candidate, deterministic tie-break by key
+  local cam, fwd = { X = 0, Y = 0, Z = 0 }, { X = 1, Y = 0, Z = 0 }
+  local pick = B.pickBench({
+    { loc = { X = 100, Y = 10, Z = 0 }, key = "far" },
+    { loc = { X = 50, Y = 5, Z = 0 }, key = "close" },
+  }, cam, fwd, 300, 0.55)
+  eq(pick, 2, "bench: nearest qualifying bench wins")
+  pick = B.pickBench({
+    { loc = { X = 50, Y = 0, Z = 0 }, key = "b" },
+    { loc = { X = 50, Y = 0, Z = 0 }, key = "a" },
+  }, cam, fwd, 300, 0.55)
+  eq(pick, 2, "bench: distance tie breaks by stable key, never object order")
+  pick = B.pickBench({ { loc = { X = 500, Y = 0, Z = 0 }, key = "x" } }, cam, fwd, 300, 0.55)
+  eq(pick, nil, "bench: out of reach is no candidate")
+  pick = B.pickBench({ { loc = { X = 0, Y = 100, Z = 0 }, key = "x" } }, cam, fwd, 300, 0.55)
+  eq(pick, nil, "bench: outside the aim cone is no candidate")
+
+  -- slots: three seats spread along local Y, centred
+  local s1 = B.slotLocal(1, 3, 58, 0, 0)
+  near(s1.Y, -58.0, "bench: slot 1 of 3 sits at -spacing")
+  near(B.slotLocal(2, 3, 58, 0, 0).Y, 0.0, "bench: slot 2 of 3 is centred")
+  near(B.slotLocal(3, 3, 58, 0, 0).Y, 58.0, "bench: slot 3 of 3 sits at +spacing")
+  near(B.slotLocal(1, 1, 58, 0, 0).Y, 0.0, "bench: a single seat is centred")
+  local w = B.slotWorld({ X = 0, Y = 0, Z = 10 }, 90, 1, 3, { spacing = 58, depth = 0, up = 0 })
+  near(w.X, 58.0, "bench: yaw-only rotation places slot 1 (X)")
+  ok(math.abs(w.Y) < 1e-6, "bench: yaw-only rotation places slot 1 (Y)")
+  near(w.Z, 10.0, "bench: slot keeps the anchor height")
+
+  -- occupancy: every pawn claims ONLY its nearest slot (slot_r 70 > spacing 58, so an
+  -- any-slot-within-r rule would let one sitter shadow all three seats)
+  local pts = { { X = 0, Y = -58, Z = 0 }, { X = 0, Y = 0, Z = 0 }, { X = 0, Y = 58, Z = 0 } }
+  local occ = B.slotOccupancy(pts, { { X = 0, Y = -58, Z = 0 } }, 70)
+  eq(occ[1], true, "bench: sitter claims their slot")
+  eq(occ[2], false, "bench: ...and ONLY their slot, despite overlapping radii")
+  eq(occ[3], false, "bench: far slot stays free")
+  occ = B.slotOccupancy(pts, { { X = 0, Y = -200, Z = 0 } }, 70)
+  ok(not (occ[1] or occ[2] or occ[3]), "bench: a distant pawn claims nothing")
+  occ = B.slotOccupancy(pts, {}, 70)
+  ok(not (occ[1] or occ[2] or occ[3]), "bench: empty world, empty bench")
+
+  -- free slot: nearest to the pawn
+  eq(B.firstFreeSlot({ true, false, false }, { X = 0, Y = 40, Z = 0 }, pts), 3,
+     "bench: nearest free slot wins")
+  eq(B.firstFreeSlot({ true, true, true }, { X = 0, Y = 0, Z = 0 }, pts), nil,
+     "bench: full bench has no free slot")
+  ok(B.inSlot({ X = 0, Y = -30, Z = 0 }, pts[1], 70), "bench: within slot_r is in the slot")
+  ok(not B.inSlot({ X = 0, Y = 100, Z = 0 }, pts[1], 70), "bench: beyond slot_r is not")
+
+  -- flight state: fixed-dt speed + the parked accumulator + the lock verdict
+  near(B.shipSpeed({ X = 0, Y = 0, Z = 0 }, { X = 30, Y = 40, Z = 0 }, 1.0), 50.0,
+       "bench: ship speed from a fixed-dt delta")
+  eq(B.shipSpeed(nil, { X = 0, Y = 0, Z = 0 }, 1.0), 0, "bench: no previous position, no speed")
+  local st, parked = B.parkState(0, 100, 40, 0.25, 1.5)
+  eq(st, 0, "bench: moving resets the parked clock"); eq(parked, false, "bench: moving is not parked")
+  st, parked = B.parkState(1.4, 10, 40, 0.25, 1.5)
+  near(st, 1.65, "bench: stillness accumulates"); eq(parked, true, "bench: held stillness parks")
+  eq(B.lockedNow(0, true, false), false, "bench: lock mode 0 never locks")
+  eq(B.lockedNow(1, true, true), true, "bench: mode 1 locks while piloted, even at rest")
+  eq(B.lockedNow(1, false, false), false, "bench: mode 1 frees the moment the wheel is left")
+  eq(B.lockedNow(2, false, false), true, "bench: mode 2 locks while not parked")
+  eq(B.lockedNow(2, false, true), false, "bench: mode 2 frees once parked")
+  eq(B.lockedNow(3, true, true), true, "bench: mode 3 locks on piloted alone")
+  eq(B.lockedNow(3, false, false), true, "bench: mode 3 locks on moving alone")
+  eq(B.lockedNow(3, false, true), false, "bench: mode 3 frees only parked AND unpiloted")
+
+  -- the stand-up nudge
+  local o = B.standOffset(0, 60)
+  near(o.dX, 60.0, "bench: stand nudge along the facing (X)")
+  ok(math.abs(o.dY) < 1e-6, "bench: stand nudge along the facing (Y)")
+
+  -- mapping invariants the design leans on
+  local m = mapping.resolve("24038177")
+  ok(m.bench ~= nil, "bench: mapping section present")
+  for _, cls in ipairs(m.bench.classes) do
+    ok(m.bench.seats[cls] ~= nil, "bench: every seatable class has a seats entry (" .. cls .. ")")
+  end
+  eq(m.bench.altFnPrefix, m.wand.altFnPrefix,
+     "bench: right-click prefix matches the wand's (same input event, own key)")
+  eq(m.bench.handItemProp, m.wand.handItemProp,
+     "bench: empty-hands gate reads the same hand prop the wand writes through")
+  ok(m.bench.tuerenOverlapFn:find("TriggerBox_Tueren", 1, true) ~= nil,
+     "bench: door re-assert hook names the Tueren trigger")
+  eq(m.bench.maxWalkSpeedCrouchedProp, "MaxWalkSpeedCrouched",
+     "bench: the pin caps the CROUCHED speed -- MaxWalkSpeed is written by the game from four places")
+  ok(#(m.bench.ejectFns) >= 3, "bench: every eject path releases the lock")
+  ok(m.bench.seats[m.bench.shipBenchClass] ~= nil, "bench: the ship bench class is seatable")
+  ok(m.bench.classPaths[m.bench.shipBenchClass] ~= nil,
+     "bench: the ship bench class has a LoadAsset path for fresh worlds")
+  ok(gate.check(m, { "bench.classes", "bench.shipClass", "bench.altFnPrefix",
+                     "bench.crouchFn", "bench.ignoreMoveInputFn" }),
+     "bench: gate sees the init-required keys")
+
+  -- the qol dock-map schema repair (profile keys are DROPPED unless the schema lists them --
+  -- the deployed dock-label fix read nil for all of these before 2026-07-30)
+  eq(m.qol.dockUiClass, "W_SimpleDock_C", "qol: dock screen class survives resolve()")
+  eq(m.qol.dockUiMapProp, "WC_SimpleDockMap", "qol: dock minimap prop survives resolve()")
+  eq(m.qol.nameFromIdFn, "GetPlayerNameFromUniqueID", "qol: SteamID->name lookup survives resolve()")
+  eq(m.qol.dockMapCompClass, "WC_SimpleDockMap_C", "qol: dock map subclass survives resolve()")
+  eq(m.qol.gameStateClass, "BP_SkyGameGameState_C", "qol: game state class survives resolve()")
+
+  -- config surface
+  eq(config.get("bench"), true, "bench: enabled by default")
+  eq(config.get("bench_snap"), true,
+     "bench: snap ON per user 2026-07-30 (host-authoritative; clients keep the step-in flow)")
+  eq(m.bench.shipBenchClass, "BP_Deco_Bench_Curved_Buildable_C",
+     "bench: the ship bench is the CURVED bench (user 2026-07-30, third pick)")
+  ok(#(m.bench.shipBenchLegacy or {}) >= 2,
+     "bench: both earlier prop models are listed for the legacy sweep")
+  eq(#m.bench.classes, 3,
+     "bench: BENCHES ONLY seatable for now (user 2026-07-30); chairs/couches stay staged in seats")
+  eq(config.get("bench_ship_prop_yaw"), 270.0,
+     "bench: prop spun 270 -- length across the hull, front toward the bow (white bench front " ..
+     "is local +Y, player-verified; 90 faced the backrest forward)")
+  ok(config.get("bench_ship_up") < 0,
+     "bench: prop dropped below the ship origin (user: slightly more than half its height down)")
+  eq(config.get("bench_lock_mode"), 1,
+     "bench: lock rides the replicated PlayerState -- a hovering pilot keeps the locks")
+  eq(config.get("bench_ship_yaw"), 0.0,
+     "bench: ship seats spread ACROSS the hull facing the bow (unlike the chest's 90)")
+  ok(config.get("bench_slot_r") > config.get("bench_slot_spacing"),
+     "bench: slot radius exceeds spacing -- the nearest-slot occupancy rule is load-bearing")
+  eq(config.get("bench_ship_collide"), false, "bench: the ship prop must never block or punt")
+  ok(config.get("bench_reanchor_ms_fast") >= 50,
+     "bench: the fast re-anchor cannot beat the scheduler's 50ms ticker (a smaller number lies)")
 end
 
 print(string.format("\n%d passed, %d failed", passed, failed))

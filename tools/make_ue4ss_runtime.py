@@ -7,21 +7,32 @@ other games' configs. Players need none of it, and the mod's policy is that inst
 ship no dev tools - so the repo vendors this trimmed, runtime-only payload instead and
 the installers extract it. Nobody has to download anything from the internet.
 
+The payload also carries the Visual C++ 2015-2022 x64 runtime DLLs UE4SS links against,
+copied from this machine's System32 and redistributed app-local (which Microsoft's
+Visual Studio redistributable terms permit). They land next to the game exe, which is
+the first directory Windows searches for a non-KnownDLL, so no machine-wide install and
+no UAC prompt is needed and the installer makes no network requests at all.
+
 Run this only when adopting a NEW patched UE4SS build:
 
-    python tools/make_ue4ss_runtime.py [path/to/UE4SS*.zip]
+    python tools/make_ue4ss_runtime.py [path/to/UE4SS*.zip] [--no-vcruntime]
 
 Without an argument it picks the newest UE4SS*.zip in the repo root / Downloads.
 The output zip keeps the dev zip's top-level layout (dwmapi.dll + ue4ss/) so the
 installer just extracts it next to the game exe.
 """
 
+import os
 import sys
 import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "vendor" / "UE4SS-Solarpunk-runtime.zip"
+
+# Kept in sync with install.py's VCRUNTIME_DLLS.
+VCRUNTIME = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+             "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll")
 
 # What players need at runtime, and nothing else.
 KEEP_FILES = {
@@ -88,8 +99,26 @@ def find_dev_zip():
     return None
 
 
+def add_vcruntime(out: zipfile.ZipFile) -> int:
+    """Copy the VC++ runtime DLLs into the payload root (= Binaries/Win64 once extracted).
+    Only meaningful when built on Windows; on Linux the files simply are not there and the
+    installer falls back to its Microsoft download."""
+    sys32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    added = 0
+    for dll in VCRUNTIME:
+        src = sys32 / dll
+        if not src.is_file():
+            print(f"  ! {dll} not in {sys32} - skipped")
+            continue
+        out.writestr(dll, src.read_bytes())
+        added += 1
+    return added
+
+
 def main():
-    src = Path(sys.argv[1]) if len(sys.argv) > 1 else find_dev_zip()
+    args = [a for a in sys.argv[1:] if a != "--no-vcruntime"]
+    want_vc = "--no-vcruntime" not in sys.argv[1:]
+    src = Path(args[0]) if args else find_dev_zip()
     if not src or not src.is_file():
         sys.exit("No UE4SS*.zip found (repo root / Downloads). Pass its path as an argument.")
 
@@ -110,7 +139,12 @@ def main():
             kept += 1
         out.writestr("ue4ss/Mods/mods.txt", MODS_TXT)
         out.writestr("ue4ss/Mods/mods.json", MODS_JSON)
-    print(f"{src.name} -> {OUT.relative_to(REPO)}: {kept + 2} files, "
+        kept += 2
+        if want_vc:
+            n = add_vcruntime(out)
+            kept += n
+            print(f"  + {n} Visual C++ runtime DLL(s) bundled app-local")
+    print(f"{src.name} -> {OUT.relative_to(REPO)}: {kept} files, "
           f"{OUT.stat().st_size / 1e6:.1f} MB (dev zip was {src.stat().st_size / 1e6:.1f} MB)")
 
 

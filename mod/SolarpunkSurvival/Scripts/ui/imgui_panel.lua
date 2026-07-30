@@ -1,25 +1,15 @@
 -- Debug / status + live config panel.
--- MVP is a keybind + console command that always work (print to the UE4SS console). A full
--- ImGui overlay with sliders is a Phase 6 upgrade; this keeps the scaffold dependency-free.
---   Keybind (default F7): dump status + unmapped-symbol list.
---   Console: `sps`                -> status
+-- MVP is a console command that always works (prints to the UE4SS console). A full ImGui overlay
+-- with sliders is a Phase 6 upgrade; this keeps the scaffold dependency-free.
+--   Console: `sps`                -> status + unmapped-symbol list
 --            `sps set <key> <num>`-> live-tune a config value
+-- The old F7 status keybind was a development control and was retired once testing was done:
+-- this is a console tool, and a player should not be able to trip it with a stray keypress.
 local F = {}
 local ctx
 
-local function resolveKey(name)
-  if not Key then return nil end
-  return Key[name] or Key.F7
-end
-
 function F.init(c)
   ctx = c
-  local keyName = ctx.config.get("imgui_key")
-  if pcall(function() RegisterKeyBind(resolveKey(keyName), ctx.log.guard("panel.key", F.dumpStatus)) end) then
-    ctx.log.info("panel: press " .. tostring(keyName) .. " for status; console `sps` to tune")
-  else
-    ctx.log.warn("panel: keybind registration failed (console `sps` still works)")
-  end
   pcall(function()
     RegisterConsoleCommandHandler("sps", function(_, params) F.command(params); return true end)
   end)

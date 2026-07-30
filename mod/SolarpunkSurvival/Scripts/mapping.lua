@@ -23,6 +23,9 @@ M.schema = {
   island   = { "class" },
   unlock   = { "registerFn" },
   craft    = { "repairItemId", "addRecipeFn" },
+  progress = { "researchSaveFn", "researchFieldId", "researchFieldDone", "recipeAddFn",
+               "researchHasFn", "researchMapProp", "giClass", "researchIds", "levelIds",
+               "recipeRanges", "batteryClass", "energyDeviceProp" },
   buildmenu = { "registerFn" },
   energy   = { "linkFn" },
   boost    = { "shipClass", "maxSpeedProp", "targetSpeedProp", "currentSpeedProp", "throttleProp",
@@ -59,7 +62,7 @@ M.schema = {
                "rodHandClass", "rodHandPath", "lootTickFn", "canCatchProp", "swimmerProp",
                "biteBonusProp", "rodInUseProp",
                "splashWavePath", "useRodFn", "equipModeFn", "rodItemClass", "diamondRow",
-               "rodDurability", "diamondDurability", "invArrayProp",
+               "modRodRow", "rodDurability", "diamondDurability", "invArrayProp",
                "handsMeshProp", "animItemEnumProp", "animItemEnumValue",
                "imagePath", "canvasAddFn", "userWidgetPath", "canvasPanelPath", "wblPath" },
   wand     = { "castFnExact", "castFnPrefix", "altFnPrefix", "smcPath", "stickMesh", "cobaltMesh",
@@ -78,6 +81,12 @@ M.schema = {
                "interactFnHint", "openFn", "wblPath", "closeFns", "inputUiFn", "inputGameFn",
                "guideProp", "researchId", "researchTierId", "researchHasFn", "researchSaveFn",
                "researchFieldId", "researchFieldDone" },
+  -- the second readable book. Same reader chain, no research card -- so the research* keys are
+  -- deliberately ABSENT: M.missing() reports every nil schema key as an RE punch-list item, and
+  -- features/codex.lua's migrateResearch already no-ops when they are not mapped.
+  handbook = { "itemRow", "widgetClass", "widgetPath", "placeableClass", "placeablePath",
+               "interactFnHint", "openFn", "wblPath", "closeFns", "inputUiFn", "inputGameFn",
+               "guideProp" },
   foundation = { "previewPaths", "buildSystemClass", "buildSystemPath", "gateFn", "ruleFn",
                  "snapProp", "previewProp" },
   qol      = { "chestClass", "invSizeProp", "invUpgradeFn", "invLenForTierFn", "airshipClass", "shipChestOpenFn",
@@ -97,7 +106,23 @@ M.schema = {
                "overlayProp", "overlayShowHotbarFn", "overlayShowShipCtlFn",
                "crouchKeyEventFns", "deathLootStampFns", "deathLootLocProp",
                "backpackTierFn", "playerdataProp", "playerdataTierField", "playerdataInvIdField",
-               "setInvIdFn", "invIdProp" },
+               "setInvIdFn", "invIdProp",
+               -- the dock/ship-upgrade screen's minimap + SteamID->name lookup (map labels):
+               -- these were in the 24038177 profile but NOT here, and resolve() strictly
+               -- filters by schema -- every one of them read nil at runtime (the dock-map
+               -- label fix was dead on arrival; repaired 2026-07-30)
+               "dockUiClass", "dockUiMapProp", "dockUiHideAniProp", "dockUiOpenFn",
+               "gameStateClass", "nameFromIdFn", "dockMapCompClass" },
+  bench    = { "classes", "classPaths", "seats", "shipBenchClass", "meshProp", "rootProp",
+               "shipBenchLegacy",
+               "shipClass", "shipIdProp", "shipPlayerStateProp", "blockerProp",
+               "unblockFn", "openDoorsFn", "closeDoorsFn", "doorsOpenProp",
+               "tuerenOverlapFn", "ejectFns", "dockedOrParkedFn",
+               "altFnPrefix", "handItemProp", "moveCompProp",
+               "maxWalkSpeedCrouchedProp", "crouchFn", "uncrouchFn",
+               "ignoreMoveInputFn", "resetIgnoreMoveInputFn",
+               "montageSitPath", "montageStandPath", "animSyncProp", "neigungProp",
+               "neigungRepFn", "neigungOnRepFn" },
   trash    = { "invUiProp", "invUiClass", "invGridProp", "invSlotsProp", "gridCols",
                "slotClass", "slotMouseFn", "slotIndexFn", "slotBgProp", "slotBorderProp",
                "carryClass", "carryGetFn", "carryDestroyFn", "carrySenderProp",
@@ -507,8 +532,9 @@ M.profiles = {
       handItemDataProp = "CurItemdataInHand",
     },
     -- The Tempest Codex: a REAL readable book from the content pak (tools/pakkit build_wand_pak,
-    -- "The Tempest Codex" in HOWTO.md). Craft by hand (starting recipe) -> place -> interact to
-    -- read. The cooked chain clones the survival guide's UI: our widget + placeable + tips table.
+    -- "The Tempest Codex" in HOWTO.md). Unlock "The Dark Arts" -> craft at the BENCH -> place ->
+    -- interact to read. The cooked chain clones the survival guide's UI: widget + placeable +
+    -- tips table. (The quick-craft, no-research book is `handbook` below.)
     codex = {
       itemRow        = "TempestCodex",             -- DB_Items row (pak); DB_Buildables matches by this name
       widgetClass    = "W_TempestCodex_C",         -- the reader UI (clone of W_SurvivalGuide)
@@ -542,6 +568,75 @@ M.profiles = {
       researchSaveFn    = "Playerdata_SaveResearchForSelf", -- (S_SavedResearch)
       researchFieldId   = "ResearchableID_2_DA642A8A46295C1414CDABA93A97CC99",
       researchFieldDone = "Researched_10_AA0B145346A35A6CF07D1E8C2C8D0CBD",
+    },
+    -- The Tempest Handbook: the second readable book -- a plain-spoken summary of everything this
+    -- mod adds, so a new player can find out what changed. Same cooked chain as the codex, its
+    -- own enum/table/widgets/placeable (the category chip reads its OWN enum's DisplayNameMap, so
+    -- the reader UI can never be shared between books). Recipe 10010 is a STARTING recipe in the
+    -- quick-craft (F) menu for 1 log + 2 leaves -- hence no research* keys here.
+    handbook = {
+      itemRow        = "TempestHandbook",
+      widgetClass    = "W_TempestHandbook_C",
+      widgetPath     = "/Game/UI/Widgets/W_TempestHandbook.W_TempestHandbook_C",
+      placeableClass = "BP_TempestHandbook_Placeable_C",
+      placeablePath  = "/Game/Code/Building_Placing/Placeables/BP_TempestHandbook_Placeable.BP_TempestHandbook_Placeable_C",
+      interactFnHint = "OnInteractedWith",
+      openFn         = "Open",
+      closeFns       = { "Close", "Hide" },
+      inputUiFn      = "SetInputModeUI",
+      inputGameFn    = "SetInputModeGame",
+      -- same controller slot as the codex: only one book can be open at a time, and
+      -- features/codex.lua arbitrates the repoint between them.
+      guideProp      = "UI_SurvivalGuide",
+      wblPath        = "/Script/UMG.Default__WidgetBlueprintLibrary",
+    },
+    -- Progression, for the DEV test kit only (Scripts/dev/test_kit.lua -- never shipped to a
+    -- player install). RE'd from bp_controller.json export 381 (UnlockResearch) and the
+    -- DB_Researchables / DB_CraftingRecipes source tables.
+    --
+    -- UnlockResearch itself takes the whole S_Researchable ROW STRUCT, whose nested TArray
+    -- fields have never been marshalled from Lua here. The two calls it ultimately makes are
+    -- both flat and both already proven in this codebase (features/codex.lua plants a card the
+    -- same way), so the kit drives those directly instead:
+    --   Playerdata_SaveResearchForSelf{ id, Researched = true }   -- upsert by id, safe to repeat
+    --   Playerdata_AddUnlockedRecipyForSelf(recipeId)             -- Array_AddUnique server-side
+    -- Unknown recipe ids are harmless: the crafting UI runs RemoveLockedRecipys, which only ever
+    -- INTERSECTS the saved list against the real recipe DB.
+    --
+    -- There is no "crafting table level" property anywhere -- the station tiers ARE research
+    -- rows flagged IsLevel (LvL_2..LvL_9, LVL_ENG_2..LVL_ENG_5), so marking those researched is
+    -- exactly what "upgrade the bench" means. Same for the build rings (1001/1002) and the
+    -- in-game map (2001), which carry no recipes at all and are read back via HasPlayerResearch?.
+    progress = {
+      researchSaveFn    = "Playerdata_SaveResearchForSelf",
+      researchFieldId   = "ResearchableID_2_DA642A8A46295C1414CDABA93A97CC99",
+      researchFieldDone = "Researched_10_AA0B145346A35A6CF07D1E8C2C8D0CBD",
+      recipeAddFn       = "Playerdata_AddUnlockedRecipyForSelf",
+      researchHasFn     = "HasPlayerResearch?",   -- (id, out CanResearch, out IsResearched)
+      -- Preferred source of ids at runtime: the GameInstance's own id->S_Researchable map, so a
+      -- game update or a new pak card is covered without touching this file. researchIds is the
+      -- fallback when the TMap will not enumerate.
+      giClass           = "BP_SkyGameInstance_C",
+      researchMapProp   = "DB_ResearchMap",
+      -- All 90 vanilla DB_Researchables ids (29 and 59 do not exist), plus 3003, the pak's
+      -- "The Dark Arts" card.
+      researchIds = {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+        20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+        40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+        60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+        80, 81, 82, 83, 84, 85, 86, 1001, 1002, 2001, 3001, 3002, 3003,
+      },
+      levelIds = { 9, 10, 27, 39, 58, 61, 63, 64, 67, 68, 69, 76 },  -- IsLevel rows = the tiers
+      -- Recipe ids as ranges: 0-152 (116 and 129 are gaps), the 3001-3010 food block, and
+      -- 10001-10010 (Kickstarter items plus this mod's five pak recipes).
+      recipeRanges = { { 0, 152 }, { 3001, 3010 }, { 10001, 10010 } },
+      -- Charging a placed battery to full is how a test rig gets a powered network without
+      -- building a generator. The shared battery.* section deliberately leaves `class` nil and
+      -- hunts by hint; the kit wants the exact one and must not change what the storm features
+      -- resolve, so it carries its own.
+      batteryClass     = "BP_Battery_Placeable_C",
+      energyDeviceProp = "BPC_Device_EnergySystemComponent",
     },
     foundation = {
       -- Placement rule bypass (offline RE of BC_BuildSystem + the foundation previews):
@@ -694,6 +789,24 @@ M.profiles = {
       -- use, so labels positioned through it land in the same space as the icons.
       mapCanvasProp   = "CNV_Main",
       mapWorldToMapFn = "WorldToMapCoordinates",
+      -- The dock/ship-upgrade screen's own minimap (offline RE 2026-07-29, W_SimpleDock +
+      -- WC_SimpleDockMap bytecode): WC_SimpleDockMap_C SUBCLASSES WC_Map_C, so the exact-class
+      -- FindAllOf scan never returns it -- every map-widget sweep needs both names. Its open is
+      -- W_SimpleDock's ubergraph calling OpenMap VM-internally (never hookable); the arm trigger
+      -- is the dock interact above. And the wrapper hides ITSELF on close while the embedded map
+      -- child keeps reading visible forever, so open/closed is the WRAPPER's verdict
+      -- (its isOpen? compiles to IsVisible && !IsInHideAni), never the child's.
+      dockUiClass       = "W_SimpleDock_C",
+      dockUiMapProp     = "WC_SimpleDockMap",   -- the embedded map widget (WC_Map_C subclass)
+      dockUiHideAniProp = "IsInHideAni",        -- true while the close animation is playing
+      dockUiOpenFn      = "Open",               -- CustomEvent stub; controller calls it cross-object
+      -- SteamID64 -> the human name the game shows on nameplates (offline RE 2026-07-29,
+      -- BP_SkyGameGameState bytecode): the GameState keeps a REPLICATED UniqueIDToPlayerNames
+      -- array rebuilt from the save's LastSeenPlayerName; this lookup walks it. PlayerName is
+      -- an OUT param (the AddThirst {} rule applies).
+      gameStateClass = "BP_SkyGameGameState_C",
+      nameFromIdFn   = "GetPlayerNameFromUniqueID",
+      dockMapCompClass  = "WC_SimpleDockMap_C",
       -- The marker's own materials, from the SM_Ping mesh (offline RE, scratchpad re_ping/ and
       -- re_ping2/SM_Ping.json): ONE flat plane, 167 wide x 1103 tall, origin at the base, and
       -- BP_Ping overrides neither slot (OverrideMaterials is [null, null]). Neither stock
@@ -772,6 +885,109 @@ M.profiles = {
       -- out/bp_airship.json; Unpossessed proven hookable live by ship_chest). Arms the
       -- boost-hint watch; engine-dispatched, so the ProcessEvent hook rule is satisfied.
       possessFn     = "ReceivePossessed",
+    },
+    -- Bench seating + airship passenger bench (features/bench.lua; offline RE 2026-07-30 of
+    -- bp_airship.json + the Placeables dir -- every symbol below grep-verified in the cooked
+    -- assets). The load-bearing decisions (from the plan's adversarial review):
+    --   * The sit "pin" is Crouch + MaxWalkSpeedCrouched=0 + SetIgnoreMoveInput, never
+    --     MaxWalkSpeed: the game writes MaxWalkSpeed from at least four places (sprint, walk
+    --     toggle, terrain multipliers, SERVER_MaxWalkSpeed) and would both un-pin the sitter
+    --     and clobber a saved baseline. Nothing in the pawn BP touches the crouch family --
+    --     the game has no crouch; qol added it -- so those knobs are provably ours.
+    --   * The sitter STAYS in MOVE_Walking with collision on: PerformMovement returns before
+    --     MaybeUpdateBasedMovement on MOVE_None, and OnMovementModeChanged clears the base on
+    --     entry to any non-walking mode -- a seated passenger rides the flying ship ONLY
+    --     because the based-movement path still runs. Never SetMovementMode a sitter.
+    --   * MVP never teleports a pawn into a seat: a client moved >1.7uu off the server's
+    --     simulation is rubber-banded (ServerCheckClientError / MAXPOSITIONERRORSQUARED), and
+    --     the server never adopts the client's position. Sitting = standing in the slot,
+    --     pinned + crouched + faced; occupancy is derived from replicated pawn positions, so
+    --     every machine agrees without any custom channel.
+    bench = {
+      -- Every seatable placeable, class -> {slots, spacing}. All of these exist in
+      -- Content/Code/Building_Placing/Placeables/ (grep-verified). USER DECISION (2026-07-30):
+      -- BENCHES ONLY for now -- `classes` is the gate; the chair/couch/stool seat specs below
+      -- stay staged, and adding their class names to `classes` is the whole enable.
+      classes = {
+        "BP_Deco_Bench_Curved_Buildable_C", "BP_Deco_Bench_Garden_Buildable_C",
+        "BP_Deco_Bench_White_Buildable_C",
+      },
+      seats = {
+        BP_Deco_Bench_Curved_Buildable_C   = { slots = 3, spacing = 58.0 },
+        BP_Deco_Bench_Garden_Buildable_C   = { slots = 3, spacing = 58.0 },
+        BP_Deco_Bench_White_Buildable_C    = { slots = 3, spacing = 58.0 },
+        -- staged (not in classes yet):
+        BP_Chair_Buildable_C               = { slots = 1, spacing = 58.0 },
+        BP_Chair_Planks_Buildable_C        = { slots = 1, spacing = 58.0 },
+        BP_Chair_ThinCurved_Buildable_C    = { slots = 1, spacing = 58.0 },
+        BP_Couch_Buildable_C               = { slots = 2, spacing = 62.0 },
+        BP_Couch_Large_Buildable_C         = { slots = 3, spacing = 62.0 },
+        BP_Couch_Single_Buildable_C        = { slots = 1, spacing = 58.0 },
+        BP_Deco_Rockingchair_Buildable_C   = { slots = 1, spacing = 58.0 },
+        BP_Deco_Stool_Wood_Buildable_C     = { slots = 1, spacing = 58.0 },
+      },
+      -- LoadAsset paths for the ship bench spawn when the class is not resident yet.
+      classPaths = {
+        BP_Deco_Bench_Curved_Buildable_C = "/Game/Code/Building_Placing/Placeables/BP_Deco_Bench_Curved_Buildable.BP_Deco_Bench_Curved_Buildable_C",
+        BP_Deco_Bench_Garden_Buildable_C = "/Game/Code/Building_Placing/Placeables/BP_Deco_Bench_Garden_Buildable.BP_Deco_Bench_Garden_Buildable_C",
+        BP_Deco_Bench_White_Buildable_C  = "/Game/Code/Building_Placing/Placeables/BP_Deco_Bench_White_Buildable.BP_Deco_Bench_White_Buildable_C",
+      },
+      -- The visual prop on the stern. USER DECISION (2026-07-30, third pick): the CURVED
+      -- (rounded) bench. SM_Deco_Bench_Curved bounds (offline RE): 317L x 135D x ~150H cm,
+      -- length along local X, front local +Y (the whole deco-bench family shares the frame;
+      -- player-verified on the white bench: 90 faced the backrest at the bow), so
+      -- bench_ship_prop_yaw stays 270.
+      shipBenchClass = "BP_Deco_Bench_Curved_Buildable_C",
+      -- prop models a ship may still wear from older builds: destroyed within 250cm of the
+      -- anchor by the host's ensure pass (garden then white each shipped briefly 2026-07-30)
+      shipBenchLegacy = { "BP_Deco_Bench_Garden_Buildable_C", "BP_Deco_Bench_White_Buildable_C" },
+      meshProp = "PlaceableMesh",           -- _BP_Placeable_MASTER's mesh component
+      rootProp = "PlaceableRoot",
+      shipClass  = "BP_Airship_C",
+      shipIdProp = "AirshipID",             -- replicated Guid; "one bench per ship" keys off it
+      -- APawn::PlayerState replicates COND_None (to EVERYONE) and is set on possession, so
+      -- ship.PlayerState ~= nil is a "someone is at the wheel" signal a passenger's client
+      -- can read. APawn::Controller is COND_OwnerOnly -- never gate on it.
+      shipPlayerStateProp = "PlayerState",
+      -- The non-owner boarding wall: a horizontal capsule enclosing the ship interior. Its CDO
+      -- already ignores every channel except Pawn, so a Pawn->Ignore response write is the
+      -- surgical unblock with zero side effects (never SetCollisionEnabled while someone is
+      -- inside it -- re-enabling a collider around a body is a depenetration launch).
+      blockerProp = "NonOwnerBlocker",
+      unblockFn   = "UnblockAirshipForCharacter",  -- (Character, Unblock?) -- per-pawn fallback
+      openDoorsFn  = "OpenDoors",
+      closeDoorsFn = "CloseDoors",
+      doorsOpenProp = "DoorsOpen",          -- replicated (OnRep_DoorsOpen in the BP)
+      -- the door trigger's BeginOverlap delegate: component delegates broadcast through
+      -- ProcessEvent (the qol dock-hook family), so this is the re-assert trigger for the
+      -- unblock -- the game's own AirshipBlockReset controller timer can put the wall back.
+      tuerenOverlapFn = "BndEvt__BP_Airship_TriggerBox_Tueren_K2Node_ComponentBoundEvent_2" ..
+                        "_ComponentBeginOverlapSignature__DelegateSignature",
+      -- every eject path fights the seat lock; all three release it (stuck-player insurance)
+      ejectFns = { "ForceEjectAirship", "ForceStopAirshipAndEject", "CLIENT_ForceEjectAfterDamage" },
+      dockedOrParkedFn = "IsDockedOrParked",
+      altFnPrefix  = "InpActEvt_IA_AltHandInteract",  -- right click (Completed = release-only);
+                                                      -- same value as wand.altFnPrefix, own key
+      handItemProp = "CurHandItemFirstPerson",        -- nil = empty hands = the sit gesture
+      moveCompProp = "CharacterMovement",
+      maxWalkSpeedCrouchedProp = "MaxWalkSpeedCrouched",  -- engine prop; NOT in the pawn BP's
+                                                          -- name table, so nothing clobbers it
+      crouchFn   = "Crouch",                -- engine ACharacter UFUNCTIONs (the pose + the
+      uncrouchFn = "UnCrouch",              -- free jump block via JumpIsAllowedInternal)
+      ignoreMoveInputFn      = "SetIgnoreMoveInput",   -- strike_fx-proven on this build. A
+                                                       -- COUNTER on the controller -- guard
+                                                       -- inc/dec with a boolean, never double
+      resetIgnoreMoveInputFn = "ResetIgnoreMoveInput", -- the unconditional escape (sps_bench)
+      -- pose 2 (experimental, poison-latched): the game's own sit montages exist cooked
+      montageSitPath   = "/Game/Art/Animations/Char3D/Montage_Stand_To_Sit.Montage_Stand_To_Sit",
+      montageStandPath = "/Game/Art/Animations/Char3D/Montage_Sit_To_Stand.Montage_Sit_To_Stand",
+      -- Phase C door (NOT used by the MVP): MainCharacterAnimationSync is a replicated
+      -- component on the pawn with a repnotify double (Neigung, dead payload for a passenger)
+      -- -- a general-purpose full-mesh seat channel once probed.
+      animSyncProp   = "MainCharacterAnimationSync",
+      neigungProp    = "Neigung",
+      neigungRepFn   = "SetNeigung",
+      neigungOnRepFn = "OnRep_Neigung",
     },
     -- The chest stock ledger (features/chest_index.lua) + its two consumers. Offline RE
     -- 2026-07-29, BC_InventorySystem bytecode (tools/pakkit/out/BC_InventorySystem.json).
@@ -1028,10 +1244,22 @@ M.profiles = {
       -- the real hand actor itself and calls this event from its own click hook.
       useRodFn    = "Interaction_FishingRod",
       equipModeFn = "EnterDefaultMode",       -- pawn fn; the game's fishing equip branch passes 0
-      rodItemClass = "BP_FishingRod_Item_C",  -- the vanilla rod's DB_Items actor class
+      rodItemClass = "BP_FishingRod_Item_C",  -- the vanilla rod's DB_Items actor class (LEGACY:
+                                              -- replaced by modRodRow 2026-07-30 -- recipe end
+                                              -- product repointed in the pak, loot tables drop
+                                              -- the clone, inventories migrated at world entry;
+                                              -- this class still resolves loose/unmigrated rods)
       diamondRow   = "DiamondFishingRod",     -- content-pak row (tools/pakkit); absent = no pak
-      rodDurability     = 200,                -- vanilla rod durability (DB_Items)
-      diamondDurability = 2000,               -- the pak row's durability (10x, user spec)
+      modRodRow    = "ModFishingRod",         -- content-pak clone that REPLACES the vanilla rod:
+                                              -- vanilla stats (durability 200, same icon/name)
+                                              -- on the diamond rod's tool interaction typing, so
+                                              -- its cast survives UI-close rebuilds and the mod
+                                              -- drives its minigames clean (no leaf-swap hack)
+      rodDurability     = 200,                -- vanilla rod durability (DB_Items; ModFishingRod
+                                              -- ships the same 200 -- vanilla stats)
+      diamondDurability = 999,                -- the diamond pak row's durability (user spec
+                                              -- 2026-07-30: down from 2000; the migration sweep
+                                              -- clamps over-max rods in old saves)
       invArrayProp = "Inventory",             -- BC_InventorySystem's slot array (offline RE re_qol);
                                               -- elements are S_InventorySlotSlim -- field names
                                               -- reused from wand.slotItemField/QtyField/SavedataField

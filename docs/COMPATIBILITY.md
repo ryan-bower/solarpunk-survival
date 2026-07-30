@@ -11,5 +11,9 @@
 - **Untested builds:** if the detected `buildid` isn't in `manifest.json > testedGameBuilds`, the mod
   falls back to the `default` mapping profile and shows an in-game banner warning that it's running in
   degraded / at-risk mode.
+- **Multiplayer feature symmetry:** the bench/boarding feature (`features/bench.lua`) needs the mod
+  on **both** machines — an unmodded client on a modded host still can't walk onto a ship they don't
+  own (the host's simulation of that client keeps the `NonOwnerBlocker` collision), and an unmodded
+  client never sees seats or ship benches. Same rule as every replication-free feature here.
 
 Update the table above with each release (see `RELEASE-CHECKLIST.md`).

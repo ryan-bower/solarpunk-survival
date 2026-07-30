@@ -45,6 +45,10 @@ M.defaults = {
   ambient_interval_max = 14.0,   -- seconds; vanilla is 30
   ambient_ring_min     = 1500.0, -- cm (15 m) nearest an ambient bolt lands to the player
   ambient_ring_max     = 4000.0, -- cm (40 m) farthest -- both are vanilla's own ring
+  ambient_native_stale = 45.0,   -- NATURAL storms only: seconds since the game's own last bolt
+                                 -- before ambient holds fire. The game's cadence is 10-30s, so
+                                 -- longer silence means its storm may already be over -- and our
+                                 -- extras must never be the only lightning under a clearing sky
 
   -- lightning wand (a mod-managed tool, not an inventory item -- features/wand.lua)
   wand_cast_range      = 15000.0, -- cm; max aim distance for a cast bolt (150 m)
@@ -66,7 +70,8 @@ M.defaults = {
   wand_tip_flip        = false,   -- seat the cobalt on the stick mesh's OTHER end
   wand_step_log        = true,    -- append each risky rig step to dump/wand_steps.txt so a native
                                   -- crash names its killer (the proven bisection method)
-  storm_key            = "P",     -- key that toggles the storm on/off (any UE4SS Key name)
+  -- (no storm_key: the P storm toggle was a development control and was retired once the strike
+  --  systems were tested. Storms come from the game's own weather; `sps_storm` still forces one.)
   wand_draw_key        = "V",     -- key that draws/stows the wand (any UE4SS Key name)
   wand_fx              = false,   -- electricity crackle on the charged wand -- OFF until the
                                   -- Niagara attach call is live-proven (probe it like P1-P6)
@@ -333,6 +338,66 @@ M.defaults = {
                                  -- teleport -- the flight is the feature (user 2026-07-29).
                                  -- 5 is the user's pick after live-testing at 20 ("it worked!
                                  -- now bring it down to like 5X", 2026-07-29).
+  -- Bench seating + the airship passenger bench (features/bench.lua) -- all live-tunable.
+  -- Right-click an empty-handed bench (or the ship bench spot) to sit; right-click again to
+  -- stand. The sit is a PIN, not a teleport: crouched pose, speed capped through
+  -- MaxWalkSpeedCrouched (the one speed knob the game never writes), movement input ignored.
+  bench               = true,    -- feature master switch
+  bench_reach         = 300.0,   -- cm; max pawn->bench distance for the aim test
+  bench_aim_dot       = 0.55,    -- min dot(cameraForward, dirToBench); ~57 degree cone
+  bench_slot_spacing  = 58.0,    -- cm between seat centres along the bench's local Y (per-class
+                                 -- overrides live in mapping.bench.seats)
+  bench_seat_depth    = 0.0,     -- cm along local +X from the bench origin to the seat line
+  bench_slot_r        = 70.0,    -- cm; a pawn within this of a slot point occupies it
+  bench_require_empty_hands = true, -- sitting only with nothing in hand (the wand/tool gate)
+  bench_pose          = 1,       -- 0 none, 1 crouch, 2 montage (experimental, poison-latched)
+  bench_face_out      = true,    -- rotate the sitter to the bench's facing on sit
+  bench_face_yaw      = 0.0,     -- deg added to that facing (mesh fronts vary; tune live)
+  bench_stand_offset  = 60.0,    -- cm forward nudge on stand-up. HOST ONLY -- teleporting a
+                                 -- client pawn rubber-bands (server position error checks)
+  bench_snap          = true,    -- pull the sitter into the slot centre (USER 2026-07-30:
+                                 -- "Snap, via host trust flag"). Host-authoritative: only the
+                                 -- host's own pawn snaps (a client teleport rubber-bands --
+                                 -- server position error checks); clients keep the
+                                 -- "step in front of the open seat" flow
+  bench_ship          = true,    -- every airship grows a passenger bench at the stern
+  bench_ship_back     = -146.0,  -- ship-relative X (chest lid -240, rotor -299; corridor
+                                 -- X in [-220,-80] is empty -- offline RE of bp_airship).
+                                 -- Player-tuned 2026-07-30: -175 too far aft, -115 too far
+                                 -- forward, back a quarter depth (white bench 123cm) -> -146
+  bench_ship_right    = 0.0,     -- ship-relative Y
+  bench_ship_up       = -30.0,   -- ship-relative Z. The chest's deck value (40) floated the
+                                 -- bench; -40 (half its ~150cm height and change) then "up
+                                 -- just a smidge" (USER 2026-07-30) -> -30
+  bench_ship_yaw      = 0.0,     -- deg beyond the ship's facing for the SEAT SLOT frame.
+                                 -- 0 = seats spread ACROSS the hull, sitters facing the bow
+                                 -- (player-verified: "makes me sit facing the front")
+  bench_ship_prop_yaw = 270.0,   -- deg beyond the ship's facing for the visual PROP. The bench
+                                 -- meshes' length runs local X, so +-90 lays it across the
+                                 -- hull; the white bench's front is local +Y -- 90 faced the
+                                 -- BACKREST forward (player 2026-07-30), so 270
+  bench_ship_adopt_r  = 600.0,   -- cm; adopt-by-proximity radius (a reload restores the world-
+                                 -- saved bench; adopt it, never duplicate)
+  bench_ship_r        = 1200.0,  -- cm; "which airship am I on/near" radius
+  bench_ship_collide  = false,   -- let the ship bench keep collision. OFF (= collision fully
+                                 -- disabled): its colliders sit inside the hull and the ship's
+                                 -- own body depenetrating against them shoved a PARKED ship
+                                 -- around (player 2026-07-30); the bench is decoration -- the
+                                 -- seat math never reads it, sitting is aim math, not a trace
+  bench_reanchor_ms_fast = 50,   -- ms between ship-bench re-anchors while the ship moves
+                                 -- (the scheduler's 50ms ticker quantizes anything smaller)
+  bench_reanchor_ms_slow = 150,  -- ms while parked; the watch self-disarms once settled
+  bench_lock_mode     = 1,       -- passengers locked in their seat: 0 off, 1 while piloted
+                                 -- (ship.PlayerState ~= nil -- replicated to everyone), 2
+                                 -- while moving (speed estimate), 3 either. 1 matches "until
+                                 -- the owner parks" best: a pilot hovering at zero speed
+                                 -- should NOT release the locks
+  bench_park_speed    = 40.0,    -- cm/s; modes 2/3's "moving" threshold
+  bench_park_hold     = 1.5,     -- s under the threshold before the ship counts as parked
+  bench_open_ship     = true,    -- remove the non-owner boarding wall (every machine knocks
+                                 -- Pawn response off NonOwnerBlocker; an unmodded client on a
+                                 -- modded host still can't board -- both machines need the mod)
+  bench_open_doors    = true,    -- also call OpenDoors when a non-owner needs through
   -- The chest stock ledger (features/chest_index.lua) -- shared by sort_chest + craft_pull.
   chest_index_sweep   = 20.0,    -- secs between world sweeps for chests (lazy: only when asked)
   chest_index_ttl     = 20.0,    -- secs a cached per-(chest,item) amount stays trusted
@@ -430,10 +495,17 @@ M.defaults = {
                                  -- are the proven native crash)
   fishing_rod_wear_min = 0.10,   -- a FISHED-UP rod keeps between these fractions of its max
   fishing_rod_wear_max = 0.60,   -- durability ("random amount of durability remaining")
-  fishing_rod_ledger  = true,    -- diamond rods vanish across some reloads (intermittent, cause
+  fishing_rod_ledger  = true,    -- pak rods vanish across some reloads (intermittent, cause
                                  -- unproven): snapshot the player's rods (count+durability) into
                                  -- the mod sidecar, audit the whole world at entry, and re-grant
-                                 -- any rod that exists nowhere -- with its recorded wear
+                                 -- any rod that exists nowhere -- with its recorded wear.
+                                 -- Tracks the diamond rod AND the ModFishingRod replacement.
+  fishing_rod_replace = true,    -- THE VANILLA ROD IS REPLACED (user spec 2026-07-30): one-time
+                                 -- host sweep at world entry swaps every vanilla BP_FishingRod
+                                 -- in every inventory for the pak's ModFishingRod clone
+                                 -- (in-place slot overwrite, durability preserved). Crafting and
+                                 -- fishing already yield the clone via the pak; this only heals
+                                 -- pre-replacement saves. Auto-skipped when the pak is absent.
   fishing_minigame_chance = 0.05,-- 5% of bites: the catch click yields a leaf and reveals the
                                  -- skillshot bar; a second click in the golden zone = a rare/jackpot
                                  -- guarantee (diamond rod: smaller zone, jackpot-only)
@@ -499,7 +571,8 @@ M.defaults = {
                                  -- per engine tick, so 8ms converges on one update per rendered
                                  -- frame. Restart-only (LoopAsync's interval fixes at registration).
   friendly_fire       = true,
-  imgui_key           = "F7",
+  -- (no imgui_key: the F7 status dump was a development control and was retired with the storm
+  --  key. `sps` in the console prints the same status.)
   log_level           = "info",
   step_log            = true,    -- write dump/steps_crash.txt: one line per guarded hook body,
                                  -- appended and closed BEFORE it runs. A native access violation

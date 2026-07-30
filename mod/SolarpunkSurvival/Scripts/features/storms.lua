@@ -1,6 +1,7 @@
 -- Deadly Storms + Lightning (Milestone 1).
 --
--- Host-authoritative. A storm is started on demand (storm_key, default P / `sps_storm`), which fires the
+-- Host-authoritative. A storm is either the game's own weather (detected as `naturalStorm` off
+-- its bolts) or started on demand from the console (`sps_storm`), which fires the
 -- game's own InstantThunderstorm (full sky/rain/thunder visuals) and starts a self-chaining strike
 -- scheduler. Each strike telegraphs near the local player, gives a dodge window, then lands: it
 -- plays the game's thunder and deals real damage through the player's own health (70% max HP, so
@@ -287,6 +288,15 @@ function F.scheduleAmbient(token)
         -- sky-repaint desync that left wind howling and bolts falling under a clear morning sky.
         ambientLive = false
         if stormActive then F.stopStorm() else F.stormStandDown("dawn, natural storm left to the game") end
+        return
+      end
+      -- NATURAL storm whose native signal has gone stale: the game may already be clearing its
+      -- sky (the watchdog latch rightly outlives it by natural_storm_timeout for the rituals'
+      -- sake, but bolts under a clearing sky read as a bug -- player, 2026-07-30). Hold fire,
+      -- keep the chain ticking: a fresh native bolt resumes the thickening on the next tick.
+      if not stormActive
+          and os.clock() - lastNativeBolt > ctx.config.get("ambient_native_stale") then
+        F.scheduleAmbient(token)
         return
       end
       F.ambientBolt()
@@ -692,14 +702,10 @@ function F.init(c)
     return false
   end
 
-  -- The storm key (config storm_key, default P) toggles the weather normal <-> stormy.
-  local kname = ctx.config.get("storm_key")
-  pcall(function()
-    if RegisterKeyBind and Key and kname and Key[kname] then
-      RegisterKeyBind(Key[kname], ctx.log.guard("storm.key.toggle",
-        function() onGameThread(function() F.toggleStorm() end) end))
-    end
-  end)
+  -- There is deliberately NO storm keybind. The old P toggle was a development control for
+  -- testing the strike systems on demand; it was retired once that testing was done, so storms
+  -- now arrive the way weather should -- from the game's own sky, detected as `naturalStorm`.
+  -- `sps_storm` survives as a console tool for exactly the same testing.
   pcall(function()
     RegisterConsoleCommandHandler("sps_storm",     function() onGameThread(function() F.toggleStorm() end); return true end)
     RegisterConsoleCommandHandler("sps_storm_off", function() onGameThread(function() F.stopStorm() end);  return true end)
@@ -727,7 +733,7 @@ function F.init(c)
   ctx.services.damagePlayerBy = F.damagePlayerBy
   ctx.services.isStormy       = stormy   -- fishing reads the live flag; bus emits mark the flips
 
-  ctx.log.info("storms: ready -- " .. tostring(kname) .. " toggles storm on/off.")
+  ctx.log.info("storms: ready -- the game's own weather drives them (`sps_storm` forces one)")
   return true
 end
 

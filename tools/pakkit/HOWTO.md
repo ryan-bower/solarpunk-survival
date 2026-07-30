@@ -168,8 +168,10 @@ resolve against the ORIGINAL enum, whose name↔value order is permuted — see 
 Craft/place wiring: both `DB_CraftingRecipes` rows (codex + mundane wand) are **research-gated
 bench recipes** — `StartingRecipy=false`, `CraftingLocations` = `NewEnumerator1` (bench) only
 (`NewEnumerator0` would be hand/quick-craft, 4 = cooking) — unlocked together by ONE
-`DB_Researchables` row ("TempestCodex", RainCollector-shaped): `StartingResearch=true` = offered
-from level 1 with no level gate, `UnlockingRecepieIDs` = both new `RecipyID`s, `ItemsNeeded` =
+`DB_Researchables` row ("TempestCodex", RainCollector-shaped): `StartingResearch=false` + the id
+appended to `LvL_2`'s `UnlockingResearchIDs` = tier-2 gated (and `features/codex.lua` carries the
+one-time migration for saves that passed LvL_2 before this pak existed),
+`UnlockingRecepieIDs` = both new `RecipyID`s, `ItemsNeeded` =
 1 beeswax + 1 clay + 1 leaf. Unlike the recipe/buildable tables, `S_Researchable` is a
 STANDALONE struct asset (`Code/Research/Framework/S_Researchable.uasset`) — preload that, not
 the table. Placement: a `DB_Buildables` row whose `ItemsNeeded` matches the item by
@@ -212,6 +214,63 @@ Gotchas discovered on this arc (all encoded in the build script):
   ScriptObjects chunk). The round-tripped tables read back as `RawExport`s — that's expected; the
   meaningful assertion is that the **NameMap** still contains every added row key (the historical
   boundary-drop failure mode).
+
+## A second book (the book-spec factory, 2026-07-30)
+
+`build_codex()` is now `build_books()`, driven by the module-level `BOOKS` list. Each spec names
+a **slug** and its sections/pages; `_names(b)` derives every asset name from it
+(`E<slug>Category`, `DB_<slug>`, `W_<slug>`, `WC_<slug>Category`, `WC_<slug>Page`,
+`BP_<slug>_Item`, `BP_<slug>_Placeable`), and `build_book_{enum,table,widgets,bps}(b)` do the
+work. Adding a third book is one spec plus its prose.
+
+Read this before you add one:
+
+- **Nine sections is the hard ceiling.** Rows keep the ORIGINAL `S_GameplayTip` struct, so their
+  `Category` byte resolves against the vanilla `EGameplayTipCategory` — and that enum has exactly
+  nine enumerators with a *permuted* name↔value order. `CAT_FNAME` now carries all nine pairs,
+  decoded straight from `legacy/.../EGameplayTipCategory.uexp`:
+  `0→NE0 1→NE2 2→NE1 3→NE4 4→NE3 5→NE7 6→NE8 7→NE5 8→NE6`. `build_book_enum` asserts the limit.
+- **`WC_<slug>Category` cannot be shared** between books. Its label comes from
+  `Conv_NumericPropertyToText` on a ByteProperty typed to *that book's* enum, so a shared chip
+  renders the other book's section titles. Clone it per book. (`WC_<slug>Page` has no enum
+  dependency and could be shared; it is cloned anyway, for isolation.)
+- **`clone_asset` does ordered, unanchored text replaces**, and the lists are now *generated*
+  from a slug instead of hand-reviewed. `_check_replaces` asserts the two invariants that make
+  the result correct and the order irrelevant: no source may be a substring of another source,
+  and no target may contain a *later* source. (A target containing its own source is fine —
+  `str.replace` is single-pass.) It exits with the offending pair. Note `W_SurvivalGuide` is
+  **not** a substring of `WC_SurvivalGuideCategory`; the `W` is followed by `C`.
+- **Never introduce a bare `"Handbook"` replace.** The donor JSON also carries `SM_Handbook`,
+  `Icon_Handbook` and the `Handbook` row name, all of which must survive verbatim. Full tokens
+  only: `BP_Handbook_Item` → `BP_<slug>_Item`.
+- **`BP_Handbook_Item` already uses `SM_Book_Merchant`**, not `SM_Handbook` — only the
+  *placeable* uses `SM_Handbook`. The `place_mesh` spec field retargets the placeable's mesh
+  (`None` keeps the donor's `SM_Handbook`); the item actor's is left alone.
+- **`block_visibility` exists only because `SM_Book_Merchant` ships an empty BodySetup**, so the
+  pack-up Visibility trace passes through it and the box has to block instead. `SM_Handbook` has
+  real collision — leave the flag off, or you inflate the aim/pack-up hit volume for nothing.
+- **Every book needs its own GC roots**: the placeable's hard import of `W_<slug>_C`, the
+  `EX_ObjectConst` planted after `EX_Return` in its interact bytecode, and a slot in the keeper
+  row. The keeper is ONE row with **one part slot per book** — a row struct's slot array is
+  walked element-wise by `AddReferencedObjects`, so extra rows buy nothing and cost a row key,
+  a recipe id and one more row for every full-table loop in `SkygameExtraFunctions` to skip.
+- **Recipe ids are positional and persist** into `Playerdata.UnlockedRecipys`. Append new
+  `add_recipe` calls **last**; `EXPECTED_IDS` in `patch_db_recipes` fails the build if the ladder
+  shifts. `add_recipe(..., starting=, bench_only=)`: `bench_only=False` leaves the SurvivalGuide
+  template's `NewEnumerator0` in place, and *that* — plus `starting=True` — is the whole
+  quick-craft (F) contract. `verify_pak` re-asserts it structurally.
+  On an existing save a new starting recipe only reaches the player through
+  `SkygameExtraFunctions.FixMissingCraftingRecipies`, which runs on **crafting-bench interact** —
+  so tell players to touch a bench once. Do not try to call it from Lua: it takes and returns the
+  Playerdata struct.
+- **Page icons need the right directory.** `/Game/UI/ItemIcons` holds only `Icon_Chest`,
+  `Icon_Log`, `Icon_Stick`, `Icon_Stone`, `Icon_Watercan`, `ItemIcon_Axe`, `TEMP_*` — **plus every
+  icon this build stages itself**. Everything else is `/Game/Art/Textures/Icons`. Put the
+  exceptions in `ICON_DIR_OVERRIDES`; `build_book_table` fails the build on an icon it can't find
+  in either the legacy extract or `staged/`.
+- The build is **not** byte-reproducible: `base_text` mints a fresh localisation key per call, so
+  any asset carrying an FText differs between runs. Diff with those keys normalised when checking
+  a refactor for regressions.
 
 ## Engine-version note
 
