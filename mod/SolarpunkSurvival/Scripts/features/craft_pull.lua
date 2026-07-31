@@ -26,6 +26,9 @@ local lastTry = {}    -- clsKey -> os.clock() of the last pull attempt (debounce
 local pending = {}    -- clsKey -> { expect, at }: a pull happened, HaveAmt should reach expect
 local dead = {}       -- clsKey -> strike count: deliveries that never landed (2 = stop pulling)
 local blindPasses = 0 -- consecutive passes where rows existed but none resolved to a station
+local announced = false -- this chain has logged its "station open" line
+local annPasses = 0     -- passes waited for rows before announcing anyway
+local missed = {}       -- clsKey -> true: logged "nothing in reach" once this chain
 
 local function cmap() return ctx.map.craftpull or {} end
 local function stmap() return ctx.map.stock or {} end
@@ -78,11 +81,13 @@ local function localPcAndPawn()
   return pc, p
 end
 
--- The station widgets that are open RIGHT NOW, by fullname. Empty when none is.
+-- The station widgets that are open RIGHT NOW: fullname set, plus the matched class names
+-- (display/diagnosis -- fullnames are instance paths nobody wants to read in a log line).
 local function openStations()
   local u = ctx.uehelp
-  local out = {}
+  local out, names = {}, {}
   for _, wn in ipairs(cmap().stationWidgets or {}) do
+    local hit = false
     for _, w in ipairs(u.findAll(wn)) do
       if u.isValid(w) then
         local vis
@@ -90,12 +95,13 @@ local function openStations()
         if vis then
           local n
           pcall(function() n = w:GetFullName() end)
-          if n then out[n] = true end
+          if n then out[n] = true hit = true end
         end
       end
     end
+    if hit then names[#names + 1] = wn end
   end
-  return out
+  return out, names
 end
 
 -- Is this part-slot really on screen under a station that is open right now? One climb up the
@@ -343,7 +349,7 @@ end
 local function scanPass(tok)
   if tok ~= chainTok then return end
   if not ctx.config.get("craft_pull") then chainLive = false returnBorrows() return end
-  local stations = openStations()
+  local stations, stNames = openStations()
   if next(stations) == nil then chainLive = false returnBorrows() return end
   if ctx.net.isHost() then
     local pc, pawn = localPcAndPawn()
@@ -390,6 +396,22 @@ local function scanPass(tok)
                       and os.clock() - (lastTry[ck] or -1e9) > 3.0 then
                     lastTry[ck] = os.clock()
                     local got, srcs = pullFromChests(pawn, cls, need - have)
+                    -- a silent 0 is the one outcome the player cannot tell apart from the
+                    -- feature being off -- say WHY once per station session: no stock in
+                    -- any indexed chest in range, or no chest in range at all
+                    if got == 0 and not missed[ck] then
+                      missed[ck] = true
+                      local nChests = 0
+                      local ledger, loc = svc(), ctx.identity.locationOf(pawn)
+                      if ledger and loc then
+                        local r = cfgn("craft_pull_range", 5000.0)
+                        nChests = #ledger.chestsNear(loc, r * r)
+                      end
+                      ctx.log.info(string.format(
+                        "craft_pull: %s (%d/%d) -- none in reach: %d indexed chest(s) in "
+                        .. "range, none holds it (or your pack is full)",
+                        ck:match("([^%.%s]+)$") or "?", have, need, nChests))
+                    end
                     if got > 0 then
                       ctx.log.info(string.format(
                         "craft_pull: fetched %d from nearby chests (%d/%d in hand now)",
@@ -413,14 +435,25 @@ local function scanPass(tok)
         end
       end
       end
+      -- One line per station session, as soon as rows show (or after ~3s of none): the log
+      -- must say whether the scan even RAN at this screen -- the energy-bench/kitchen
+      -- failure (2026-07-30) was invisible precisely because a chain that never starts and
+      -- a chain that starts and resolves nothing read identically (as nothing).
+      annPasses = annPasses + 1
+      if not announced and (saw > 0 or annPasses >= 10) then
+        announced = true
+        ctx.log.info(string.format("craft_pull: %s open -- %d recipe row(s), %d on this screen",
+          table.concat(stNames, ", "), saw, took))
+      end
       -- A station is open and rows exist, yet NOTHING passed the on-screen gate, pass after
       -- pass. That is the gate mis-reading this build's widget layout, not an idle player --
       -- say so once instead of letting the feature look like it is simply switched off.
       if saw > 0 and took == 0 then
         blindPasses = blindPasses + 1
         if blindPasses == 20 then
-          ctx.log.warn("craft_pull: a station is open with " .. saw .. " recipe row(s), but " ..
-            "none resolve to it -- auto-pull is idle (widget layout unrecognised)")
+          ctx.log.warn("craft_pull: " .. table.concat(stNames, ", ") .. " is open with " ..
+            saw .. " recipe row(s), but none resolve to it -- auto-pull is idle " ..
+            "(widget layout unrecognised)")
           -- one sample climb so the log shows WHERE the gate lost the trail
           for _, cn in ipairs(m.partSlotClasses or {}) do
             local done = false
@@ -449,6 +482,7 @@ local function startScan()
   chainLive = true
   chainTok = chainTok + 1
   pending, dead = {}, {}  -- fresh station open = fresh delivery slate
+  announced, annPasses, missed, blindPasses = false, 0, {}, 0
   local tok = chainTok
   deferOnly(150, function() onGameThread(function() scanPass(tok) end) end)
 end
@@ -502,6 +536,55 @@ local function armOpenHooks()
   end
 end
 
+-- `sps_pull` (game console, while a station is open): one readable snapshot of everything
+-- the pull decides from -- chain state, open stations, chests in range, and every on-screen
+-- recipe row with its have/need and nearby chest stock. The one-command answer to "why is
+-- this row still red".
+local function statusDump()
+  local stations, stNames = openStations()
+  ctx.log.info(string.format("craft_pull: status -- chain %s; host=%s; stations open: %s",
+    chainLive and "LIVE" or "idle", tostring(ctx.net.isHost()),
+    (#stNames > 0) and table.concat(stNames, ", ") or "none"))
+  local _, pawn = localPcAndPawn()
+  if not pawn then
+    ctx.log.info("craft_pull: status -- no local pawn (menu?)")
+    return
+  end
+  local ledger, loc = svc(), ctx.identity.locationOf(pawn)
+  local r = cfgn("craft_pull_range", 5000.0)
+  local near = (ledger and loc) and ledger.chestsNear(loc, r * r) or {}
+  ctx.log.info(string.format("craft_pull: status -- %d indexed chest(s) within %.0f m",
+    #near, r / 100))
+  local m = cmap()
+  local rows, live = 0, 0
+  for _, cn in ipairs(m.partSlotClasses or {}) do
+    for _, slot in ipairs(ctx.uehelp.findAll(cn)) do
+      if ctx.uehelp.isValid(slot) then
+        rows = rows + 1
+        if slotIsLive(slot, stations) then
+          live = live + 1
+          local _, need = ctx.uehelp.get(slot, m.needProp)
+          local _, have = ctx.uehelp.get(slot, m.haveProp)
+          local cls
+          pcall(function() cls = slot[m.itemDataProp][m.itemActorField] end)
+          local nm, stock, strikes = "?", 0, 0
+          if safeForCalls(cls) then
+            local ck = clsKeyOf(cls)
+            nm = ck:match("([^%.%s]+)$") or "?"
+            stock = chestStock(pawn, cls)
+            strikes = dead[ck] or 0
+          end
+          ctx.log.info(string.format(
+            "craft_pull: status -- row %s %s/%s, %d in chests nearby (dead=%d)",
+            nm, tostring(have), tostring(need), stock, strikes))
+        end
+      end
+    end
+  end
+  ctx.log.info(string.format("craft_pull: status -- %d recipe row(s) in memory, %d on screen",
+    rows, live))
+end
+
 function F.init(c)
   ctx = c
   if not ctx.config.get("craft_pull") then
@@ -526,6 +609,11 @@ function F.init(c)
       end) end)
     end)
   deferOnly(2000, function() onGameThread(armOpenHooks) end)
+
+  pcall(RegisterConsoleCommandHandler, "sps_pull", function()
+    onGameThread(ctx.log.guard("craftpull.status", statusDump))
+    return true
+  end)
 
   ctx.log.info("craft_pull: recipes fetch their materials from chests within " ..
     tostring(cfgn("craft_pull_range", 5000.0) / 100) .. " m of you")

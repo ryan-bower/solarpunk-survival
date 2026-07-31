@@ -31,7 +31,7 @@ M.schema = {
   boost    = { "shipClass", "maxSpeedProp", "targetSpeedProp", "currentSpeedProp", "throttleProp",
                "boostAdditionProp", "cameraProp", "fovProp", "speedFxProp", "windSound",
                "windSoundPath", "possessFn" },
-  stock    = { "chestClasses", "invProp", "invSysClass", "amtFn", "freeFn", "totalFn",
+  stock    = { "chestClasses", "invProp", "invPropAlts", "invSysClass", "amtFn", "freeFn", "totalFn",
                "freeSlotsFn", "quickStackFn", "removeAmtFn", "addPlayerFn", "addFn" },
   sortchest = { "class", "deviceGetFn", "hasPowerFn", "enoughProp", "consumptionProp",
                 "interactFnHint", "placeablePath" },
@@ -997,6 +997,9 @@ M.profiles = {
     stock = {
       chestClasses = { "BP_Chest_Buildable_C", "BP_SortingChest_Placeable_C" },
       invProp      = "InventorySystem",
+      -- the furnace donor (and so BP_SortingChest_Placeable) names the same component after
+      -- its class -- invOf tries these when invProp is not on the actor
+      invPropAlts  = { "BC_InventorySystem" },
       invSysClass  = "BC_InventorySystem_C",
       amtFn        = "GetAmtOfItem",               -- (slot struct in, out Amount) -- trash-proven
       freeFn       = "GetFreeStackingSpaceForItem",-- (slot struct in, out FreeStackingSpace)
@@ -1032,7 +1035,21 @@ M.profiles = {
     -- its ItemActor member is the item UClass -- the same GUID field the wand reads off
     -- CurItemdataInHand, single-struct-prop reads are the PROVEN-safe direction).
     craftpull = {
-      openFns = { "UI_OpenCraftingTable", "UI_OpenAdvancedCraftingTable", "UI_OpenCooking" },
+      -- Trigger fns on the controller, three independent layers (live 2026-07-30: the energy
+      -- bench + kitchen never pulled while the workbench did, and every offline surface --
+      -- call flavor, widget layout, function flags, config -- checked out symmetric; the
+      -- per-station stubs alone are not a trustworthy trigger, so every layer that can see
+      -- a station open is armed):
+      --   * UI_Open* -- the server-side stubs the placeables call (the original trigger)
+      --   * CLIENT_Open* -- their paired client RPCs (controller ubergraph RE: each UI_Open*
+      --     is just "call CLIENT_Open*"); RPC dispatch is ProcessEvent by definition, the one
+      --     path a script hook can never miss
+      --   * SetInputModeUI -- the chokepoint EVERY UI open funnels through (each CLIENT_Open*
+      --     continuation is widget:Open() + SetInputModeUI(widget, ...); twin of the codex's
+      --     live-proven SetInputModeGame hook). Non-station UIs cost one empty scan pass.
+      openFns = { "UI_OpenCraftingTable", "UI_OpenAdvancedCraftingTable", "UI_OpenCooking",
+                  "CLIENT_OpenCraftingTable", "CLIENT_OpenAdvancedCraftingTable",
+                  "CLIENT_OpenCooking", "SetInputModeUI" },
       -- three sibling classes, NOT subclasses of one another (pak RE 2026-07-30): all carry
       -- the same NeedAmt/HaveAmt/ItemData props and the same TXT_Needed counter TextBlock
       partSlotClasses = { "SW_MissingCraftingPartsSlot_C",

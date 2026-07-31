@@ -108,15 +108,22 @@ local function actorOf(key, e)
 end
 
 -- The chest's inventory component, class-checked -- handing a game BP call a wrong-class
--- object is a fatal assert, not a Lua error (the ship_chest lesson).
+-- object is a fatal assert, not a Lua error (the ship_chest lesson). The property NAME varies
+-- by donor BP (the vanilla chest calls it InventorySystem, the furnace -- and so our sorting
+-- chest clone -- BC_InventorySystem), so every candidate in invProp + invPropAlts is tried.
 local function invOf(chest)
   local m = smap()
-  local okI, inv = ctx.uehelp.get(chest, m.invProp)
-  if not (okI and ctx.uehelp.isValid(inv)) then return nil end
-  local cn
-  pcall(function() cn = inv:GetClass():GetFName():ToString() end)
-  if m.invSysClass and cn ~= m.invSysClass then return nil end
-  return inv
+  local names = { m.invProp }
+  for _, alt in ipairs(m.invPropAlts or {}) do names[#names + 1] = alt end
+  for _, prop in ipairs(names) do
+    local okI, inv = ctx.uehelp.get(chest, prop)
+    if okI and ctx.uehelp.isValid(inv) then
+      local cn
+      pcall(function() cn = inv:GetClass():GetFName():ToString() end)
+      if not m.invSysClass or cn == m.invSysClass then return inv end
+    end
+  end
+  return nil
 end
 F.invOf = invOf
 

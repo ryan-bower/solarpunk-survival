@@ -1750,12 +1750,17 @@ def patch_db_recipes():
                 ("BP_Diamond_Item_C", 2)])
     # the sorting chest: a chest's worth of wood, a machine's worth of iron, cobalt for the blue.
     # Appended AFTER the research-gated rows so their persisted RecipyIDs stay stable in saves.
-    # A STARTING recipe (no research gate) at the ENERGY CRAFTING TABLE -- it is a powered
-    # machine, it belongs beside the other machines, and at the plain Crafting Table it appeared
-    # under no category at all (see add_recipe's `locations` note; player-reported 2026-07-30).
+    # HIDDEN FOR NOW (user, 2026-07-30): locations=() offers it at NO station, so it shows in no
+    # crafting menu anywhere. The row itself must stay -- RecipyIDs are positional (removing it
+    # would shift TempestHandbook's persisted 10010) -- and it stays STARTING because saves
+    # already self-healed 10009 into UnlockedRecipys; an empty location list out-hides any
+    # unlock state. Placed chests and inventory items are untouched (DB_Items/DB_Buildables
+    # rows remain). To un-hide: locations=("NewEnumerator2",) -- the Energy Crafting Table,
+    # where every powered machine lives (at the plain Crafting Table it appeared under no
+    # category at all; see add_recipe's `locations` note).
     add_recipe("SortingChest", "BP_SortingChest_Item_C",
                [("BP_Log_Item_C", 4), ("BP_Iron_Item_C", 4), ("BP_Cobalt_Item_C", 2)],
-               starting=True, locations=("NewEnumerator2",))
+               starting=True, locations=())
     # The Tempest Handbook: the vanilla SurvivalGuide recipe verbatim (1 log + 2 leaves), left as
     # a HAND recipe -- quick-craft (F) AND bench -- and known from the start, so a brand-new
     # player can craft the thing that explains the mod in their first minute. Appended LAST so
@@ -2087,14 +2092,17 @@ def verify_pak():
         sys.exit("TempestHandbook: StartingRecipy is False -- it would need a research card")
     if "ECraftingLocations::NewEnumerator0" not in locs:
         sys.exit(f"TempestHandbook: not a quick-craft (F) recipe, locations = {sorted(locs)}")
-    # The sorting chest is a powered machine and must stay at the Energy Crafting Table with the
-    # other machines -- at the plain Crafting Table the player could not find it in any category.
+    # The sorting chest is HIDDEN for now (user, 2026-07-30): the row must survive (positional
+    # RecipyIDs) but be offered at NO station -- an empty location list hides it even from saves
+    # that already unlocked 10009. When un-hiding, flip this back to Energy-Crafting-Table only
+    # ({"ECraftingLocations::NewEnumerator2"} -- the plain table shows it in no category).
     sc = next(r for r in rrows if r["Name"] == "SortingChest")
-    sc_locs = {e["Value"] for e in field(sc, "CraftingLocations")["Value"]}
+    sc_locs = {e["Value"] for e in (field(sc, "CraftingLocations")["Value"] or [])}
     if not field(sc, "StartingRecipy")["Value"]:
-        sys.exit("SortingChest: StartingRecipy is False -- no research card unlocks it")
-    if sc_locs != {"ECraftingLocations::NewEnumerator2"}:
-        sys.exit(f"SortingChest: must be Energy-Crafting-Table only, locations = {sorted(sc_locs)}")
+        sys.exit("SortingChest: StartingRecipy is False -- must stay starting so un-hiding "
+                 "later needs no save migration")
+    if sc_locs != set():
+        sys.exit(f"SortingChest: must be hidden (no stations), locations = {sorted(sc_locs)}")
     # The vanilla-rod replacement, read back structurally: the FishingRod recipe must yield the
     # mod clone (or crafting silently hands back the ladder-cursed vanilla rod), and the clone's
     # row must carry interaction=1 (or a UI close uncasts it -- the whole point of the swap).

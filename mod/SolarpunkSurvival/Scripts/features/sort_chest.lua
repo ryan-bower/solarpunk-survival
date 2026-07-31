@@ -236,7 +236,14 @@ local function armInteractHook()
             if ctx.uehelp.isValid(pc) and not ctx.uehelp.sameObject(pc, localPc) then return end
             local ledger = svc()
             local inv = ledger and ledger.invOf(actor)
-            if inv and localPc then ctx.uehelp.call(localPc, chestFn, inv) end
+            if not inv then
+              -- E reached us but the inventory component is unreadable -- say so, a silent
+              -- return here reads as "the chest is broken" in-game (the invProp-name lesson)
+              ctx.log.warn("sort_chest: interact fired but no inventory on the sorter"
+                .. " (invProp/invPropAlts miss?)")
+              return
+            end
+            if localPc then ctx.uehelp.call(localPc, chestFn, inv) end
           end)
         end)
       end))

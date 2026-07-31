@@ -1211,12 +1211,27 @@ do
   eq(m.stock.removeAmtFn, "Remove Item Amt", "stock: Remove Item Amt keeps its real spaces")
   eq(m.stock.invSysClass, "BC_InventorySystem_C",
      "stock: inv component class pinned (wrong-class BP calls are fatal asserts)")
+  -- the furnace donor names its inventory component after its class, NOT InventorySystem --
+  -- without this alt the sorter's E-hook and every sort pass die silently on invOf
+  eq(m.stock.invProp, "InventorySystem", "stock: plain-chest inv property pinned")
+  ok((function() for _, p in ipairs(m.stock.invPropAlts or {}) do
+        if p == "BC_InventorySystem" then return true end end return false end)(),
+     "stock: furnace-donor inv property (the sorting chest's) in invPropAlts")
   eq(m.sortchest.class, "BP_SortingChest_Placeable_C", "sortchest: pak clone class name pinned")
   ok(({ ["BP_SortingChest_Placeable_C"] = true })[m.sortchest.class] ~= nil
      and (function() for _, c in ipairs(m.stock.chestClasses) do
             if c == m.sortchest.class then return true end end return false end)(),
      "sortchest: the sorter is itself a ledger chest class (craft_pull may draw from it)")
-  eq(#(m.craftpull.openFns), 3, "craftpull: bench + energy bench + kitchen all hooked")
+  eq(#(m.craftpull.openFns), 7,
+     "craftpull: station stubs + CLIENT_ RPCs + SetInputModeUI chokepoint all hooked")
+  ok((function() local want = { UI_OpenCraftingTable = true, UI_OpenAdvancedCraftingTable = true,
+        UI_OpenCooking = true, CLIENT_OpenCraftingTable = true,
+        CLIENT_OpenAdvancedCraftingTable = true, CLIENT_OpenCooking = true,
+        SetInputModeUI = true }
+      for _, fn in ipairs(m.craftpull.openFns) do
+        if not want[fn] then return false end want[fn] = nil end
+      return next(want) == nil end)(),
+     "craftpull: the three trigger layers are exactly the documented fns")
   ok(m.craftpull.itemActorField:find("^ItemActor_16_") ~= nil,
      "craftpull: item actor field is the S_Item GUID name, not a display name")
   eq(#(m.craftpull.partSlotClasses), 3,
