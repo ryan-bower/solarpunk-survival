@@ -221,18 +221,36 @@ local function transfer(srcInv, dstInv, cls, n, intoPlayer)
       ctx.uehelp.call(dstInv, stmap().addFn, ledger.probeFor(cls, take),
         true, {}, {}, {}, {})
     end
-    local got = math.max(0, math.min(take, (invAmt(dstInv, cls) or dstBefore) - dstBefore))
+    local recount = invAmt(dstInv, cls)
+    if recount == nil then
+      -- the add's outcome is UNKNOWN (recount unreadable): assuming "nothing landed" and
+      -- giving the chunk back is exactly how materials duplicate (the add often DID land).
+      -- No truth to verify against = nothing further moves; the ledger TTL re-counts later.
+      ctx.log.warn("craft_pull: a transfer recount failed -- stopping this movement " ..
+        "(nothing given back)")
+      break
+    end
+    local got = math.max(0, math.min(take, recount - dstBefore))
     if got < take then
-      -- dst refused part of the chunk: hand the shortfall straight back to src
+      -- dst refused part of the chunk. The removal WAS Success-verified and the dst recount
+      -- read clean, so the shortfall provably exists nowhere -- re-create it in src, through
+      -- the PLAYER path when src is the player's inventory (attributes/replication ride it).
       local back = take - got
       local srcBefore = invAmt(srcInv, cls)
-      ctx.uehelp.call(srcInv, stmap().addFn, ledger.probeFor(cls, back),
-        true, {}, {}, {}, {})
-      local backGot = srcBefore and math.max(0,
-        math.min(back, (invAmt(srcInv, cls) or srcBefore) - srcBefore)) or -1
-      if backGot < back then
+      if intoPlayer then
+        ctx.uehelp.call(srcInv, stmap().addFn, ledger.probeFor(cls, back),
+          true, {}, {}, {}, {})
+      else
+        ctx.uehelp.call(srcInv, stmap().addPlayerFn, ledger.probeFor(cls, back),
+          true, false, {}, {})
+      end
+      local srcNow = invAmt(srcInv, cls)
+      local backGot = (srcBefore and srcNow) and math.max(0, math.min(back, srcNow - srcBefore)) or nil
+      if backGot == nil then
+        ctx.log.debug("craft_pull: give-back done but unverifiable (src recount unreadable)")
+      elseif backGot < back then
         ctx.log.warn(string.format("craft_pull: %d item(s) fell out of a transfer and the "
-          .. "give-back also failed -- count your stock", back - math.max(0, backGot)))
+          .. "give-back also failed -- count your stock", back - backGot))
       end
       moved = moved + got
       break
@@ -297,22 +315,31 @@ local function returnBorrows()
   if not (ledger and pawn) then return end
   local okI, pInv = ctx.uehelp.get(pawn, stmap().invProp)
   if not (okI and ctx.uehelp.isValid(pInv)) then return end
+  local myLoc = ctx.identity.locationOf(pawn)
+  local r = cfgn("craft_pull_range", 5000.0)
   local sentTotal = 0
   for _, e in pairs(b) do
     local now = invAmt(pInv, e.cls)
     local give = now and math.max(0, math.min(e.n, now - e.basis)) or 0
     for _, src in ipairs(e.srcs) do
       if give <= 0 then break end
-      local chest = ledger.actorOf(src.key, src.entry)
-      local cInv = chest and ledger.invOf(chest)
-      if cInv then
-        local sent = transfer(pInv, cInv, e.cls, math.min(give, src.n), false)
-        give = give - sent
-        sentTotal = sentTotal + sent
-        if sent > 0 then ledger.noteMove(src.key, e.cls, sent) end
+      -- the chest must still be IN REACH: the ship chest can have flown kilometres away
+      -- since the borrow, and posting the mats into it teleports them out of the crafter's
+      -- reach ("returned N materials" with nothing nearby to show for it)
+      local at = ledger.liveLocOf and ledger.liveLocOf(src.key, src.entry) or src.entry.loc
+      local inReach = myLoc and at and ctx.uehelp.dist2(at, myLoc) <= r * r
+      if inReach then
+        local chest = ledger.actorOf(src.key, src.entry)
+        local cInv = chest and ledger.invOf(chest)
+        if cInv then
+          local sent = transfer(pInv, cInv, e.cls, math.min(give, src.n), false)
+          give = give - sent
+          sentTotal = sentTotal + sent
+          if sent > 0 then ledger.noteMove(src.key, e.cls, sent) end
+        end
       end
     end
-    -- source chest gone or full: any leftover simply stays in the pack
+    -- source chest gone, full or out of reach: any leftover simply stays in the pack
   end
   if sentTotal > 0 then
     ctx.log.info(string.format(
@@ -524,11 +551,14 @@ local function armOpenHooks()
     if not hooked[fn] then
       local path = fullFuncPath(pc, fn)
       if path then
-        local ok = pcall(RegisterHook, path, ctx.log.guard("craftpull.open", function()
+        local ok, pre, post = pcall(RegisterHook, path, ctx.log.guard("craftpull.open", function()
           deferOnly(0, function() onGameThread(startScan) end)
         end))
         if ok then
-          hooked[fn] = true
+          -- the ids are kept so the world-change re-arm can UNREGISTER first: a class that
+          -- SURVIVES the reload keeps its live hook, and re-registering on it without
+          -- unregistering stacks duplicate callbacks
+          hooked[fn] = { path = path, pre = pre, post = post }
           ctx.log.debug("craft_pull: hooked " .. path)
         end
       end
@@ -601,7 +631,12 @@ function F.init(c)
     (ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C", function()
       deferOnly(4000, function() onGameThread(function()
         if worldChanged() then
-          hooked = {}  -- new world = reloaded classes: those registrations are dead
+          -- new world: unregister everything FIRST (a class that survived the reload keeps
+          -- its live hook -- re-arming without this stacks duplicate callbacks), then re-arm
+          for _, h in pairs(hooked) do
+            if type(h) == "table" then pcall(UnregisterHook, h.path, h.pre, h.post) end
+          end
+          hooked = {}
           lastTry, pending, dead = {}, {}, {}
           borrows = {} -- chest handles died with the world; borrowed mats stay in the pack
         end

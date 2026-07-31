@@ -43,6 +43,7 @@ local boostAdd = 0       -- the full BoostAddition this boost owns
 local curAdd   = 0       -- the BoostAddition currently applied (eases during the exit glide)
 local curBump  = 0       -- the FOV degrees currently applied on top of baseFov
 local windComp           -- AudioComponent when SpawnSound2D hands one back (else nil)
+local boostedFull        -- fullname of the ship THIS boost was lit on (clears must hit it)
 
 local TICK_FAST = 33     -- ms between steps while FOV or speed is easing (~30 fps, smooth)
 local TICK_SLOW = 150    -- ms between passes when steady (just watching for the exit signal)
@@ -98,7 +99,39 @@ function F.hintAccum(accum, dt, atMax, needSecs)
   return a, a >= (tonumber(needSecs) or 20.0)
 end
 
-local function liveShip()
+local function localController()
+  local pl = ctx.map.player
+  return ctx.uehelp.localController(pl and pl.controllerClass) or ctx.uehelp.playerController()
+end
+
+-- The airship the LOCAL player is actually driving: at the wheel the controller POSSESSES the
+-- ship, so its pawn IS the airship actor. Never "the first ship FindAllOf lists" -- in co-op
+-- that boosted a teammate's ship from the authoritative host (review 2026-07-31).
+local function possessedShip()
+  local pc = localController()
+  if not pc then return nil end
+  local pawn
+  pcall(function() pawn = pc:K2_GetPawn() end)
+  if ctx.uehelp.isValid(pawn) and ctx.uehelp.className(pawn) == bmap().shipClass then
+    return pawn
+  end
+  return nil
+end
+
+-- Re-find a specific ship by fullname (the boosted ship is REMEMBERED so the exit/clear path
+-- can never restore the wrong ship's numbers when instance order shifts).
+local function shipByFull(full)
+  if not full then return nil end
+  local u = ctx.uehelp
+  for _, s in ipairs(u.findAll(bmap().shipClass)) do
+    local f; pcall(function() f = s:GetFullName() end)
+    if u.isValid(s) and f == full then return s end
+  end
+  return nil
+end
+
+-- ANY live ship instance -- only for resolving the class's function path when arming hooks.
+local function anyShip()
   local u = ctx.uehelp
   for _, s in ipairs(u.findAll(bmap().shipClass)) do
     local full
@@ -106,11 +139,6 @@ local function liveShip()
     if u.isValid(s) and full and not full:find("Default__") then return s end
   end
   return nil
-end
-
-local function localController()
-  local pl = ctx.map.player
-  return ctx.uehelp.localController(pl and pl.controllerClass) or ctx.uehelp.playerController()
 end
 
 -- "Am I at the wheel?" -- the controller's own IsControllingAirship? (single OUT bool).
@@ -265,8 +293,8 @@ end
 local function hintPass(tok)
   if tok ~= hintTok then return end
   if hintBroken or not cfg("boost_hint") then hideHint() return end
-  local ship = liveShip()
-  if not (ship and drivingNow()) then hideHint() return end
+  local ship = possessedShip()   -- the ship THIS player drives, never a teammate's
+  if not ship then hideHint() return end
   local dt = HINT_TICK / 1000.0
   if boosting or ramping then
     hintShown = true  -- the key is clearly known; never nag this drive
@@ -307,7 +335,7 @@ end
 -- ship_chest.
 local function armPossessHook()
   if not cfg("boost_hint") then return end
-  local ship = liveShip()
+  local ship = anyShip()   -- any instance: only the CLASS function path is read off it
   if not ship then return end
   local shipFn; pcall(function() shipFn = ship:GetFullName() end)
   if not shipFn or shipFn == possHooked then return end
@@ -337,12 +365,15 @@ local function snapClear(ship)
   chainTok = chainTok + 1
   windOff()
   hideHint()
+  -- the clear must land on the ship the boost was LIT on -- instance order can shift, and a
+  -- wrong-target clear leaves BoostAddition parked on a ship forever (review 2026-07-31)
+  if not (ship and ctx.uehelp.isValid(ship)) then ship = shipByFull(boostedFull) end
   if ship and ctx.uehelp.isValid(ship) then
     ctx.uehelp.set(ship, bmap().boostAdditionProp, 0.0)
     if baseFov then setFov(ship, baseFov) end
     speedFx(ship, false)
   end
-  baseFov, boostAdd, curAdd, curBump = nil, 0, 0, 0
+  baseFov, boostAdd, curAdd, curBump, boostedFull = nil, 0, 0, 0, nil
 end
 
 local startWatch  -- fwd decl
@@ -381,6 +412,7 @@ local function enterBoost(ship)
   if not windComp then windOn() end
   hintShown = true  -- they pressed the key; the nudge is moot for the rest of this drive
   hideHint()
+  pcall(function() boostedFull = ship:GetFullName() end)
   boosting, ramping = true, false
   chainTok = chainTok + 1
   startWatch(chainTok)
@@ -403,9 +435,10 @@ startWatch = function(tok)
   local function pass()
     if tok ~= chainTok then return end
     if not (boosting or ramping) then return end
-    local ship = liveShip()
-    if not (ship and drivingNow()) then
-      snapClear(ship)  -- left the wheel (or the world) -- no glide, just clean numbers
+    local ship = possessedShip()
+    local sf; if ship then pcall(function() sf = ship:GetFullName() end) end
+    if not ship or (boostedFull and sf ~= boostedFull) then
+      snapClear(nil)  -- left the wheel/world (or swapped ships): clean the BOOSTED ship's numbers
       return
     end
     local m = bmap()
@@ -452,7 +485,7 @@ end
 local function onBoostKey()
   if not cfg("boost_enabled") then return end
   if not drivingNow() then return end  -- on foot SPACE stays the game's jump, untouched
-  local ship = liveShip()
+  local ship = possessedShip()         -- THE ship under this player's hands, nothing else
   if not ship then return end
   if boosting and not ramping then
     beginRamp()
@@ -493,7 +526,7 @@ function F.init(c)
           if showHint() then ctx.log.info("boost: hint shown (forced)")
           else ctx.log.info("boost: hint could not build (overlay down or latched broken)") end
         elseif sub == "off" then
-          snapClear(liveShip())
+          snapClear(possessedShip())   -- falls through to the remembered boosted ship
           ctx.log.info("boost: cleared")
         else
           onBoostKey()

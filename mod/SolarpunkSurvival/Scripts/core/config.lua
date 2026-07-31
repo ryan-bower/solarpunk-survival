@@ -312,9 +312,14 @@ M.defaults = {
   ship_chest_yaw      = 90.0,    -- deg the chest is spun beyond the ship's own facing. At 0 it
                                  -- sat lengthwise (user 2026-07-27: quarter-turn it); 270 is the
                                  -- other quarter if the lid ends up opening into the hull.
-  ship_chest_adopt_r  = 600.0,   -- cm; a chest within this range of the anchor (or of where the
+  ship_chest_adopt_r  = 300.0,   -- cm; a chest within this range of the anchor (or of where the
                                  -- sidecar remembers leaving it) IS the ship chest -- adopted,
-                                 -- moved, never duplicated
+                                 -- moved, never duplicated. TIGHT on purpose: at 600 a ship
+                                 -- parked near a player's base chest could adopt -- and steal
+                                 -- -- their storage (review 2026-07-31)
+  ship_chest_adopt_live_r = 3000.0, -- cm; CLIENT-only latch radius (any time, even mid-flight):
+                                 -- clients recognise OUR chest by its movement-replication-off
+                                 -- signature, which no player-built chest has
   -- Airship boost (features/boost.lua): SPACE at the wheel pushes the control to max and boosts
   -- to boost_mult x top speed with the game's own boost-wind loop + a raised FOV; SPACE again or
   -- holding the slow-down control ramps back to normal max over boost_ramp_secs.
@@ -398,6 +403,12 @@ M.defaults = {
                                  -- Pawn response off NonOwnerBlocker; an unmodded client on a
                                  -- modded host still can't board -- both machines need the mod)
   bench_open_doors    = true,    -- also call OpenDoors when a non-owner needs through
+  bench_ship_adopt_live_r = 3000.0, -- cm; CLIENT-only mid-flight latch radius for the ship
+                                 -- bench copy (signature: movement replication off -- only
+                                 -- our prop has that; player benches replicate movement)
+  bench_lean          = true,    -- seated riders' meshes align with the tilted deck (every
+                                 -- machine computes the same lean from replicated positions;
+                                 -- mesh-only -- camera and collision stay upright)
   -- The chest stock ledger (features/chest_index.lua) -- shared by sort_chest + craft_pull.
   chest_index_sweep   = 20.0,    -- secs between world sweeps for chests (lazy: only when asked)
   chest_index_ttl     = 20.0,    -- secs a cached per-(chest,item) amount stays trusted
@@ -500,6 +511,10 @@ M.defaults = {
                                  -- the mod sidecar, audit the whole world at entry, and re-grant
                                  -- any rod that exists nowhere -- with its recorded wear.
                                  -- Tracks the diamond rod AND the ModFishingRod replacement.
+                                 -- HOST ONLY: a client's promises describe its own saved world.
+  fishing_reclaim_r   = 3000.0,  -- cm; ledger/prize fly-ins only reclaim loose actors within
+                                 -- this of the player (a distant one may be a teammate's drop)
+  fishing_rescue_r    = 5000.0,  -- cm; sps_fish_rescue reels in loose rods within this of you
   fishing_rod_replace = true,    -- THE VANILLA ROD IS REPLACED (user spec 2026-07-30): one-time
                                  -- host sweep at world entry swaps every vanilla BP_FishingRod
                                  -- in every inventory for the pak's ModFishingRod clone

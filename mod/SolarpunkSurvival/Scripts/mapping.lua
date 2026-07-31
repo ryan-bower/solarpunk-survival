@@ -122,7 +122,8 @@ M.schema = {
                "maxWalkSpeedCrouchedProp", "crouchFn", "uncrouchFn",
                "ignoreMoveInputFn", "resetIgnoreMoveInputFn",
                "montageSitPath", "montageStandPath", "animSyncProp", "neigungProp",
-               "neigungRepFn", "neigungOnRepFn" },
+               "neigungRepFn", "neigungOnRepFn",
+               "hullProp", "crouchedProp", "pawnMeshProp" },
   trash    = { "invUiProp", "invUiClass", "invGridProp", "invSlotsProp", "gridCols",
                "slotClass", "slotMouseFn", "slotIndexFn", "slotBgProp", "slotBorderProp",
                "carryClass", "carryGetFn", "carryDestroyFn", "carrySenderProp",
@@ -988,6 +989,14 @@ M.profiles = {
       neigungProp    = "Neigung",
       neigungRepFn   = "SetNeigung",
       neigungOnRepFn = "OnRep_Neigung",
+      -- The ship's PHYSICAL hull: the SCS `Root` StaticMeshComponent (the ACTOR root is a
+      -- no-collision sphere). Tick copies the hull transform onto the actor
+      -- (SetActorTransformToRootTransform) but Tick is DISABLED while docked/parked, so the
+      -- actor transform goes stale -- anchor/seat math must read the hull component.
+      hullProp = "Root",
+      crouchedProp = "bIsCrouched",     -- engine ACharacter, replicated -- the host reads a
+                                        -- seated client's crouch off its own copy
+      pawnMeshProp = "Mesh",            -- ACharacter's skeletal mesh (the seat-lean target)
     },
     -- The chest stock ledger (features/chest_index.lua) + its two consumers. Offline RE
     -- 2026-07-29, BC_InventorySystem bytecode (tools/pakkit/out/BC_InventorySystem.json).

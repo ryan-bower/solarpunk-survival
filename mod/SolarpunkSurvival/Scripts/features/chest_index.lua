@@ -81,11 +81,25 @@ local function sweep()
         local loc = ctx.identity.locationOf(c)
         if loc then
           live[full] = true
+          -- a chest that RIDES something (the ship's storage: attached, or Lua-carried with
+          -- movement replication forced off) can be kilometres from its cached spot within
+          -- one sweep period -- mark it so range tests re-read the live actor (the ledger
+          -- once kept feeding a flying ship's stores to the crafting stations below)
+          local mobile = false
+          pcall(function()
+            local parent = c:GetAttachParentActor()
+            if u.isValid(parent) then mobile = true end
+          end)
+          if not mobile then
+            local okR, repMove = u.get(c, "bReplicateMovement")
+            local okB, reps = u.get(c, "bReplicates")
+            if okR and okB and reps == true and repMove == false then mobile = true end
+          end
           local e = reg[full]
           if not e then
-            reg[full] = { cls = cn, loc = loc, seenAt = now }
+            reg[full] = { cls = cn, loc = loc, seenAt = now, mobile = mobile }
           else
-            e.loc, e.seenAt = loc, now  -- placeables don't move, but re-stamp is free
+            e.loc, e.seenAt, e.mobile = loc, now, mobile
           end
         end
       end
@@ -127,14 +141,28 @@ local function invOf(chest)
 end
 F.invOf = invOf
 
+-- A registry entry's location RIGHT NOW: cached for static placeables, re-read off the live
+-- actor for mobile ones (the ship chest moves between sweeps). Updates the cache as a side
+-- effect; nil when the actor cannot be found.
+local function liveLocOf(key, e)
+  if not e.mobile then return e.loc end
+  local c = actorOf(key, e)
+  if not c then return nil end
+  local loc = ctx.identity.locationOf(c)
+  if loc then e.loc = loc end
+  return loc or e.loc
+end
+
 -- Chests within sqrt(r2) of `loc`, nearest first: { key, entry, d2 } triples. `exceptKey`
--- lets the sorter exclude itself.
+-- lets the sorter exclude itself. Mobile entries are measured at their LIVE position -- a
+-- chest that just flew away on the airship is out of range NOW, not in 20 s.
 local function chestsNear(loc, r2, exceptKey)
   sweep()
   local out = {}
   for k, e in pairs(reg) do
     if k ~= exceptKey then
-      local d2 = ctx.uehelp.dist2(e.loc, loc)
+      local at = liveLocOf(k, e)
+      local d2 = at and ctx.uehelp.dist2(at, loc)
       if d2 and d2 <= r2 then out[#out + 1] = { key = k, entry = e, d2 = d2 } end
     end
   end
@@ -199,6 +227,7 @@ function F.init(c)
     probeFor = probeFor,
     noteMove = noteMove,
     invalidate = invalidate,
+    liveLocOf = liveLocOf,
   }
   -- new chests join the registry as they stream/build in; the notify only voids the sweep
   -- timestamp (plain Lua) so the NEXT consumer pass picks them up on the game thread

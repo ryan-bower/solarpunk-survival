@@ -548,6 +548,25 @@ local function isLocalCharacter(pawn)
   return ctx.uehelp.className(pawn) == want
 end
 
+-- HOST: bCanCrouch=true on the server's copy of EVERY player pawn. The pawn's CMC does not
+-- serialize NavAgentProps.bCanCrouch (offline RE of the cooked pawn), so it boots with the
+-- engine default FALSE everywhere -- and crouch is server-authoritative: a client's crouch
+-- flag arrives in its moves and the server DROPS it while its own copy says "can't crouch".
+-- That is the whole "crouch works only for the host in MP" bug. The client-local ensure in
+-- applyHold cannot reach the server copy; this can. Event-driven (the Character notify +
+-- world entry), read-first idempotent writes -- safe to run repeatedly.
+local function hostEnsureCrouchAll()
+  if not ctx.net.isHost() then return end
+  if not ctx.config.get("qol_crouch") then return end
+  local cls = (ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C"
+  for _, p in ipairs(ctx.uehelp.findAll(cls)) do
+    local full; pcall(function() full = p:GetFullName() end)
+    if ctx.uehelp.isValid(p) and full and not full:find("Default__", 1, true) then
+      ensureCanCrouch(p)
+    end
+  end
+end
+
 -- HOLDING is the hard part, not the crouching. UE4SS hands a mod key-DOWN only -- there is no
 -- release callback -- so "while the key is held" has to come from somewhere else. TWO safe
 -- sources exist on this build, one per key:
@@ -588,12 +607,16 @@ local function repeatGap()
 end
 
 -- THE one place crouch state is written: both keys feed booleans into holdKeys and this
--- reconciles them with the pawn. Game thread only.
+-- reconciles them with the pawn. Game thread only. ownPawn, NEVER localPawn: the findFirst
+-- fallback can hand back a TEAMMATE's pawn on a listen server, and this function WRITES --
+-- reconciling benchSeatCrouch against a friend's body kept re-crouching them (review
+-- 2026-07-31). No own pawn this frame = do nothing; the 300ms reconciler retries.
 local function applyHold()
-  local pawn = ctx.uehelp.localPawn()
+  local pawn = ctx.uehelp.ownPawn()
+  if not ctx.uehelp.isValid(pawn) then return end
   -- at the airship wheel the possessed pawn IS the ship: nothing to crouch, and calling Crouch on
   -- a non-Character is exactly the wrong-class BP call the crash notes warn about
-  if not (ctx.uehelp.isValid(pawn) and isLocalCharacter(pawn)) then
+  if not isLocalCharacter(pawn) then
     holdKeys.c, holdKeys.ctrl, holdKeys.cHeld = false, false, false
     return
   end
@@ -1134,14 +1157,15 @@ end
 -- Called from the dock hook bodies (via deferOnly -- never inline in a hook). Re-arming while a
 -- chain is alive just replaces it; recallLast survives, so no delta base is lost.
 local function armRecallWatch(secs)
-  if not ctx.net.isHost() then return end   -- clients' writes to a replicated ship mean nothing
   if (tonumber(ctx.config.get("qol_recall_mult")) or 1.0) <= 1.0 then return end
-  -- The assist K2_SetActorLocations the ship in multi-thousand-uu steps, and based movement
-  -- moves a rider by the base delta WITH A SWEEP -- a seated passenger would be blocked by
-  -- geometry and stranded or clipped. This releases the HOST's OWN seat only (there is no
-  -- replication channel to remote passengers); a client passenger on a recalled ship is
-  -- released by bench's own seat watch when the teleport carries the slot out from under it.
+  -- Release the LOCAL seat on EVERY machine, BEFORE the host gate: the assist
+  -- K2_SetActorLocations the ship in multi-thousand-uu steps, and based movement moves a
+  -- rider by the base delta WITH A SWEEP -- a seated passenger would be blocked by geometry
+  -- and stranded or clipped. Each machine releases only its own player's seat (that is all
+  -- benchReleaseAll can reach); the isHost gate below guards only the SHIP writes. The old
+  -- order (gate first) meant a CLIENT rider was never released at all (review 2026-07-31).
   if ctx.services.benchReleaseAll then pcall(ctx.services.benchReleaseAll, "recall") end
+  if not ctx.net.isHost() then return end   -- clients' writes to a replicated ship mean nothing
   local wasDead = os.clock() > recallUntil
   recallUntil = math.max(recallUntil, os.clock() + (secs or 120))
   recallTok = recallTok + 1
@@ -2035,6 +2059,9 @@ local function onCharacter()
   -- repeat and applyAll never ran for it.
   local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
   local fn; if pawn then pcall(function() fn = pawn:GetFullName() end) end
+  -- every trigger (world entry, respawn, a TEAMMATE joining -- their pawn constructing is
+  -- what fired this notify): the host re-asserts crouch capability on all player pawns
+  hostEnsureCrouchAll()
   if fn and fn ~= seenPawn then
     seenPawn = fn
     applyAll()
@@ -2218,7 +2245,14 @@ function F.init(c)
   -- The bench feature's crouch entry: sitting crouches THROUGH this module so the death-loot
   -- fix keeps seeing crouch state it can trust, and so the crouch keys reconcile against the
   -- seat instead of fighting it (applyHold treats the flag as an unconditional "crouched").
-  ctx.services.setCrouch = function(_, want)
+  -- The pawn arg is a SAFETY CHECK, not a target: this module only ever reconciles the local
+  -- player's OWN pawn (applyHold -> ownPawn). If a caller hands us some other body -- the
+  -- listen-server localPawn fallback can be a teammate's -- the flag must not flip.
+  ctx.services.setCrouch = function(pawn, want)
+    if pawn ~= nil then
+      local own = ctx.uehelp.ownPawn()
+      if own and not ctx.uehelp.sameObject(pawn, own) then return end
+    end
     benchSeatCrouch = want and true or false
     applyHold()
   end

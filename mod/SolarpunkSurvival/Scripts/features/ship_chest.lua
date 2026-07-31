@@ -1,7 +1,7 @@
 -- The airship's storage chest, without the in-game upgrade (2026-07-27, user spec: the chest
 -- upgrade collides with the other ship upgrades, so the ship just HAS storage).
 --
--- Design: a real BP_Chest_Buildable actor kept at the inside back of the ship -- the exact spot
+-- Design: a real BP_Chest_Buildable actor kept at the inside back of EACH ship -- the exact spot
 -- the game's own chest-upgrade lid occupies (SM_Chest_Top sits at ship-relative (-239, 0, 56),
 -- offline RE of BP_Airship, scratchpad re_ship/). Being a real placed chest buys everything the
 -- spec asks for free of new machinery: the stock chest model, the native look-at interact while
@@ -9,24 +9,26 @@
 -- (DataToJSON/SaveData), replication to friends, and the transfer UI -- W_ChestInventory already
 -- draws the chest grid AND the player's own inventory side by side (GRID_PlayerInventory).
 --
--- The chest IS attached to the ship (K2_AttachToActor under a poison latch -- one fatal ever,
--- then event re-anchoring is the fallback) and its pose is authored SHIP-LOCAL after the glue,
--- so it is real ship geometry: banks, rights and flies with the hull. It never blocks anything
--- (all collision responses Overlap -- non-blocking but the interact overlap still fires --
--- except Visibility which stays Block for the pack-up/hand traces; user 2026-07-30) and
--- is never followed on a timer (polling UObjects on a timer is the mod's oldest crash); ensure
--- runs on events: world entry and every ReceiveUnpossessed of the airship. Opening the storage
--- from the wheel works wherever the actor is -- the UI call only needs its InventorySystem.
+-- MP carriage model (2026-07-31, the review's trailing-chest fix): the chest actor REPLICATES
+-- (inventory, existence) but its MOVEMENT replication is forced OFF by the host, and EVERY
+-- machine glues its own copy to its own ship with K2_AttachToActor -- so each machine's chest
+-- rides its locally-smoothed ship rigidly instead of trailing the raw replicated location by
+-- the SmoothSync interpolation lag. The repMove=false signature is also how a client recognises
+-- OUR chest (a player-built chest replicates movement; ours is the only one that does not).
+-- The bench feature's ship watch drives the per-pass carry via ctx.services.shipChestCarry.
 --
--- The anchor is remembered in the mod's sidecar save (save/state.json rides every game save), so
--- after a reload the chest the game restored at the old spot is recognised and adopted, never
--- duplicated. Adoption is by location: "the chest within adopt-range of where the ship chest
--- belongs (or last was)" IS the ship chest. Host does all spawning/moving; clients only find the
--- replicated actor.
+-- Anchor math reads the ship's PHYSICAL hull component (the actor transform goes stale while
+-- parked -- Tick, which copies hull->actor, is disabled when docked). Full rotation: the chest
+-- pose is authored ship-local after the glue, so it banks and rights with the hull.
+--
+-- Per-ship: every airship gets its own chest, keyed by AirshipID; the anchor is remembered per
+-- ship in the mod's sidecar save, so a reload adopts the restored chest, never duplicates. The
+-- old single-ship flag (ship_chest_at) is read once as a migration fallback.
 local F = {}
 local ctx
 
 local function qmap() return ctx.map.qol or {} end
+local function bmap() return ctx.map.bench or {} end
 
 local function deferOnly(ms, fn)
   return pcall(ExecuteWithDelay, ms, fn) == true
@@ -57,28 +59,72 @@ local function liveOf(className)
   return out
 end
 
-local function theShip()
-  return liveOf(qmap().airshipClass)[1]
+local function ships() return liveOf(qmap().airshipClass) end
+
+local function guidStr(g)
+  local s
+  pcall(function()
+    s = string.format("%08X%08X%08X%08X", g.A or 0, g.B or 0, g.C or 0, g.D or 0)
+  end)
+  return s
 end
 
--- Where the chest belongs RIGHT NOW: the ship's back-interior point, ship-relative offsets
--- rotated by the ship's yaw. Yaw only -- this is computed when the ship is parked (level), and a
--- parked ship's pitch/roll are noise the chest should not inherit.
+local function shipIdOf(ship)
+  local okI, id = ctx.uehelp.get(ship, bmap().shipIdProp or "AirshipID")
+  local s = okI and guidStr(id) or nil
+  if s and s ~= string.rep("0", 32) then return s end
+  local full; pcall(function() full = ship:GetFullName() end)
+  return full
+end
+
+-- UE FRotationMatrix axes (the bench.lua math, local copy): a ship-local offset to world under
+-- the FULL hull rotation, so the anchor stays on the tilted deck.
+local function rotVec(rot, v)
+  local p, y, r = math.rad(rot.Pitch or 0), math.rad(rot.Yaw or 0), math.rad(rot.Roll or 0)
+  local sp, cp, sy, cy, sr, cr = math.sin(p), math.cos(p), math.sin(y), math.cos(y), math.sin(r), math.cos(r)
+  local f = { X = cp * cy, Y = cp * sy, Z = sp }
+  local ri = { X = sr * sp * cy - cr * sy, Y = sr * sp * sy + cr * cy, Z = -sr * cp }
+  local u = { X = -(cr * sp * cy + sr * sy), Y = cy * sr - cr * sp * sy, Z = cr * cp }
+  return {
+    X = v.X * f.X + v.Y * ri.X + v.Z * u.X,
+    Y = v.X * f.Y + v.Y * ri.Y + v.Z * u.Y,
+    Z = v.X * f.Z + v.Y * ri.Z + v.Z * u.Z,
+  }
+end
+
+-- The ship's TRUE frame: the SCS `Root` StaticMeshComponent is the physical hull; the actor
+-- transform only tracks it while Tick runs and Tick is disabled docked/parked (stale-origin
+-- family -- the "host seated at the ship's center" bug came from exactly this).
+local function hullFrame(ship)
+  local loc, rot
+  pcall(function()
+    local hull = ship[bmap().hullProp or "Root"]
+    if ctx.uehelp.isValid(hull) then
+      local l = ctx.uehelp.vec(hull:K2_GetComponentLocation())
+      local r = hull:K2_GetComponentRotation()
+      if l and r and type(r.Yaw) == "number" then
+        loc, rot = l, { Pitch = r.Pitch or 0.0, Yaw = r.Yaw, Roll = r.Roll or 0.0 }
+      end
+    end
+  end)
+  if not loc then
+    pcall(function() loc = ctx.uehelp.vec(ship:K2_GetActorLocation()) end)
+    local yaw; pcall(function() yaw = ship:K2_GetActorRotation().Yaw end)
+    if not (loc and type(yaw) == "number") then return nil, nil end
+    rot = { Pitch = 0.0, Yaw = yaw, Roll = 0.0 }
+  end
+  return loc, rot
+end
+
+-- Where the chest belongs RIGHT NOW: the ship's back-interior point off the hull frame.
 local function anchorPoint(ship)
-  local loc, yaw
-  pcall(function() loc = ctx.uehelp.vec(ship:K2_GetActorLocation()) end)
-  pcall(function() yaw = ship:K2_GetActorRotation().Yaw end)
-  if not (loc and type(yaw) == "number") then return nil, nil end
+  local loc, rot = hullFrame(ship)
+  if not loc then return nil, nil end
   local back  = tonumber(ctx.config.get("ship_chest_back"))  or -240.0
   local right = tonumber(ctx.config.get("ship_chest_right")) or 0.0
   local up    = tonumber(ctx.config.get("ship_chest_up"))    or 40.0
-  local r = math.rad(yaw)
-  local c, s = math.cos(r), math.sin(r)
-  return {
-    X = loc.X + back * c - right * s,
-    Y = loc.Y + back * s + right * c,
-    Z = loc.Z + up,
-  }, yaw
+  local o = rotVec(rot, { X = back, Y = right, Z = up })
+  return { X = loc.X + o.X, Y = loc.Y + o.Y, Z = loc.Z + o.Z }, rot
 end
 
 local function chestNear(pt, r2)
@@ -95,7 +141,7 @@ local function chestNear(pt, r2)
 end
 
 local function adoptRadius2()
-  local r = tonumber(ctx.config.get("ship_chest_adopt_r")) or 600.0
+  local r = tonumber(ctx.config.get("ship_chest_adopt_r")) or 300.0
   return r * r
 end
 
@@ -110,7 +156,8 @@ end
 -- working, open died). Visibility stays Block -- pack-up and the hand traces ride it.
 -- Never LESS response than Overlap while bodies may be inside; Block is never restored, so
 -- there is no depenetration launch. Responses do not replicate -- every machine runs this
--- on its own copy; events are rare enough that re-applying beats a stale-able latch.
+-- on its own copy. Latched per chest FULLNAME (which embeds the world, so a reload's fresh
+-- names self-invalidate); ensure events re-force it in case the game re-asserted responses.
 -- The walk-up OPEN is a LineTraceSingle on the game's custom "Interactable" TRACE channel
 -- (TraceForInteractable bytecode: TraceTypeQuery3; the chest mesh's own template Blocks a
 -- channel NAMED Interactable). A single trace needs ECR_Block -- Overlap is invisible to it
@@ -144,14 +191,18 @@ local function interactableChannel()
   return interactableECC
 end
 
-local function disarmChestCollision(chest)
+local chestDisarmed = {}   -- chest fullname -> responses already set (this world's names)
+local function disarmChestCollision(chest, force)
   if not ctx.uehelp.isValid(chest) then return end
+  local full; pcall(function() full = chest:GetFullName() end)
+  if full and chestDisarmed[full] and not force then return end
   local mesh
   pcall(function() mesh = chest[(ctx.map.bench and ctx.map.bench.meshProp) or "PlaceableMesh"] end)
   if not ctx.uehelp.isValid(mesh) then return end
-  ctx.uehelp.call(mesh, "SetCollisionResponseToAllChannels", 1)  -- ECR_Overlap
+  local ok = ctx.uehelp.call(mesh, "SetCollisionResponseToAllChannels", 1) == true  -- ECR_Overlap
   ctx.uehelp.call(mesh, "SetCollisionResponseToChannel", 3, 2)   -- ECC_Visibility=3 -> Block
   ctx.uehelp.call(mesh, "SetCollisionResponseToChannel", interactableChannel(), 2)  -- open trace
+  if ok and full then chestDisarmed[full] = true end
 end
 
 -- Once attached, the chest's pose is authored in SHIP-LOCAL space. The KeepWorld attach
@@ -168,35 +219,122 @@ local function placeChestRelative(chest)
   pcall(function() chest:K2_SetActorRelativeRotation({ Pitch = 0.0, Yaw = spin, Roll = 0.0 }, false, {}, false) end)
 end
 
--- The ship chest, found fresh every time (never cached across ticks): nearest chest to where it
--- belongs, else nearest to where the sidecar remembers leaving it (the ship flew away, or a
--- reload restored the chest at its old spot).
-local function findShipChest(ship)
-  local anchor = ship and anchorPoint(ship) or nil
-  local c = chestNear(anchor, adoptRadius2())
-  if c then return c, anchor end
-  local at = ctx.save.getFlag("ship_chest_at")
-  if type(at) == "table" and at.X then
-    return chestNear({ X = at.X, Y = at.Y, Z = at.Z }, adoptRadius2()), anchor
-  end
-  return nil, anchor
+local function isAttachedTo(chest, ship)
+  local parent
+  pcall(function() parent = chest:GetAttachParentActor() end)
+  return ctx.uehelp.isValid(parent) and ctx.uehelp.sameObject(parent, ship)
 end
 
--- Host-side: make the ship's chest exist and sit at the ship's back. Runs deferred, from events
--- only. Move + rotate are the proven-safe K2 calls; the one genuinely new native op -- spawning a
--- placeable the build system usually births -- is under its own poison latch, so if this build
--- objects it costs one crash ever and the feature reports itself dead thereafter.
-local function ensureChest(reason)
+-- THE ship's chest (per ship id, latched for the session). Host adoption is by location and
+-- only from parked-context events (allowAdopt): nearest chest within the tight adopt radius
+-- of the recorded per-ship spot first (where OURS provably was), then of the current anchor
+-- (the reload-restore case). Clients recognise our chest by the repMove=false signature --
+-- a player-built chest replicates movement, so the signature cannot steal one.
+local chestLatch = {}   -- ship id -> chest fullname (this world)
+local function findShipChest(ship, allowAdopt)
+  if not ship then return nil, nil, nil end
+  local anchor, rot = anchorPoint(ship)
+  local id = tostring(shipIdOf(ship))
+  local latched = chestLatch[id]
+  if latched then
+    for _, c in ipairs(liveOf(qmap().chestClass)) do
+      local f; pcall(function() f = c:GetFullName() end)
+      if f == latched then return c, anchor, rot end
+    end
+    chestLatch[id] = nil
+  end
+  local found
+  if allowAdopt and ctx.net.isHost() then
+    local at = ctx.save.getFlag("ship_chest_at_" .. id)
+    if not (type(at) == "table" and at.X) then at = ctx.save.getFlag("ship_chest_at") end  -- pre-per-ship flag
+    if type(at) == "table" and at.X then
+      found = chestNear({ X = at.X, Y = at.Y, Z = at.Z }, adoptRadius2())
+    end
+    if not found then found = chestNear(anchor, adoptRadius2()) end
+  elseif not ctx.net.isHost() then
+    -- client latch (works mid-flight too -- a join during flight must not wait for a park):
+    -- nearest chest of the class with movement replication OFF, our chest's unique signature
+    local liveR = tonumber(ctx.config.get("ship_chest_adopt_live_r")) or 3000.0
+    local best, bestD = nil, liveR * liveR
+    if anchor then
+      for _, c in ipairs(liveOf(qmap().chestClass)) do
+        local okR, repMove = ctx.uehelp.get(c, "bReplicateMovement")
+        if okR and repMove == false then
+          local cl; pcall(function() cl = ctx.uehelp.vec(c:K2_GetActorLocation()) end)
+          if cl then
+            local d = ctx.uehelp.dist2(cl, anchor)
+            if d <= bestD then best, bestD = c, d end
+          end
+        end
+      end
+    end
+    found = best
+  end
+  if found then
+    local f; pcall(function() f = found:GetFullName() end)
+    if f then chestLatch[id] = f end
+  end
+  return found, anchor, rot
+end
+
+-- Glue one machine's copy of the chest to its ship. Every machine calls this (the bench ship
+-- watch drives it per pass); the guards decide whether a write means anything here: the host
+-- may always act; a client only touches a copy whose movement replication is off (= ours).
+local chestShielded = {}   -- "shipFull|chestFull" -> hull sweep already ignores the chest
+local function carryChest(ship, live)
   if not ctx.config.get("ship_chest") then return end
-  if not ctx.net.isHost() then return end
-  local ship = theShip()
-  if not ship then return end
-  local anchor, yaw = anchorPoint(ship)
+  local chest, anchor, rot = findShipChest(ship, not live)
+  if not (chest and anchor) then return end
+  disarmChestCollision(chest)
+  local sf; pcall(function() sf = ship:GetFullName() end)
+  local cf; pcall(function() cf = chest:GetFullName() end)
+  local key = tostring(sf) .. "|" .. tostring(cf)
+  if not chestShielded[key] then
+    local shipRoot
+    pcall(function() shipRoot = ship:K2_GetRootComponent() end)
+    if ctx.uehelp.isValid(shipRoot) then
+      if ctx.uehelp.call(shipRoot, "IgnoreActorWhenMoving", chest, true) then
+        chestShielded[key] = true
+      end
+    end
+  end
+  if isAttachedTo(chest, ship) then return end
+  if not ctx.net.isHost() then
+    local okR, repMove = ctx.uehelp.get(chest, "bReplicateMovement")
+    if okR and repMove == true then return end   -- the host's replication owns this copy
+  end
+  if ctx.log.isPoisoned("chest:attach") then
+    -- attach is off on this build: soft-carry to the anchor so the chest at least follows
+    pcall(function() chest:K2_SetActorLocation(anchor, false, {}, false) end)
+    if rot then
+      local spin = tonumber(ctx.config.get("ship_chest_yaw")) or 90.0
+      pcall(function()
+        chest:K2_SetActorRotation({ Pitch = rot.Pitch, Yaw = rot.Yaw + spin, Roll = rot.Roll }, false)
+      end)
+    end
+    return
+  end
+  pcall(function() chest:K2_SetActorLocation(anchor, false, {}, false) end)
+  ctx.log.step("shipchest.attach")
+  ctx.log.risky("chest:attach", function()
+    pcall(function() chest:K2_AttachToActor(ship, FName("None"), 1, 1, 1, false) end)
+  end)
+  if isAttachedTo(chest, ship) then
+    placeChestRelative(chest)   -- ship-local pose is the authority once glued
+    ctx.log.info("ship_chest: chest attached to the ship (engine-carried from here)")
+  end
+end
+
+-- Host-side: make EVERY ship's chest exist and sit at its stern. Runs deferred, from events
+-- only. Failures affect one ship only; the loop continues.
+local repDisarmed = {}   -- chest fullname -> movement replication forced off
+local function ensureOneChest(ship, reason)
+  local anchor, rot = anchorPoint(ship)
   if not anchor then return end
-  local chest = findShipChest(ship)
+  local chest = findShipChest(ship, true)
   if not chest then
-    -- one latch tag ("chest:spawn") shared with qol's buffer shuffle: the THING being risked is
-    -- the same either way -- spawning a BP_Chest_Buildable from Lua
+    -- one latch tag ("chest:spawn") shared with qol's buffer shuffle: the THING being risked
+    -- is the same either way -- spawning a BP_Chest_Buildable from Lua
     if ctx.log.isPoisoned("chest:spawn") then return end
     local cls = ctx.uehelp.classByName(qmap().chestClass,
       qmap().chestClassPath and (qmap().chestClassPath .. "." .. qmap().chestClass) or nil)
@@ -214,47 +352,57 @@ local function ensureChest(reason)
     end
     ctx.log.info("ship_chest: the ship grew a storage chest (" .. tostring(reason) .. ")")
   end
-  -- Non-blocking by spec (see disarmChestCollision); IgnoreActorWhenMoving stays as belt and
-  -- braces for the hull sweep. Runtime state, not saved: re-applied every ensure (idempotent).
-  disarmChestCollision(chest)
-  local shipRoot
-  pcall(function() shipRoot = ship:K2_GetRootComponent() end)
-  if ctx.uehelp.isValid(shipRoot) then
-    ctx.uehelp.call(shipRoot, "IgnoreActorWhenMoving", chest, true)
-  end
-  local attachedParent
-  pcall(function() attachedParent = chest:GetAttachParentActor() end)
-  local attached = ctx.uehelp.isValid(attachedParent) and ctx.uehelp.sameObject(attachedParent, ship)
-  if not attached then
-    ctx.log.step("shipchest.place")
-    pcall(function() chest:K2_SetActorLocation(anchor, false, {}, false) end)
-    if type(yaw) == "number" then
-      local spin = tonumber(ctx.config.get("ship_chest_yaw")) or 90.0
-      pcall(function() chest:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw + spin, Roll = 0.0 }, false) end)
-    end
-    -- REAL attachment (user 2026-07-30: a dock RETRIEVE moved the unmanned ship -- no
-    -- possess/unpossess fires -- and the chest stayed floating in the sky; "they should
-    -- ALWAYS be attached"). KeepWorld attach right after placement, so the engine carries it
-    -- through recall/retrieve with zero hook coverage. The FName arg is the crash-ledger
-    -- family, hence the poison latch: one fatal ever, then the event-driven placement above
-    -- remains the (holey) fallback. Host-only here; movement replication carries clients.
-    if not ctx.log.isPoisoned("chest:attach") then
-      ctx.log.step("shipchest.attach")
-      ctx.log.risky("chest:attach", function()
-        pcall(function() chest:K2_AttachToActor(ship, FName("None"), 1, 1, 1, false) end)
-      end)
-      pcall(function() attachedParent = chest:GetAttachParentActor() end)
-      if ctx.uehelp.isValid(attachedParent) and ctx.uehelp.sameObject(attachedParent, ship) then
-        ctx.log.info("ship_chest: chest attached to the ship (engine-carried from here)")
-      end
+  local id = tostring(shipIdOf(ship))
+  local cf; pcall(function() cf = chest:GetFullName() end)
+  if cf then chestLatch[id] = cf end
+  -- movement replication OFF, always (spawned or adopted): each machine glues its own copy to
+  -- its own smoothed ship; raw location replication is what made the chest trail for riders.
+  -- Also the client-recognition signature (see findShipChest).
+  if cf and not repDisarmed[cf] then
+    local okR, reps = ctx.uehelp.get(chest, "bReplicates")
+    if okR and reps == true then
+      if ctx.uehelp.call(chest, "SetReplicateMovement", false) then repDisarmed[cf] = true end
+    else
+      repDisarmed[cf] = true
     end
   end
-  if ctx.uehelp.isValid(attachedParent) and ctx.uehelp.sameObject(attachedParent, ship) then
-    -- ship-local pose is the authority once glued: heals a tilt an earlier attach baked in,
-    -- and doubles as live offset tuning (re-runs on every ensure)
-    placeChestRelative(chest)
+  disarmChestCollision(chest, true)   -- ensure events re-force (the game may have re-asserted)
+  carryChest(ship, false)
+  if isAttachedTo(chest, ship) then placeChestRelative(chest) end   -- live offset tuning path
+  ctx.save.setFlag("ship_chest_at_" .. id, { X = anchor.X, Y = anchor.Y, Z = anchor.Z })
+end
+
+local function ensureChest(reason)
+  if not ctx.config.get("ship_chest") then return end
+  if not ctx.net.isHost() then return end
+  for _, ship in ipairs(ships()) do
+    ensureOneChest(ship, reason)
   end
-  ctx.save.setFlag("ship_chest_at", { X = anchor.X, Y = anchor.Y, Z = anchor.Z })
+end
+
+-- The ship whose storage the LOCAL player means: the airship they are possessing (at the
+-- wheel the controller's pawn IS the ship), else the nearest ship to their character. Never
+-- "the first ship FindAllOf lists" -- in co-op that opened and emptied someone else's chest.
+local function myShip()
+  local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+  local pawn
+  if pc then pcall(function() pawn = pc:K2_GetPawn() end) end
+  if ctx.uehelp.isValid(pawn) and ctx.uehelp.className(pawn) == qmap().airshipClass then
+    return pawn
+  end
+  local loc
+  if ctx.uehelp.isValid(pawn) then pcall(function() loc = ctx.uehelp.vec(pawn:K2_GetActorLocation()) end) end
+  if not loc then return nil end
+  local r = tonumber(ctx.config.get("qol_ship_chest_range")) or 3000.0
+  local best, bestD = nil, r * r
+  for _, s in ipairs(ships()) do
+    local sl; pcall(function() sl = ctx.uehelp.vec(s:K2_GetActorLocation()) end)
+    if sl then
+      local d = ctx.uehelp.dist2(sl, loc)
+      if d <= bestD then best, bestD = s, d end
+    end
+  end
+  return best
 end
 
 -- Open the ship's storage UI: the chest grid + the player's own inventory, which is the transfer
@@ -264,7 +412,7 @@ local function openShipChestUI(pc)
   if not ctx.config.get("ship_chest") then return false end
   pc = pc or ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
   if not pc then return false end
-  local chest = findShipChest(theShip())
+  local chest = findShipChest(myShip(), true)
   if not chest then return false end
   local inv
   pcall(function() inv = chest[(ctx.map.wand and ctx.map.wand.inventorySystemProp) or "InventorySystem"] end)
@@ -275,18 +423,22 @@ local function openShipChestUI(pc)
 end
 
 -- The airship's ReceiveUnpossessed = "someone just stopped driving", the exact moment the parked
--- ship should have its chest back at its stern. Hook body touches nothing; it only schedules.
--- The registration is re-keyed to the SHIP INSTANCE: a world (re)load builds a fresh airship on
--- a possibly-reloaded class, and a hook left on the old copy dies silently (proven live
--- 2026-07-27 on the qol chest-grid hook). Old ids are dropped first so a surviving class never
--- accumulates duplicates.
-local hookedShip        -- fullname of the ship instance the current registration was armed off
+-- ship should have its chest back at its stern. The hook is registered on the CLASS function, so
+-- one registration covers every ship; the body re-ensures ALL of them. It is re-keyed when the
+-- LOCAL CONTROLLER changes (world (re)load reloads class chains and a hook left on the old copy
+-- dies silently -- proven live 2026-07-27 on the qol chest-grid hook). Old ids are dropped first
+-- so a surviving class never accumulates duplicates.
+local hookWorldPc       -- local controller fullname the current registration was armed under
 local hookIds           -- { preId, postId, path }
 local function armShipHook()
-  local ship = theShip()
+  local pcNow
+  pcall(function()
+    local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+    pcNow = pc and pc:GetFullName() or nil
+  end)
+  if not pcNow or pcNow == hookWorldPc then return end
+  local ship = ships()[1]
   if not ship then return end
-  local shipFn; pcall(function() shipFn = ship:GetFullName() end)
-  if not shipFn or shipFn == hookedShip then return end
   local fn = qmap().shipUnpossessFn
   if not fn then return end
   local path = fullFuncPath(ship, fn)
@@ -295,12 +447,17 @@ local function armShipHook()
   hookIds = nil
   local ok, pre, post = pcall(RegisterHook, path, ctx.log.guard("shipchest.unpossess", function()
     deferOnly(800, function()
-      disarmChestCollision(findShipChest(theShip()))   -- every machine: responses don't replicate
+      for _, s in ipairs(ships()) do
+        disarmChestCollision(findShipChest(s, ctx.net.isHost()), true)  -- every machine: responses don't replicate
+      end
       ensureChest("parked")
     end)
   end))
   if ok then
-    hookedShip, hookIds = shipFn, { pre, post, path }
+    hookWorldPc, hookIds = pcNow, { pre, post, path }
+    -- world-scoped latches die with the world's names; fullname keys self-invalidate but the
+    -- ship-id latch does not (AirshipID persists) -- clear it so re-latch happens fresh
+    chestLatch, chestShielded = {}, {}
     ctx.log.debug("ship_chest: hooked " .. path)
   end
 end
@@ -316,9 +473,11 @@ function F.init(context)
     return F
   end
 
-  -- qol's wheel keys consume these instead of duplicating the find/verify dance.
+  -- qol's wheel keys consume these instead of duplicating the find/verify dance; bench's ship
+  -- watch drives the per-pass carriage on every machine.
   ctx.services.shipChestOpen = openShipChestUI
   ctx.services.shipChestEnsure = function(reason) deferOnly(0, function() ensureChest(reason or "asked") end) end
+  ctx.services.shipChestCarry = carryChest
 
   -- World entry: the same Character-notify channel every world-entry trigger rides (never a bare
   -- Actor/controller notify -- that family froze world load, see the gotchas). The ship streams
@@ -327,12 +486,14 @@ function F.init(context)
     (ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C", function()
       deferOnly(4000, function()
         armShipHook()
-        disarmChestCollision(findShipChest(theShip()))   -- every machine: responses don't replicate
+        for _, s in ipairs(ships()) do
+          disarmChestCollision(findShipChest(s, ctx.net.isHost()), true)
+        end
         ensureChest("world entry")
       end)
     end)
 
-  ctx.log.info("ship_chest: armed (chest at the ship's stern; TAB at the wheel opens transfer)")
+  ctx.log.info("ship_chest: armed (chest at each ship's stern; TAB at the wheel opens transfer)")
   return F
 end
 

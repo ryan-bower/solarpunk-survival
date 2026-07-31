@@ -534,11 +534,27 @@ end
 -- Turn a composed spec into the real struct array and assign it. Weights of classes that don't
 -- resolve (no content pak -> no diamond/gold classes) fold into entry 1 (the Leaf/Algae base),
 -- keeping the total honest. Returns true only when the readback length matches.
+--
+-- EXCEPTION: the everyday rod. BP_ModFishingRod_Item_C is pak-only, and pak residency has
+-- failed silently in real sessions ("widget class not resident / pak missing?") -- folding the
+-- ROD weight into leaves means no session without the pak can ever fish up a fishing rod (the
+-- vanilla class it replaced was always resident, so the drop used to be guaranteed). When the
+-- clone won't resolve, the VANILLA rod takes its river slots, loudly, once.
+local ROD_FALLBACK = { ["BP_ModFishingRod_Item_C"] = "BP_FishingRod_Item_C" }
+local rodFallbackWarned = false
 local function writeRiver(river, entries)
   local m = ctx.map.fishing
   local arr, fold = {}, 0
   for _, e in ipairs(entries) do
     local cls = resolveClass(e.cls)
+    if not cls and ROD_FALLBACK[e.cls] then
+      cls = resolveClass(ROD_FALLBACK[e.cls])
+      if cls and not rodFallbackWarned then
+        rodFallbackWarned = true
+        ctx.log.warn("fishing: " .. tostring(e.cls) .. " is not resident (pak missing?) -- " ..
+          "the VANILLA rod takes its river slots this session")
+      end
+    end
     if cls then
       arr[#arr + 1] = { [m.lootItemField] = cls, [m.lootWeightField] = e.w }
     else
@@ -951,16 +967,32 @@ end
 -- exactly these (decoded 2026-07-30 from bp_controller.json: it spawns the item actor at the
 -- player's location +500Z with FlyToPlayer=FALSE and never touches an inventory) -- so a loose
 -- rod is either the vanish bug's leavings or this ledger's own earlier litter.
-local function groundRodActors(target)
+-- With nearLoc+r the sweep is SCOPED: only actors within r cm count. Every path that MOVES
+-- actors (fly-ins, rescue) must scope -- in co-op an unscoped sweep yanked rods a teammate
+-- had deliberately dropped (or left at a base 3 km away) into this player's pack (review
+-- 2026-07-31). Unscoped calls remain for counting/reporting only.
+local function groundRodActors(target, nearLoc, r)
   local out = {}
+  local r2 = (tonumber(r) and tonumber(r) > 0) and r * r or nil
   for _, a in ipairs(ctx.uehelp.findAll(target)) do
     if ctx.uehelp.isValid(a) then
       local fn = ""
       pcall(function() fn = a:GetFullName() end)
-      if not fn:find("Default__", 1, true) then out[#out + 1] = a end
+      if not fn:find("Default__", 1, true) then
+        if r2 and nearLoc then
+          local al; pcall(function() al = ctx.uehelp.vec(a:K2_GetActorLocation()) end)
+          if al and ctx.uehelp.dist2(al, nearLoc) <= r2 then out[#out + 1] = a end
+        else
+          out[#out + 1] = a
+        end
+      end
     end
   end
   return out
+end
+
+local function reclaimR()
+  return tonumber(cfg("fishing_reclaim_r")) or 3000.0
 end
 
 -- Hand a loose rod actor to the player through the game's own pickup path: park it on the pawn
@@ -1035,9 +1067,12 @@ local function restoreRods(spec, missing, durs)
     if not ctx.uehelp.isValid(pawn) then dropHold(); return end
     local owed = missing - (math.max(0, playerRodCount(pawn, target)) - baseCount)
     if owed > 0 then
-      -- loose rods first: they ARE the debt (or our own earlier drops) -- fly them in
+      -- loose rods first: they ARE the debt (or our own earlier drops) -- fly them in.
+      -- SCOPED to the player's surroundings: a distant loose rod may be a teammate's
+      -- deliberate drop, never delivery stock
+      local myLoc; pcall(function() myLoc = ctx.uehelp.vec(pawn:K2_GetActorLocation()) end)
       local preNames, sent = {}, 0
-      for _, a in ipairs(groundRodActors(target)) do
+      for _, a in ipairs(groundRodActors(target, myLoc, reclaimR())) do
         local fn = ""
         pcall(function() fn = a:GetFullName() end)
         preNames[fn] = true
@@ -1055,9 +1090,12 @@ local function restoreRods(spec, missing, durs)
       end
       if toSpawn > 0 then
         -- the fresh drops fell at the player's feet with FlyToPlayer=false: fly them in too
+        -- (same scope: only the drops around THIS player are ours)
         defer(700, ctx.log.guard("fishing.ledgerfly", function()
           onGameThread(function()
-            for _, a in ipairs(groundRodActors(target)) do
+            if not ctx.uehelp.isValid(pawn) then return end
+            local nowLoc; pcall(function() nowLoc = ctx.uehelp.vec(pawn:K2_GetActorLocation()) end)
+            for _, a in ipairs(groundRodActors(target, nowLoc, reclaimR())) do
               local fn = ""
               pcall(function() fn = a:GetFullName() end)
               if not preNames[fn] then deliverRodActor(a, pawn) end
@@ -1098,6 +1136,12 @@ end
 local function rodLedgerSweep(tok)
   if tok ~= ledgerToken or ledgerDone then return end
   if not cfg("fishing_rod_ledger") then ledgerDone = true; return end
+  -- HOST ONLY (like migrateVanillaRods): the ledger's promises describe THIS machine's own
+  -- saved world. A client joining a friend's world would audit the FRIEND's inventories
+  -- against its own solo-world promises, find them "vanished", and spawn free duplicate rods
+  -- on every join (review 2026-07-31). ledgerDone stays false so nothing snapshots either --
+  -- the client's own promise survives untouched for its next hosted session.
+  if not ctx.net.isHost() then return end
   local specs = ledgerKinds()
   if #specs == 0 then ledgerDone = true; return end
   local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
@@ -1411,8 +1455,11 @@ local function grantReward(pawn)
   -- water, the prize free-falls past the pickup overlap and sinks (live 2026-07-30: "the waters
   -- yield: Diamond", the player got nothing). Snapshot the class's loose actors, then fly the
   -- fresh drop to the pawn exactly the way the rod ledger delivers its restores.
+  -- SCOPED to this player's surroundings: an identical prize actor lying at a teammate's
+  -- base must be neither snapshot noise nor fly-in stock
+  local myLoc; pcall(function() myLoc = ctx.uehelp.vec(pawn:K2_GetActorLocation()) end)
   local preNames = {}
-  for _, a in ipairs(groundRodActors(e.cls)) do
+  for _, a in ipairs(groundRodActors(e.cls, myLoc, reclaimR())) do
     local fn = ""
     pcall(function() fn = a:GetFullName() end)
     preNames[fn] = true
@@ -1427,7 +1474,8 @@ local function grantReward(pawn)
   defer(700, ctx.log.guard("fishing.prizefly", function()
     onGameThread(function()
       if not ctx.uehelp.isValid(pawn) then return end
-      for _, a in ipairs(groundRodActors(e.cls)) do
+      local nowLoc; pcall(function() nowLoc = ctx.uehelp.vec(pawn:K2_GetActorLocation()) end)
+      for _, a in ipairs(groundRodActors(e.cls, nowLoc, reclaimR())) do
         local fn = ""
         pcall(function() fn = a:GetFullName() end)
         if not preNames[fn] then deliverRodActor(a, pawn) end
@@ -1838,8 +1886,25 @@ end
 -- the hook body -- the physical click time, not this deferred body's run time. Four jobs, in
 -- priority order: resolve an active skillshot (fallback -- the animator usually beat us to it),
 -- honor a buzzer-beater stamp, reveal a pending bar, drive the diamond rod / stamp worn rods.
+-- THIS machine's own character and nothing else: the cast/equip hooks are CLASS hooks, so on
+-- a listen server they can fire with a TEAMMATE's pawn as context -- and both onClick and
+-- onHandRebuilt drive machine-GLOBAL rod state (lineOut, diamondHeld, the minigame) and, for
+-- seated rods, rebuild the context pawn's hand actor. A remote pawn must never reach either
+-- (review 2026-07-31).
+local function isMyPawn(pawn)
+  if not ctx.uehelp.isValid(pawn) then return false end
+  local mine = ctx.uehelp.ownPawn and ctx.uehelp.ownPawn() or ctx.uehelp.localPawn()
+  return mine ~= nil and ctx.uehelp.sameObject(pawn, mine)
+end
+
 local function onClick(pawn, clickAt)
   if not ctx.uehelp.isValid(pawn) then return end
+  if not isMyPawn(pawn) then
+    -- a foreign click may have stamped mgClickAt in the hook body (pure-Lua stamp, no safe
+    -- identity check there): revoke it -- the resolve belongs to OUR click only
+    if mgActive and mgAwaitClick then mgClickAt = nil end
+    return
+  end
   clickAt = clickAt or os.clock()
   if clickAt - lastClickAt < (tonumber(cfg("fishing_click_debounce")) or 0.3) then return end
   lastClickAt = clickAt
@@ -2141,6 +2206,11 @@ end
 -- recastAfterRebuild below, not rescued.
 local function onHandRebuilt(pawn)
   if not ctx.uehelp.isValid(pawn) then return end
+  -- LOCAL pawn only (see isMyPawn): a teammate's hotbar swap fired this on the host and
+  -- (a) marked the host's own cast as stowed (lineOut=false -- no recast, no bites for the
+  -- session), (b) flipped diamondHeld off the WRONG hand and rewrote every river's luck,
+  -- (c) ran seatRod against the teammate's pawn, destroying their hand actor cross-machine.
+  if not isMyPawn(pawn) then return end
   if mgActive or mgPending then
     -- the rebuild tore the rod out from under the skillshot: fold the bar, salvage the real
     -- pity value we parked, and put the leaf river back
@@ -2411,8 +2481,9 @@ function F.init(c)
       onGameThread(function() F.applyTables("console") end)
       return true
     end)
-    -- reels every loose pak rod (diamond or modded) in the world into the player's pack via
-    -- the game's own pickup path -- the manual cleanup for ledger litter and stranded rods
+    -- reels loose pak rods AROUND YOU (fishing_rescue_r) into your pack via the game's own
+    -- pickup path -- the manual cleanup for ledger litter and stranded rods. Scoped: in co-op
+    -- a world-wide reel-in stole rods teammates had deliberately dropped at their bases.
     RegisterConsoleCommandHandler("sps_fish_rescue", function()
       onGameThread(ctx.log.guard("fishing.rescue", function()
         local pawn = ctx.uehelp.playerPawn(ctx.map.pawn and ctx.map.pawn.class)
@@ -2420,14 +2491,16 @@ function F.init(c)
           ctx.log.info("fishing: rescue -- no player pawn yet")
           return
         end
+        local myLoc; pcall(function() myLoc = ctx.uehelp.vec(pawn:K2_GetActorLocation()) end)
+        local r = tonumber(cfg("fishing_rescue_r")) or 5000.0
         local n = 0
         for _, spec in ipairs(ledgerKinds()) do
-          for _, a in ipairs(groundRodActors(spec.short)) do
+          for _, a in ipairs(groundRodActors(spec.short, myLoc, r)) do
             if deliverRodActor(a, pawn) then n = n + 1 end
           end
         end
         ctx.log.info(string.format(
-          "fishing: rescue -- %d loose rod(s) sent flying to your pack", n))
+          "fishing: rescue -- %d loose rod(s) within %.0f m sent flying to your pack", n, r / 100))
       end))
       return true
     end)

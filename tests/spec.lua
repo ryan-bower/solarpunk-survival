@@ -1343,6 +1343,58 @@ do
   near(o.dX, 60.0, "bench: stand nudge along the facing (X)")
   ok(math.abs(o.dY) < 1e-6, "bench: stand nudge along the facing (Y)")
 
+  -- full-rotation frame math (UE FRotationMatrix conventions; the MP pitch/roll fix)
+  local function near3(v, x, y, z, msg)
+    near(v.X, x, msg .. " (X)"); near(v.Y, y, msg .. " (Y)"); near(v.Z, z, msg .. " (Z)")
+  end
+  local fwd, right, up = B.rotAxes({ Pitch = 0, Yaw = 0, Roll = 0 })
+  near3(fwd, 1, 0, 0, "bench: identity fwd"); near3(right, 0, 1, 0, "bench: identity right")
+  near3(up, 0, 0, 1, "bench: identity up")
+  fwd, right = B.rotAxes({ Pitch = 0, Yaw = 90, Roll = 0 })
+  near3(fwd, 0, 1, 0, "bench: yaw90 fwd"); near3(right, -1, 0, 0, "bench: yaw90 right")
+  near3(B.rotVec({ Pitch = 90, Yaw = 0, Roll = 0 }, { X = 1, Y = 0, Z = 0 }), 0, 0, 1,
+    "bench: pitch90 sends forward straight up")
+  near3(B.rotVec({ Pitch = 0, Yaw = 0, Roll = 90 }, { X = 0, Y = 1, Z = 0 }), 0, 0, -1,
+    "bench: roll90 sends right down (UE positive roll = right side down)")
+  near3(B.rotVec({ Pitch = 30, Yaw = 0, Roll = 0 }, { X = 0, Y = 0, Z = 1 }),
+    -math.sin(math.rad(30)), 0, math.cos(math.rad(30)), "bench: pitch30 tilts up backwards")
+
+  -- quats: UE FRotator::Quaternion / FQuat::Rotator round trips + composition
+  local function nearRot(a, b, msg)
+    local function d(x, y) local v = (x or 0) - (y or 0)
+      while v > 180 do v = v - 360 end while v < -180 do v = v + 360 end return math.abs(v) end
+    ok(d(a.Pitch, b.Pitch) < 1e-4 and d(a.Yaw, b.Yaw) < 1e-4 and d(a.Roll, b.Roll) < 1e-4,
+      msg .. string.format(" (got P%.4f Y%.4f R%.4f, want P%.4f Y%.4f R%.4f)",
+        a.Pitch or 0, a.Yaw or 0, a.Roll or 0, b.Pitch or 0, b.Yaw or 0, b.Roll or 0))
+  end
+  local rr = { Pitch = 20, Yaw = 135, Roll = -40 }
+  nearRot(B.rotatorFromQuat(B.quatFromRotator(rr)), rr, "bench: quat round-trips a rotator")
+  nearRot(B.rotatorFromQuat(B.quatMul(B.quatFromRotator({ Pitch = 0, Yaw = 45, Roll = 0 }),
+                                      B.quatFromRotator({ Pitch = 0, Yaw = 45, Roll = 0 }))),
+    { Pitch = 0, Yaw = 90, Roll = 0 }, "bench: yaw45*yaw45 composes to yaw90")
+  nearRot(B.rotatorFromQuat(B.quatMul(B.quatFromRotator(rr), B.quatInv(B.quatFromRotator(rr)))),
+    { Pitch = 0, Yaw = 0, Roll = 0 }, "bench: q * q^-1 is identity")
+
+  -- the seated lean: mesh relative rotation aligning the body with the tilted deck
+  nearRot(B.leanRelRotation({ Pitch = 20, Yaw = 77, Roll = 0 }, 77, { Pitch = 0, Yaw = 0, Roll = 0 }),
+    { Pitch = 20, Yaw = 0, Roll = 0 }, "bench: facing the bow, ship pitch IS the lean pitch")
+  nearRot(B.leanRelRotation({ Pitch = 20, Yaw = 77, Roll = 0 }, 77 + 180, { Pitch = 0, Yaw = 0, Roll = 0 }),
+    { Pitch = -20, Yaw = 0, Roll = 0 }, "bench: facing the stern, the lean pitch flips")
+  local sideways = B.leanRelRotation({ Pitch = 20, Yaw = 0, Roll = 0 }, 90, { Pitch = 0, Yaw = 0, Roll = 0 })
+  ok(math.abs(sideways.Pitch) < 1e-4 and math.abs(math.abs(sideways.Roll) - 20) < 1e-4,
+    "bench: facing across the hull, ship pitch becomes pure lean ROLL (got P" ..
+    string.format("%.3f R%.3f", sideways.Pitch, sideways.Roll) .. ")")
+  -- algebra check WITH a real mesh default (-90 yaw): capsule*rel == tilt*capsule*default
+  local shipRot, pawnYaw, defRel = { Pitch = 14, Yaw = 205, Roll = -6 }, 130, { Pitch = 0, Yaw = -90, Roll = 0 }
+  local rel = B.leanRelRotation(shipRot, pawnYaw, defRel)
+  local qCap = B.quatFromRotator({ Pitch = 0, Yaw = pawnYaw, Roll = 0 })
+  local qShip = B.quatFromRotator(shipRot)
+  local qYawOnly = B.quatFromRotator({ Pitch = 0, Yaw = shipRot.Yaw, Roll = 0 })
+  local lhs = B.rotatorFromQuat(B.quatMul(qCap, B.quatFromRotator(rel)))
+  local rhs = B.rotatorFromQuat(B.quatMul(B.quatMul(qShip, B.quatInv(qYawOnly)),
+    B.quatMul(qCap, B.quatFromRotator(defRel))))
+  nearRot(lhs, rhs, "bench: lean satisfies capsule*rel == tilt*capsule*default")
+
   -- mapping invariants the design leans on
   local m = mapping.resolve("24038177")
   ok(m.bench ~= nil, "bench: mapping section present")
@@ -1397,6 +1449,24 @@ do
   eq(config.get("bench_ship_collide"), false, "bench: the ship prop must never block or punt")
   ok(config.get("bench_reanchor_ms_fast") >= 50,
      "bench: the fast re-anchor cannot beat the scheduler's 50ms ticker (a smaller number lies)")
+
+  -- the 2026-07-31 MP review batch: new mapping keys must survive resolve()'s schema filter
+  -- (the dock-map lesson above -- an unlisted key silently reads nil at runtime)
+  eq(m.bench.hullProp, "Root",
+     "bench: hull component prop survives resolve() (parked actor transforms are STALE)")
+  eq(m.bench.crouchedProp, "bIsCrouched", "bench: replicated crouch prop survives resolve()")
+  eq(m.bench.pawnMeshProp, "Mesh", "bench: lean's mesh prop survives resolve()")
+  eq(config.get("bench_lean"), true, "bench: seated deck-lean on by default")
+  ok(tonumber(config.get("bench_ship_adopt_live_r")) > 0,
+     "bench: client mid-flight latch radius present")
+  eq(config.get("ship_chest_adopt_r"), 300.0,
+     "ship_chest: adopt radius TIGHT (600 could steal a base chest parked nearby)")
+  ok(tonumber(config.get("ship_chest_adopt_live_r")) > 0,
+     "ship_chest: client latch radius present")
+  ok(tonumber(config.get("fishing_reclaim_r")) > 0,
+     "fishing: rod fly-ins are distance-scoped (no cross-map reclaims)")
+  ok(tonumber(config.get("fishing_rescue_r")) > 0,
+     "fishing: sps_fish_rescue is distance-scoped")
 end
 
 print(string.format("\n%d passed, %d failed", passed, failed))

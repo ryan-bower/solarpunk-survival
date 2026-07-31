@@ -158,7 +158,7 @@ local function armGameModeHook(pc, b)
   pcall(function() cls = pc:GetClass():GetFullName() end)
   if not cls then return end
   local path = (cls:gsub("^%S+%s+", "")) .. ":" .. (m.inputGameFn or "SetInputModeGame")
-  shared.gameModeHooked = pcall(RegisterHook, path, ctx.log.guard("books.gamemode", function()
+  local ok, pre, post = pcall(RegisterHook, path, ctx.log.guard("books.gamemode", function()
     onGameThread(function()
       local owner = shared.repointOwner
       if not owner then return end
@@ -171,6 +171,8 @@ local function armGameModeHook(pc, b)
       end
     end)
   end))
+  shared.gameModeHooked = ok
+  if ok then shared.gameModeIds = { path = path, pre = pre, post = post } end
 end
 
 -- ---------------------------------------------------------------- one book
@@ -181,6 +183,8 @@ local function newBook(spec)
     cmd     = spec.cmd,
     widget  = nil,            -- the created W_<book> instance (one per local player, reused)
     hooked  = false,
+    hookIds = {},             -- {path,pre,post} per registration -- world change unregisters
+    closeIds = {},            -- these before re-arming (survivor classes keep live hooks)
     warned  = false,          -- "pak missing" is logged once, not per interact attempt
     -- Why the last ensureWidget attempt failed (surfaced in the interact-time warn -- the
     -- boot-window pin race taught us that silent returns cost a whole live session to diagnose).
@@ -285,7 +289,8 @@ local function newBook(spec)
     if self.closeHooked then return end
     local m = self.map()
     for _, fn in ipairs(m.closeFns or { "Close", "Hide" }) do
-      local ok = pcall(RegisterHook, (m.widgetPath or "") .. ":" .. fn,
+      local path = (m.widgetPath or "") .. ":" .. fn
+      local ok, pre, post = pcall(RegisterHook, path,
         ctx.log.guard(self.label .. ".close", function()
           onGameThread(function()
             -- Never steal focus or the slot from the OTHER book. These are two SEPARATE
@@ -297,6 +302,9 @@ local function newBook(spec)
             if shared.repointOwner == self then restoreGuide() end
           end)
         end))
+      if ok then
+        self.closeIds[#self.closeIds + 1] = { path = path, pre = pre, post = post }
+      end
       self.closeHooked = self.closeHooked or ok
     end
     if self.closeHooked then
@@ -427,7 +435,7 @@ local function newBook(spec)
       end)
     end)
     for _, path in ipairs(paths) do
-      local ok = pcall(RegisterHook, path, ctx.log.guard(self.label .. ".interact",
+      local ok, pre, post = pcall(RegisterHook, path, ctx.log.guard(self.label .. ".interact",
         function(Context, comp, hit, controller, tool)
           local pc; pcall(function() pc = controller:get() end)
           -- real work OUT of the hook call chain (never mutate from inside the BP call)
@@ -440,7 +448,10 @@ local function newBook(spec)
             if not ctx.uehelp.isValid(pc) or ctx.uehelp.sameObject(pc, localPc) then self.open() end
           end)
         end))
-      if ok then self.hooked = true end
+      if ok then
+        self.hooked = true
+        self.hookIds[#self.hookIds + 1] = { path = path, pre = pre, post = post }
+      end
     end
     if self.hooked then
       ctx.log.info(self.label .. ": the placed book listens (" .. #paths .. " interact hook)")
@@ -490,16 +501,47 @@ function F.init(c)
   end
 
   -- World entry re-arms the interact hooks, re-pins the widget chains, and triggers the old-save
-  -- card migration -- all off ONE trigger: a pawn constructing, the same rare, proven-safe notify
-  -- the wand rides. Registered ONCE for both books. NEVER a bare-Actor or controller construction
-  -- notify: a 2026-07-22 world-entry fatal (60s game-thread hang) bisected to exactly such
-  -- notifies firing in the world-load actor storm. Mid-session placements need no notify of their
-  -- own -- hookInteract armed at init covers the class, and open() re-resolves the chain per read.
-  ctx.uehelp.onNewInstance("/Script/Engine.Character", nil, function()
-    -- construction callback: defer everything out of the spawn stack (pinSoon already delays)
-    -- world change: the old controller (and any repoint into it) died with the old world
-    shared.repointOwner, shared.guideOriginal = nil, nil
-    shared.activeBook, shared.uiFocused = nil, false
+  -- card migration -- all off ONE trigger: the PLAYER pawn constructing, the same rare,
+  -- proven-safe notify the wand rides. Registered ONCE for both books. NEVER a bare-Actor or
+  -- controller construction notify: a 2026-07-22 world-entry fatal (60s game-thread hang)
+  -- bisected to exactly such notifies firing in the world-load actor storm. Mid-session
+  -- placements need no notify of their own -- hookInteract armed at init covers the class, and
+  -- open() re-resolves the chain per read.
+  --
+  -- Two review fixes (2026-07-31) live here:
+  --   * the notify is FILTERED to the player character class -- the old nil filter meant every
+  --     Character (chickens, wolves, a teammate respawning) wiped the arbiter state while a
+  --     book was open on screen: the close hook then skipped setUiFocus(false), stranding the
+  --     cursor and orphaning the survival-guide repoint for the session
+  --   * the wipe AND the hook-latch clears run only when the LOCAL CONTROLLER changed (a real
+  --     world load). The latches (hooked/closeHooked/gameModeHooked) used to survive the
+  --     reload, so nothing ever re-registered on the reloaded classes -- E on a placed book
+  --     went dead after every quit-to-menu-and-reload. Survivor registrations are unregistered
+  --     first so a class that lived through the reload cannot stack duplicate callbacks.
+  local notifyWorldPc
+  ctx.uehelp.onNewInstance("/Script/Engine.Character",
+    (ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C", function()
+    local pcNow
+    pcall(function()
+      local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+      pcNow = pc and pc:GetFullName() or nil
+    end)
+    if pcNow and pcNow ~= notifyWorldPc then
+      notifyWorldPc = pcNow
+      -- the old controller (and any repoint into it) died with the old world
+      shared.repointOwner, shared.guideOriginal = nil, nil
+      shared.activeBook, shared.uiFocused = nil, false
+      if shared.gameModeIds then
+        pcall(UnregisterHook, shared.gameModeIds.path, shared.gameModeIds.pre, shared.gameModeIds.post)
+      end
+      shared.gameModeIds, shared.gameModeHooked = nil, false
+      for _, b in ipairs(books) do
+        for _, h in ipairs(b.hookIds) do pcall(UnregisterHook, h.path, h.pre, h.post) end
+        for _, h in ipairs(b.closeIds) do pcall(UnregisterHook, h.path, h.pre, h.post) end
+        b.hookIds, b.closeIds = {}, {}
+        b.hooked, b.closeHooked = false, false
+      end
+    end
     for _, b in ipairs(books) do b.onWorldEntry() end
   end)
 

@@ -160,7 +160,15 @@ def get_game_dir(cli_dir=None):
             return game
     game = find_game_dir()
     if not game:
-        fail('Could not find Solarpunk automatically. Re-run with --game-dir "<.../steamapps/common/Solarpunk/Solarpunk>"')
+        # Two very different causes, and the old message only addressed the rarer one. Lead with
+        # "is it installed?" - this installer adds a mod to Solarpunk, it cannot fetch the game,
+        # and being told to pass --game-dir is useless advice when there is no game to point at.
+        fail(f"Could not find Solarpunk in any Steam library.\n\n"
+             f"Is the game installed? This installs the MOD into an existing copy of Solarpunk -\n"
+             f"it can't download the game itself. Install it from Steam first (app {APP_ID}):\n"
+             f"    steam://install/{APP_ID}\n\n"
+             'Already installed somewhere unusual? Point at it:\n'
+             '    python install.py --game-dir "<...\\steamapps\\common\\Solarpunk\\Solarpunk>"')
     try:
         GAMEDIR_CACHE.parent.mkdir(parents=True, exist_ok=True)
         GAMEDIR_CACHE.write_text(str(game))

@@ -146,6 +146,87 @@ function F.slotWorld(anchorLoc, anchorYaw, i, n, c)
   }
 end
 
+-- Full-rotation frame math (UE conventions: left-handed, Z-up, degrees; FRotationMatrix /
+-- FRotator::Quaternion formulas verbatim). The ship pitches and rolls, and the MP symptom
+-- "rider stays vertical / seats drift off the tilted deck" is exactly what yaw-only math does
+-- under pitch -- so ship-local offsets go to world through the REAL rotation.
+function F.rotAxes(rot)
+  local p, y, r = math.rad(rot.Pitch or 0), math.rad(rot.Yaw or 0), math.rad(rot.Roll or 0)
+  local sp, cp, sy, cy, sr, cr = math.sin(p), math.cos(p), math.sin(y), math.cos(y), math.sin(r), math.cos(r)
+  local fwd   = { X = cp * cy, Y = cp * sy, Z = sp }
+  local right = { X = sr * sp * cy - cr * sy, Y = sr * sp * sy + cr * cy, Z = -sr * cp }
+  local up    = { X = -(cr * sp * cy + sr * sy), Y = cy * sr - cr * sp * sy, Z = cr * cp }
+  return fwd, right, up
+end
+
+-- A local {X,Y,Z} offset expressed in world space under a full rotator.
+function F.rotVec(rot, v)
+  local f, r, u = F.rotAxes(rot)
+  return {
+    X = v.X * f.X + v.Y * r.X + v.Z * u.X,
+    Y = v.X * f.Y + v.Y * r.Y + v.Z * u.Y,
+    Z = v.X * f.Z + v.Y * r.Z + v.Z * u.Z,
+  }
+end
+
+-- Quaternion helpers (FRotator::Quaternion / FQuat::Rotator verbatim), for composing the
+-- seated lean: Euler angles do not add, quats do.
+function F.quatFromRotator(rot)
+  local p, y, r = math.rad(rot.Pitch or 0) / 2, math.rad(rot.Yaw or 0) / 2, math.rad(rot.Roll or 0) / 2
+  local sp, cp, sy, cy, sr, cr = math.sin(p), math.cos(p), math.sin(y), math.cos(y), math.sin(r), math.cos(r)
+  return {
+    X = cr * sp * sy - sr * cp * cy,
+    Y = -cr * sp * cy - sr * cp * sy,
+    Z = cr * cp * sy - sr * sp * cy,
+    W = cr * cp * cy + sr * sp * sy,
+  }
+end
+
+function F.quatMul(a, b)   -- UE order: (a*b) applies b FIRST, then a
+  return {
+    W = a.W * b.W - a.X * b.X - a.Y * b.Y - a.Z * b.Z,
+    X = a.W * b.X + a.X * b.W + a.Y * b.Z - a.Z * b.Y,
+    Y = a.W * b.Y - a.X * b.Z + a.Y * b.W + a.Z * b.X,
+    Z = a.W * b.Z + a.X * b.Y - a.Y * b.X + a.Z * b.W,
+  }
+end
+
+function F.quatInv(q) return { X = -q.X, Y = -q.Y, Z = -q.Z, W = q.W } end
+
+function F.rotatorFromQuat(q)
+  local test = q.Z * q.X - q.W * q.Y
+  local yawY, yawX = 2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.Y * q.Y + q.Z * q.Z)
+  local deg = 180 / math.pi
+  local pitch, yaw, roll
+  if test < -0.4999995 then
+    pitch, yaw = -90, math.atan(yawY, yawX) * deg
+    roll = -yaw - 2 * math.atan(q.X, q.W) * deg
+  elseif test > 0.4999995 then
+    pitch, yaw = 90, math.atan(yawY, yawX) * deg
+    roll = yaw - 2 * math.atan(q.X, q.W) * deg
+  else
+    local t = math.max(-1, math.min(1, 2 * test))
+    pitch = math.asin(t) * deg
+    yaw = math.atan(yawY, yawX) * deg
+    roll = math.atan(-2 * (q.W * q.X + q.Y * q.Z), 1 - 2 * (q.X * q.X + q.Y * q.Y)) * deg
+  end
+  local function norm(a) while a > 180 do a = a - 360 end while a < -180 do a = a + 360 end return a end
+  return { Pitch = norm(pitch), Yaw = norm(yaw), Roll = norm(roll) }
+end
+
+-- The seated lean: the mesh's new capsule-relative rotation so the body aligns with the
+-- tilted deck while the capsule stays upright. relNew = capsule^-1 * tilt * capsule * defRel,
+-- where tilt = shipFull * shipYawOnly^-1 (the world-frame pitch/roll the hull carries).
+function F.leanRelRotation(shipRot, pawnYaw, defRel)
+  local qShip = F.quatFromRotator(shipRot)
+  local qShipYaw = F.quatFromRotator({ Pitch = 0, Yaw = shipRot.Yaw or 0, Roll = 0 })
+  local qTilt = F.quatMul(qShip, F.quatInv(qShipYaw))
+  local qCap = F.quatFromRotator({ Pitch = 0, Yaw = pawnYaw or 0, Roll = 0 })
+  local qDef = F.quatFromRotator(defRel or { Pitch = 0, Yaw = 0, Roll = 0 })
+  local qRel = F.quatMul(F.quatInv(qCap), F.quatMul(qTilt, F.quatMul(qCap, qDef)))
+  return F.rotatorFromQuat(qRel)
+end
+
 local function dist2d2(a, b)
   local dx, dy = a.X - b.X, a.Y - b.Y
   return dx * dx + dy * dy
@@ -295,6 +376,31 @@ local function actorLocYaw(a)
   return loc, yaw
 end
 
+-- The ship's TRUE frame. The actor transform only tracks the hull while Tick runs
+-- (SetActorTransformToRootTransform, per the bp_airship RE); Tick is DISABLED docked/parked,
+-- so K2_GetActorLocation can be arbitrarily stale on a parked ship -- that stale origin is
+-- the "host seated at the ship's center" bug. The SCS `Root` StaticMeshComponent IS the
+-- physical hull (the actor root is a no-collision sphere): read the component transform.
+local function shipFrame(ship)
+  local loc, rot
+  pcall(function()
+    local hull = ship[bmap().hullProp or "Root"]
+    if ctx.uehelp.isValid(hull) then
+      local l = ctx.uehelp.vec(hull:K2_GetComponentLocation())
+      local r = hull:K2_GetComponentRotation()
+      if l and r and type(r.Yaw) == "number" then
+        loc, rot = l, { Pitch = r.Pitch or 0.0, Yaw = r.Yaw, Roll = r.Roll or 0.0 }
+      end
+    end
+  end)
+  if not loc then
+    local l, yaw = actorLocYaw(ship)
+    if not l then return nil, nil end
+    loc, rot = l, { Pitch = 0.0, Yaw = yaw, Roll = 0.0 }
+  end
+  return loc, rot
+end
+
 local function seatSpecFor(className)
   local s = (bmap().seats or {})[className]
   return {
@@ -319,27 +425,28 @@ end
 
 -- The ship's PASSENGER slots, computed from the SHIP transform alone -- they work whether or
 -- not a bench actor is visible on this machine (clients may never see a non-replicated prop;
--- the prop is decoration, the seat math never reads it). Sitters face the bow.
+-- the prop is decoration, the seat math never reads it). Sitters face the bow. Slots are
+-- authored SHIP-LOCAL and carried to world through the FULL hull rotation, so they stay on
+-- the tilted deck under pitch/roll and never read a stale parked actor origin.
 local function shipSlots(ship)
-  local loc, yaw = actorLocYaw(ship)
+  local loc, rot = shipFrame(ship)
   if not loc then return nil end
-  local benchYaw = yaw + (tonumber(cfg("bench_ship_yaw")) or 0.0)
   local back  = tonumber(cfg("bench_ship_back"))  or -146.0
   local right = tonumber(cfg("bench_ship_right")) or 0.0
   local up    = tonumber(cfg("bench_ship_up"))    or -30.0
-  local r = math.rad(yaw)
-  local co, si = math.cos(r), math.sin(r)
-  local anchor = {
-    X = loc.X + back * co - right * si,
-    Y = loc.Y + back * si + right * co,
-    Z = loc.Z + up,
-  }
+  local rowYaw = math.rad(tonumber(cfg("bench_ship_yaw")) or 0.0)
+  local co, si = math.cos(rowYaw), math.sin(rowYaw)
   local spacing = tonumber(cfg("bench_slot_spacing")) or 58.0
+  local aOff = F.rotVec(rot, { X = back, Y = right, Z = up })
+  local anchor = { X = loc.X + aOff.X, Y = loc.Y + aOff.Y, Z = loc.Z + aOff.Z }
   local pts = {}
   for i = 1, 3 do
-    pts[i] = F.slotWorld(anchor, benchYaw, i, 3, { spacing = spacing, depth = 0, up = 0 })
+    local l = F.slotLocal(i, 3, spacing, 0, 0)
+    local o = F.rotVec(rot, { X = back + l.X * co - l.Y * si,
+                              Y = right + l.X * si + l.Y * co, Z = up })
+    pts[i] = { X = loc.X + o.X, Y = loc.Y + o.Y, Z = loc.Z + o.Z }
   end
-  return pts, yaw + (tonumber(cfg("bench_face_yaw")) or 0.0), anchor, benchYaw
+  return pts, rot.Yaw + (tonumber(cfg("bench_face_yaw")) or 0.0), anchor, rot
 end
 
 -- Every OTHER live player pawn's position (occupancy input; own pawn excluded by full name).
@@ -737,21 +844,17 @@ local function shipIdOf(ship)
 end
 
 local function benchAnchor(ship)
-  local loc, yaw = actorLocYaw(ship)
+  local loc, rot = shipFrame(ship)
   if not loc then return nil, nil end
   local back  = tonumber(cfg("bench_ship_back"))  or -146.0
   local right = tonumber(cfg("bench_ship_right")) or 0.0
   local up    = tonumber(cfg("bench_ship_up"))    or -30.0
-  local r = math.rad(yaw)
-  local co, si = math.cos(r), math.sin(r)
-  return {
-    X = loc.X + back * co - right * si,
-    Y = loc.Y + back * si + right * co,
-    Z = loc.Z + up,
+  local o = F.rotVec(rot, { X = back, Y = right, Z = up })
   -- the PROP's spin, separate from the seat-slot frame (bench_ship_yaw): the bench meshes'
   -- length runs their LOCAL X, so +-90 lays it across the hull; the white bench's front is
   -- local +Y (player-verified 2026-07-30 -- 90 faced the backrest at the bow), hence 270
-  }, yaw + (tonumber(cfg("bench_ship_prop_yaw")) or 270.0)
+  return { X = loc.X + o.X, Y = loc.Y + o.Y, Z = loc.Z + o.Z },
+    rot.Yaw + (tonumber(cfg("bench_ship_prop_yaw")) or 270.0), rot
 end
 
 local function benchNear(pt, r2)
@@ -771,17 +874,44 @@ end
 -- parked context (allowAdopt), because a 6m-radius search re-run every watch pass while
 -- FLYING adopts -- and yanks -- any player-built garden bench the flight path grazes.
 local function findShipBench(ship, allowAdopt)
-  local anchor, yaw = benchAnchor(ship)
+  local anchor, yaw, rot = benchAnchor(ship)
   local id = tostring(shipIdOf(ship))
   local latched = benchLatch[id]
   if latched then
     for _, b in ipairs(liveOf(bmap().shipBenchClass)) do
       local f; pcall(function() f = b:GetFullName() end)
-      if f == latched then return b, anchor, yaw end
+      if f == latched then return b, anchor, yaw, rot end
     end
     benchLatch[id] = nil   -- destroyed, or a world reload renamed it: re-adopt when parked
   end
-  if not allowAdopt then return nil, anchor, yaw end
+  if not allowAdopt then
+    -- CLIENT mid-flight latch (a join during flight strands the prop's client copy at the
+    -- join point forever if latching must wait for a park): OUR prop is the only bench of
+    -- the class whose movement replication is OFF (the host forces it off so every machine
+    -- glues its own copy to its own smoothed ship), so the signature cannot steal a
+    -- player-built bench -- and the anchor/attach guards refuse replicated copies anyway.
+    -- Hosts never take this path: a host can move anything, so it only adopts parked.
+    if anchor and not ctx.net.isHost() then
+      local liveR = tonumber(cfg("bench_ship_adopt_live_r")) or 3000.0
+      local best, bestD = nil, liveR * liveR
+      for _, b in ipairs(liveOf(bmap().shipBenchClass)) do
+        local okR, repMove = ctx.uehelp.get(b, "bReplicateMovement")
+        if okR and repMove == false then
+          local bl; pcall(function() bl = ctx.uehelp.vec(b:K2_GetActorLocation()) end)
+          if bl then
+            local d = ctx.uehelp.dist2(bl, anchor)
+            if d <= bestD then best, bestD = b, d end
+          end
+        end
+      end
+      if best then
+        local f; pcall(function() f = best:GetFullName() end)
+        if f then benchLatch[id] = f end
+        return best, anchor, yaw, rot
+      end
+    end
+    return nil, anchor, yaw, rot
+  end
   local b = benchNear(anchor, adoptR2())
   if not b then
     local at = ctx.save.getFlag("bench_ship_at_" .. id)
@@ -793,7 +923,7 @@ local function findShipBench(ship, allowAdopt)
     local f; pcall(function() f = b:GetFullName() end)
     if f then benchLatch[id] = f end
   end
-  return b, anchor, yaw
+  return b, anchor, yaw, rot
 end
 
 -- Kill ALL collision on the prop, not just the Pawn response: the placeable's colliders sit
@@ -822,7 +952,7 @@ end
 -- Move the prop to its anchor. Every machine may call this; whether a write means anything is
 -- decided here: the host always anchors; a client only anchors a copy whose movement is not
 -- replicated (fighting the host's replicated location at NetUpdateFrequency is visible jitter).
-local function anchorBench(bench, anchor, yaw)
+local function anchorBench(bench, anchor, yaw, rot)
   if not (ctx.uehelp.isValid(bench) and anchor) then return end
   if not ctx.net.isHost() then
     local okR, repMove = ctx.uehelp.get(bench, "bReplicateMovement")
@@ -830,7 +960,12 @@ local function anchorBench(bench, anchor, yaw)
   end
   pcall(function() bench:K2_SetActorLocation(anchor, false, {}, false) end)
   if type(yaw) == "number" then
-    pcall(function() bench:K2_SetActorRotation({ Pitch = 0.0, Yaw = yaw, Roll = 0.0 }, false) end)
+    -- carry the hull's pitch/roll too (Euler-composed: exact when parked, near enough while
+    -- flying -- this is the LAST-RESORT carrier; the attach path is the real one)
+    pcall(function()
+      bench:K2_SetActorRotation({ Pitch = rot and rot.Pitch or 0.0, Yaw = yaw,
+                                  Roll = rot and rot.Roll or 0.0 }, false)
+    end)
   end
 end
 
@@ -897,20 +1032,22 @@ local function shieldShipFromProp(ship, prop)
 end
 
 -- The prop model changed mid-rollout (garden -> white -> curved, user 2026-07-30): destroy
--- OUR old prop so the ship does not wear two. Only a listed legacy class, never the current
--- one, and only within 250cm of where OURS belongs or was last left (the sidecar flag --
--- a retrieve can strand the old prop mid-sky, nowhere near the current anchor). A
--- player-built bench anywhere else is out of reach.
+-- OUR old prop so the ship does not wear two. The legacy classes are ALSO player-buildable
+-- seatable benches, so this is a ONE-TIME migration per ship (sidecar flag), the radius is
+-- tight (100cm -- our prop sat exactly at the anchor / recorded point), and it never runs
+-- again once the flag is set: a bench the player builds near a parked ship stays theirs.
 local function clearLegacyProps(ship, anchor)
+  local id = tostring(shipIdOf(ship))
+  if ctx.save.getFlag("bench_legacy_cleared_" .. id) then return end
   local pts = { anchor }
-  local at = ctx.save.getFlag("bench_ship_at_" .. tostring(shipIdOf(ship)))
+  local at = ctx.save.getFlag("bench_ship_at_" .. id)
   if type(at) == "table" and at.X then pts[#pts + 1] = { X = at.X, Y = at.Y, Z = at.Z } end
   for _, clsName in ipairs(bmap().shipBenchLegacy or {}) do
     if clsName ~= bmap().shipBenchClass then
       for _, b in ipairs(liveOf(clsName)) do
         local bl; pcall(function() bl = ctx.uehelp.vec(b:K2_GetActorLocation()) end)
         for _, p in ipairs(pts) do
-          if bl and p and ctx.uehelp.dist2(bl, p) <= 250 * 250 then
+          if bl and p and ctx.uehelp.dist2(bl, p) <= 100 * 100 then
             pcall(function() b:K2_DestroyActor() end)
             ctx.log.info("bench: removed the old ship bench prop (model changed)")
             break
@@ -919,6 +1056,62 @@ local function clearLegacyProps(ship, anchor)
       end
     end
   end
+  ctx.save.setFlag("bench_legacy_cleared_" .. id, true)
+end
+
+-- One ship's bench: exists, movement-repl off (so every machine may glue its own copy),
+-- disarmed, attached, posed ship-local. Failures affect THIS ship only -- the caller's loop
+-- continues to the next one (a not-yet-resident class used to abort every remaining ship).
+local repDisarmed = {}   -- bench fullname -> movement replication already forced off
+local function ensureOneShipBench(ship, reason)
+  local bench, anchor, yaw, rot = findShipBench(ship, true)
+  if not anchor then return end
+  clearLegacyProps(ship, anchor)
+  if not bench then
+    if ctx.log.isPoisoned("bench:spawn") then return end
+    local clsName = bmap().shipBenchClass
+    local cls = ctx.uehelp.classByName(clsName, (bmap().classPaths or {})[clsName])
+    if not cls then
+      ctx.log.debug("bench: ship bench class not resident yet (" .. tostring(clsName) .. ")")
+      return
+    end
+    ctx.log.step("bench.spawn")
+    ctx.log.risky("bench:spawn", function()
+      bench = ctx.uehelp.spawnActorAt(ctx.uehelp.playerController() or ship, cls, anchor)
+    end)
+    if not ctx.uehelp.isValid(bench) then
+      ctx.log.warn("bench: could not spawn the ship's bench")
+      return
+    end
+    ctx.log.info("bench: the ship grew a passenger bench (" .. tostring(reason) .. ")")
+  end
+  -- ALWAYS (spawned or adopted): movement replication off, so each machine carries its own
+  -- copy glued to its own locally-smoothed ship -- raw location replication is what made the
+  -- chest/bench trail the hull for riders. Also the client-adopt signature (see findShipBench).
+  local bf; pcall(function() bf = bench:GetFullName() end)
+  if bf and not repDisarmed[bf] then
+    local okR, reps = ctx.uehelp.get(bench, "bReplicates")
+    if okR and reps == true then
+      if ctx.uehelp.call(bench, "SetReplicateMovement", false) then repDisarmed[bf] = true end
+    else
+      repDisarmed[bf] = true   -- non-replicating placeable: nothing to disarm
+    end
+  end
+  if bf then benchLatch[tostring(shipIdOf(ship))] = bf end
+  disarmBenchCollision(bench)
+  shieldShipFromProp(ship, bench)
+  ctx.log.step("bench.place")
+  if not isAttachedTo(bench, ship) then
+    anchorBench(bench, anchor, yaw, rot)   -- soft landing so the attach never yanks visibly
+    attachProp(bench, ship)
+  end
+  if isAttachedTo(bench, ship) then
+    -- ship-local pose is the authority: heals a tilt baked in by an earlier attach and
+    -- doubles as live offset tuning (`sps_bench ship` re-runs this; no detach needed)
+    placeBenchRelative(bench)
+  end
+  ctx.save.setFlag("bench_ship_at_" .. tostring(shipIdOf(ship)),
+    { X = anchor.X, Y = anchor.Y, Z = anchor.Z })
 end
 
 -- Host-side: make each ship's bench exist and sit at the stern. Deferred, event-driven only.
@@ -928,52 +1121,7 @@ local function ensureShipBenches(reason)
   for _, ship in ipairs(liveOf(bmap().shipClass)) do
     -- ensure only runs from parked-context events (world entry, unpossess, sps_bench ship),
     -- so proximity adoption is allowed here
-    local bench, anchor, yaw = findShipBench(ship, true)
-    if anchor then
-      clearLegacyProps(ship, anchor)
-      if not bench then
-        if ctx.log.isPoisoned("bench:spawn") then return end
-        local clsName = bmap().shipBenchClass
-        local cls = ctx.uehelp.classByName(clsName, (bmap().classPaths or {})[clsName])
-        if not cls then
-          ctx.log.debug("bench: ship bench class not resident yet (" .. tostring(clsName) .. ")")
-          return
-        end
-        ctx.log.step("bench.spawn")
-        ctx.log.risky("bench:spawn", function()
-          bench = ctx.uehelp.spawnActorAt(ctx.uehelp.playerController() or ship, cls, anchor)
-        end)
-        if not ctx.uehelp.isValid(bench) then
-          ctx.log.warn("bench: could not spawn the ship's bench")
-          return
-        end
-        -- Branch B insurance: if this placeable replicates, stop its MOVEMENT replicating so
-        -- each machine can re-anchor its own copy from its own ship transform (refusal is
-        -- fine -- the host-only anchor above then rules and clients accept some snapping)
-        local okR, reps = ctx.uehelp.get(bench, "bReplicates")
-        if okR and reps == true then
-          ctx.uehelp.call(bench, "SetReplicateMovement", false)
-        end
-        -- latch the newborn so the watch (which never adopts) can find it immediately
-        local bf; pcall(function() bf = bench:GetFullName() end)
-        if bf then benchLatch[tostring(shipIdOf(ship))] = bf end
-        ctx.log.info("bench: the ship grew a passenger bench (" .. tostring(reason) .. ")")
-      end
-      disarmBenchCollision(bench)
-      shieldShipFromProp(ship, bench)
-      ctx.log.step("bench.place")
-      if not isAttachedTo(bench, ship) then
-        anchorBench(bench, anchor, yaw)   -- soft landing so the attach never yanks visibly
-        attachProp(bench, ship)
-      end
-      if isAttachedTo(bench, ship) then
-        -- ship-local pose is the authority: heals a tilt baked in by an earlier attach and
-        -- doubles as live offset tuning (`sps_bench ship` re-runs this; no detach needed)
-        placeBenchRelative(bench)
-      end
-      ctx.save.setFlag("bench_ship_at_" .. tostring(shipIdOf(ship)),
-        { X = anchor.X, Y = anchor.Y, Z = anchor.Z })
-    end
+    ensureOneShipBench(ship, reason)
   end
 end
 
@@ -1019,19 +1167,189 @@ local function unblockShips(force)
   end
 end
 
+--------------------------------------------------------------------- seated-rider sidecars
+-- Derived occupancy (replicated pawn positions -- identical on every machine) drives two
+-- per-pass jobs with zero custom replication:
+--  * HOST PIN MIRROR: a seated client's pin (crouch + crouched-speed 0) is all LOCAL writes,
+--    so the server's copy of that pawn stayed unpinned -- server sim slid it and the rider
+--    rubber-banded ("character flying a bit behind the ship"). The host mirrors the speed
+--    cap onto ITS copy of every crouched pawn sitting in a ship slot. Crouch itself is NOT
+--    forced: the client's own crouch arrives through the movement flags once bCanCrouch is
+--    true server-side (qol's host enable), and forcing it would fight the client's moves.
+--  * LEAN (every machine): a seated rider's MESH aligns with the tilted deck (capsules are
+--    always upright; the game's Neigung channel is look-pitch, not ship lean). Mesh-only
+--    relative rotation -- camera and collision untouched -- quat-composed, with the captured
+--    default restored on unseat. Config bench_lean; first write failure latches it off.
+local remotePin = {}    -- pawnFull -> saved MaxWalkSpeedCrouched (HOST only)
+local leanState = {}    -- pawnFull -> { def = rotator } (this machine)
+local leanBroken = false
+
+local function pawnMoveComp(p)
+  local mv; pcall(function() mv = p[bmap().moveCompProp or "CharacterMovement"] end)
+  if ctx.uehelp.isValid(mv) then return mv end
+  return nil
+end
+
+local function restoreLean(p, full)
+  local st = leanState[full]
+  if not st then return end
+  leanState[full] = nil
+  if not (p and ctx.uehelp.isValid(p)) then return end
+  pcall(function()
+    local mesh = p[bmap().pawnMeshProp or "Mesh"]
+    if ctx.uehelp.isValid(mesh) then mesh:K2_SetRelativeRotation(st.def, false, {}, false) end
+  end)
+end
+
+local function releaseSeatSidecars()
+  local pawns = {}
+  for _, p in ipairs(liveOf((ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C")) do
+    local full; pcall(function() full = p:GetFullName() end)
+    if full then pawns[full] = p end
+  end
+  for full, saved in pairs(remotePin) do
+    local p = pawns[full]
+    if p then
+      local mv = pawnMoveComp(p)
+      if mv then
+        ctx.uehelp.set(mv, bmap().maxWalkSpeedCrouchedProp or "MaxWalkSpeedCrouched",
+          tonumber(saved) or 300.0)
+      end
+    end
+  end
+  remotePin = {}
+  for full in pairs(leanState) do restoreLean(pawns[full], full) end
+end
+
+local function seatSidecarPass(ships)
+  local host = ctx.net.isHost()
+  local leanOn = cfg("bench_lean") and not leanBroken
+  if not (host or leanOn) then return end
+  local slotR = tonumber(cfg("bench_slot_r")) or 70.0
+  local myPawn = ctx.uehelp.localPawn()
+  local myFull
+  if ctx.uehelp.isValid(myPawn) then pcall(function() myFull = myPawn:GetFullName() end) end
+  local sets = {}
+  for _, ship in ipairs(ships) do
+    local pts, _, _, rot = shipSlots(ship)
+    if pts then sets[#sets + 1] = { pts = pts, rot = rot } end
+  end
+  if #sets == 0 then return end
+  local pawns, seated = {}, {}   -- full -> pawn; full -> the seating ship's rotator
+  for _, p in ipairs(liveOf((ctx.map.pawn and ctx.map.pawn.class) or "BP_MainPlayerCharacter_C")) do
+    local full; pcall(function() full = p:GetFullName() end)
+    if full then
+      pawns[full] = p
+      local loc; pcall(function() loc = ctx.uehelp.vec(p:K2_GetActorLocation()) end)
+      if loc then
+        for _, s in ipairs(sets) do
+          for _, pt in ipairs(s.pts) do
+            -- 3x margin: host/client ship transforms disagree by the SmoothSync lag
+            if F.inSlot(loc, pt, slotR * 3.0) then seated[full] = s.rot break end
+          end
+          if seated[full] then break end
+        end
+      end
+    end
+  end
+  if host then
+    local speedProp = bmap().maxWalkSpeedCrouchedProp or "MaxWalkSpeedCrouched"
+    for full, p in pairs(pawns) do
+      if full ~= myFull and seated[full] and remotePin[full] == nil then
+        local okC, crouched = ctx.uehelp.get(p, bmap().crouchedProp or "bIsCrouched")
+        if okC and crouched == true then
+          local mv = pawnMoveComp(p)
+          if mv then
+            local okS, v = ctx.uehelp.get(mv, speedProp)
+            local saved = (okS and tonumber(v)) or 300.0
+            if saved == 0 then saved = 300.0 end   -- never memorize a zero as the restore
+            if ctx.uehelp.set(mv, speedProp, 0.0) then
+              remotePin[full] = saved
+              ctx.log.debug("bench: rider pin mirrored on the host (crouched-speed 0)")
+            end
+          end
+        end
+      end
+    end
+    for full, saved in pairs(remotePin) do
+      local p = pawns[full]
+      local drop = p == nil or not seated[full]
+      if not drop then
+        local okC, crouched = ctx.uehelp.get(p, bmap().crouchedProp or "bIsCrouched")
+        drop = okC and crouched == false
+      end
+      if drop then
+        if p then
+          local mv = pawnMoveComp(p)
+          if mv then ctx.uehelp.set(mv, speedProp, tonumber(saved) or 300.0) end
+        end
+        remotePin[full] = nil
+      end
+    end
+  end
+  if leanOn then
+    for full, rot in pairs(seated) do
+      local p = pawns[full]
+      if p and rot and (math.abs(rot.Pitch or 0) > 1.0 or math.abs(rot.Roll or 0) > 1.0) then
+        local ok = pcall(function()
+          local mesh = p[bmap().pawnMeshProp or "Mesh"]
+          if not ctx.uehelp.isValid(mesh) then return end
+          local st = leanState[full]
+          if not st then
+            local d = mesh.RelativeRotation
+            st = { def = { Pitch = d.Pitch or 0.0, Yaw = d.Yaw or 0.0, Roll = d.Roll or 0.0 } }
+            leanState[full] = st
+          end
+          local pr = p:K2_GetActorRotation()
+          mesh:K2_SetRelativeRotation(F.leanRelRotation(rot, pr.Yaw or 0.0, st.def),
+            false, {}, false)
+        end)
+        if not ok then
+          leanBroken = true
+          ctx.log.warn("bench: seat lean write failed -- lean off this session")
+        end
+      elseif leanState[full] then
+        restoreLean(p, full)
+      end
+    end
+    for full in pairs(leanState) do
+      if not seated[full] then restoreLean(pawns[full], full) end
+    end
+  end
+end
+
 --------------------------------------------------------------------- the ship watch
 -- One bounded chain covering flight and settling: re-anchors each ship's bench (fast while
--- anything moves or is piloted, slow while parked) and re-asserts the unblock. Disarms once
--- every ship has been parked and settled for a few slow passes; re-armed by the possess /
--- unpossess / door hooks and world entry.
+-- anything moves or is piloted, slow while parked), re-asserts the unblock, and runs the
+-- seated-rider sidecars. Disarms once every ship has been parked and settled for a few slow
+-- passes; re-armed by the possess / unpossess / door hooks and world entry.
 local shipTok = 0
 local shipPrev = {}     -- ship fullname -> position at the previous pass
+local emptyLeft = 0     -- bounded 1s retries while FindAllOf reads zero ships (stream gap)
 
 local function shipWatchPass(tok, settleLeft)
   if tok ~= shipTok then return end
-  if not (cfg("bench") and (cfg("bench_ship") or cfg("bench_open_ship"))) then return end
+  if not (cfg("bench") and (cfg("bench_ship") or cfg("bench_open_ship"))) then
+    releaseSeatSidecars()
+    return
+  end
   local ships = liveOf(bmap().shipClass)
-  if #ships == 0 then shipPrev = {} return end
+  if #ships == 0 then
+    shipPrev = {}
+    -- a ship mid-stream or mid-respawn (dock retrieve) reads as ZERO ships for a pass or
+    -- two; dying here permanently killed the chain (the boarding wall came back and nothing
+    -- re-anchored). Bounded retries bridge the gap; the ship-arrived Actor notify remains
+    -- the long-stop re-arm.
+    if emptyLeft > 0 then
+      emptyLeft = emptyLeft - 1
+      deferOnly(1000, function() shipWatchPass(tok, settleLeft) end)
+    else
+      releaseSeatSidecars()
+      ctx.log.debug("bench: ship watch idle (no ships) -- waiting on the ship-arrived notify")
+    end
+    return
+  end
+  emptyLeft = 30
   unblockShips()
   local fast = tonumber(cfg("bench_reanchor_ms_fast")) or 50
   local slow = tonumber(cfg("bench_reanchor_ms_slow")) or 150
@@ -1049,15 +1367,16 @@ local function shipWatchPass(tok, settleLeft)
     local live = moving or shipPiloted(ship)
     if live then anyLive = true end
     if cfg("bench_ship") then
-      -- adoption is a parked-only act (a flying 6m search steals player-built benches);
-      -- while live the watch only moves an already-latched bench
-      local bench, anchor, yaw = findShipBench(ship, not live)
+      -- host adoption is a parked-only act (a flying 6m search steals player-built benches);
+      -- clients may signature-latch mid-flight (see findShipBench) and only ever move copies
+      -- whose movement replication is off -- i.e. provably OUR prop
+      local bench, anchor, yaw, rot = findShipBench(ship, not live)
       if bench and anchor then
         disarmBenchCollision(bench)   -- latched: clients and mid-session adoptees too
         shieldShipFromProp(ship, bench)
         local carried = isAttachedTo(bench, ship)
         if not carried then
-          anchorBench(bench, anchor, yaw)
+          anchorBench(bench, anchor, yaw, rot)
           carried = attachProp(bench, ship)
           if carried then placeBenchRelative(bench) end   -- ship-local pose, tilt-proof
           if not carried and not ctx.net.isHost() then
@@ -1069,13 +1388,17 @@ local function shipWatchPass(tok, settleLeft)
         if not carried then allCarried = false end
       end
     end
+    -- the storage chest rides the same carrier (ship_chest registers this service)
+    if ctx.services.shipChestCarry then pcall(ctx.services.shipChestCarry, ship, live) end
   end
+  seatSidecarPass(ships)
   if anyLive then
     settleLeft = 20                       -- keep settling passes in the bank for the park
   else
     settleLeft = (settleLeft or 0) - 1
     if settleLeft <= 0 then
       if allCarried then
+        releaseSeatSidecars()
         ctx.log.debug("bench: ship watch settled -- props engine-carried; disarmed until the next event")
         return
       end
@@ -1095,6 +1418,7 @@ local function armShipWatch(reason)
   shipTok = shipTok + 1
   local tok = shipTok
   unblockedShips = {}   -- the game may have re-blocked since the last watch died: re-assert
+  emptyLeft = 30
   ctx.log.debug("bench: ship watch armed (" .. tostring(reason) .. ")")
   shipWatchPass(tok, 20)   -- every caller is already on the game thread
 end
@@ -1125,8 +1449,10 @@ local function dropDeadHookLatches()
   altHooked = false
   altHookIds = {}
   classHooks = {}
-  -- world-scoped object state dies with the world's names
+  -- world-scoped object state dies with the world's names (the sidecar tables too: their
+  -- pawns are gone, so restores would write nothing -- just drop the bookkeeping)
   benchLatch, benchDisarmed, unblockedShips, shipPrev, moveShielded = {}, {}, {}, {}, {}
+  remotePin, leanState, repDisarmed = {}, {}, {}
 end
 
 -- Right click (IA_AltHandInteract, Completed = fires once per click, on release). The wand
@@ -1311,26 +1637,35 @@ local function cmdSlots()
   end
 end
 
+-- Strays are removed ONLY where OUR bench provably lived (the recorded bench_ship_at_<id>
+-- spots) and only when that spot is no longer near any live ship's stern. The old sweep
+-- ("any bench of the class not near an anchor") would have destroyed every player-built
+-- bench of the same model anywhere in the world.
 local function cmdShipClean()
   if not ctx.net.isHost() then ctx.log.info("bench: host only") return end
-  local anchors = {}
+  local anchors, recorded = {}, {}
   for _, ship in ipairs(liveOf(bmap().shipClass)) do
     local a = benchAnchor(ship)
     if a then anchors[#anchors + 1] = a end
+    local at = ctx.save.getFlag("bench_ship_at_" .. tostring(shipIdOf(ship)))
+    if type(at) == "table" and at.X then recorded[#recorded + 1] = at end
   end
   local killed = 0
   for _, b in ipairs(liveOf(bmap().shipBenchClass)) do
     local bl; pcall(function() bl = ctx.uehelp.vec(b:K2_GetActorLocation()) end)
-    local near = false
+    local atOurs, near = false, false
+    for _, p in ipairs(recorded) do
+      if bl and ctx.uehelp.dist2(bl, p) <= 250 * 250 then atOurs = true break end
+    end
     for _, a in ipairs(anchors) do
       if bl and ctx.uehelp.dist2(bl, a) <= adoptR2() then near = true break end
     end
-    if bl and not near then
+    if bl and atOurs and not near then
       pcall(function() b:K2_DestroyActor() end)
       killed = killed + 1
     end
   end
-  ctx.log.info("bench: " .. killed .. " stray ship bench(es) removed")
+  ctx.log.info("bench: " .. killed .. " stray ship bench(es) removed (recorded spots only)")
 end
 
 local function handleCmd(sub, params)

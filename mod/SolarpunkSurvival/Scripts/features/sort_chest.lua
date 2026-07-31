@@ -221,7 +221,7 @@ local function armInteractHook()
     end)
   end)
   for _, path in ipairs(paths) do
-    local ok = pcall(RegisterHook, path,
+    local ok, pre, post = pcall(RegisterHook, path,
       ctx.log.guard("sortchest.interact", function(Context, comp, hit, controller, tool)
         local actor, pc
         pcall(function() actor = Context:get() end)
@@ -249,6 +249,8 @@ local function armInteractHook()
       end))
     if ok then
       hooked.interact = true
+      hooked.ids = hooked.ids or {}
+      hooked.ids[#hooked.ids + 1] = { path = path, pre = pre, post = post }
       ctx.log.debug("sort_chest: interact hook armed (" .. path .. ")")
     end
   end
@@ -275,7 +277,14 @@ function F.init(c)
           -- joining, not only world loads. OnInteractedWith is hooked on the CLASS function
           -- path, which survives a respawn, so clearing the registry unconditionally stacked
           -- a second live registration each time and opened the chest UI once per copy.
-          if worldChanged() then hooked = {} end
+          if worldChanged() then
+            -- unregister FIRST: a class that survived the reload keeps its live hook, and
+            -- re-arming without this stacks duplicate callbacks (one UI open per copy)
+            for _, h in ipairs(hooked.ids or {}) do
+              pcall(UnregisterHook, h.path, h.pre, h.post)
+            end
+            hooked = {}
+          end
           armInteractHook()
           startChain()
         end)

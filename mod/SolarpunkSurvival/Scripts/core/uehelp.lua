@@ -64,6 +64,18 @@ function M.localPawn()
   return M.findFirst("Character")
 end
 
+-- STRICTLY the local controller's possessed pawn -- nil rather than anyone else's body. On a
+-- listen server localPawn's findFirst fallback can hand back a TEAMMATE's pawn (same class);
+-- anything that WRITES to the pawn (crouch, movement caps) must use this instead, or a bad
+-- frame writes those onto a friend (review 2026-07-31).
+function M.ownPawn()
+  local pc = M.playerController()
+  if not pc then return nil end
+  local ok, pawn = pcall(function() return pc.Pawn end)
+  if ok and M.isValid(pawn) then return pawn end
+  return nil
+end
+
 -- The LOCAL PLAYER's pawn and nothing else.
 --
 -- localPawn() ends in `findFirst("Character")` on purpose -- most callers want *a* body and would
