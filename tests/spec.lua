@@ -1255,6 +1255,11 @@ do
   eq(config.get("qol_chest_size"), 42, "qol: chests grow to 42 = 6 rows of 7 (user 2026-08-06)")
   eq(tonumber(config.get("qol_chest_size")) % m.qol.chestGridCols, 0,
      "qol: chest size fills whole grid rows (a ragged last row is ghost-tile bait)")
+  eq(config.get("sort_chest_size"), 21, "sorter: 3 rows of 7 (user 2026-08-06 'down to 3 rows')")
+  eq(tonumber(config.get("sort_chest_size")) % m.qol.chestGridCols, 0,
+     "sorter: size fills whole grid rows too")
+  ok(tonumber(config.get("sort_chest_size")) < tonumber(config.get("qol_chest_size")),
+     "sorter: a working buffer, smaller than bulk chests")
   eq(config.get("sort_chest"), true, "sort_chest: enabled by default")
   eq(config.get("craft_pull"), true, "craft_pull: enabled by default")
   eq(config.get("sort_chest_power_active"), 500.0, "sort_chest: 500 draw while sorting (user spec)")

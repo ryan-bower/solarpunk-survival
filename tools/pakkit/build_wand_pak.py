@@ -1580,6 +1580,141 @@ SORTCHEST_STUBS = [
 # byte-for-byte. 12 slots drives every tile every fill; no ghosts, no dupes, a normal chest UI.
 SORTCHEST_SLOTS = 12
 
+# The visible wire-hookup port (user 2026-08-06: the sorter "doesn't look like it has the
+# normal wire hookup port that other powered items have"). Every vanilla machine's port is
+# painted into its own mesh art -- swapping the furnace mesh for the crate lost it, and the
+# SNAP box is editor-only geometry that never renders. A runtime spawn+attach dressing was
+# tried first and joined the attach/spawn native-crash family (see the copper-topper
+# postmortem in features/lightning_rod.lua: cosmetics belong in the pak). So the CLONE gets a
+# real cooked component: a new SCS node "PortMesh" -- a no-collision StaticMeshComponent
+# rendering SM_CableConnector (the small connector's own mesh, its default materials) at the
+# SNAP spot, undersized and sunk 2 cm into the crate face, so a REAL connector snapped there
+# covers it like a plug in a socket. The SNAP box (roll 90) is the transform donor.
+PORT_SCALE = 0.75
+
+def _add_port_mesh(d, snap):
+    """Append PortMesh_GEN_VARIABLE (template) + SCS_Node_13 into the clone's SCS. Shapes are
+    copied from the SNAP box pair -- the donor's own non-inherited component, so its flags,
+    archetype-import pattern and dependency arrays are exactly what a new component needs."""
+    exps = d["Exports"]
+    imps = d["Imports"]
+
+    def exp_ref(name):
+        return next(i + 1 for i, e in enumerate(exps) if str(e.get("ObjectName")) == name)
+
+    def imp_ref(obj, cls):
+        for i, e in enumerate(imps):
+            if str(e["ObjectName"]) == obj and str(e.get("ClassName")) == cls:
+                return -(i + 1)
+        sys.exit(f"sorting chest port: import {obj} ({cls}) not found")
+
+    cls_ref = exp_ref("BP_SortingChest_Placeable_C")
+    scs_ref = exp_ref("SimpleConstructionScript_0")
+    node_donor = exps[exp_ref("SCS_Node_12") - 1]
+    smc_cls = imp_ref("StaticMeshComponent", "Class")
+    mesh_imp = add_import_pair(d, "/Game/Art/StaticMeshes/SM_CableConnector",
+                               "SM_CableConnector", "StaticMesh")
+    # the class-default archetype for a NEW (non-inherited) component, Default__BoxComponent's
+    # exact pattern (the inherited PlaceableMesh instead points at the MASTER's template)
+    box_cdo = imps[-imp_ref("Default__BoxComponent", "BoxComponent") - 1]
+    smc_cdo = copy.deepcopy(box_cdo)
+    smc_cdo["ObjectName"] = "Default__StaticMeshComponent"
+    smc_cdo["ClassName"] = "StaticMeshComponent"
+    imps.append(smc_cdo)
+    smc_cdo_ref = -len(imps)
+    add_name(d, "Default__StaticMeshComponent")
+
+    def struct_prop(name, struct_type, inner_type, value):
+        return {
+            "$type": "UAssetAPI.PropertyTypes.Structs.StructPropertyData, UAssetAPI",
+            "StructType": struct_type, "SerializeNone": True,
+            "StructGUID": "{00000000-0000-0000-0000-000000000000}",
+            "SerializationControl": "NoExtension", "Operation": "None",
+            "Name": name, "ArrayIndex": 0, "PropertyGuid": None, "IsZero": False,
+            "PropertyTagFlags": "None", "PropertyTypeName": None,
+            "PropertyTagExtensions": "NoExtension",
+            "Value": [{
+                "$type": f"UAssetAPI.PropertyTypes.{inner_type}, UAssetAPI",
+                "Name": name, "ArrayIndex": 0, "PropertyGuid": None, "IsZero": False,
+                "PropertyTagFlags": "None", "PropertyTypeName": None,
+                "PropertyTagExtensions": "NoExtension", "Value": value,
+            }],
+        }
+
+    def vec(x, y, z):
+        return {"$type": "UAssetAPI.UnrealTypes.FVector, UAssetAPI", "X": x, "Y": y, "Z": z}
+
+    snap_loc = next(p for p in snap["Data"]
+                    if p.get("Name") == "RelativeLocation")["Value"][0]["Value"]
+    snap_rot = copy.deepcopy(next(p for p in snap["Data"]
+                                  if p.get("Name") == "RelativeRotation"))
+
+    # Export SHELL from the donor's own StaticMeshComponent template -- NOT from the SNAP box.
+    # 'Extras' is the class's NATIVE serialization tail and its length is class-specific
+    # (BoxComponent 4 bytes, StaticMeshComponent 16): a box shell relabeled StaticMeshComponent
+    # makes the loader read 12 bytes past the blob = the FAsyncLoadingThread AV this cost a
+    # five-variant bisect to find (2026-08-06). Same-class shell = same-class tail.
+    tmpl = copy.deepcopy(exps[exp_ref("PlaceableMesh_GEN_VARIABLE") - 1])
+    tmpl["ObjectName"] = "PortMesh_GEN_VARIABLE"
+    tmpl["ClassIndex"] = smc_cls
+    tmpl["TemplateIndex"] = smc_cdo_ref
+    # PlaceableMesh is the MASTER's inherited template; the port is a fresh component --
+    # SNAP's exact flag set (RF_Public | RF_Transactional | RF_ArchetypeObject)
+    tmpl["ObjectFlags"] = snap["ObjectFlags"]
+    tmpl["SerializationBeforeSerializationDependencies"] = [cls_ref]
+    tmpl["CreateBeforeSerializationDependencies"] = [mesh_imp]
+    tmpl["SerializationBeforeCreateDependencies"] = [smc_cls, smc_cdo_ref]
+    tmpl["CreateBeforeCreateDependencies"] = [cls_ref]
+    tmpl["Data"] = [
+        {"$type": "UAssetAPI.PropertyTypes.Objects.ObjectPropertyData, UAssetAPI",
+         "Name": "StaticMesh", "ArrayIndex": 0, "PropertyGuid": None, "IsZero": False,
+         "PropertyTagFlags": "None", "PropertyTypeName": None,
+         "PropertyTagExtensions": "NoExtension", "Value": mesh_imp},
+        # profile does the whole job: NoCollision = collision disabled + every channel ignored,
+        # so the port can never eat the SNAP trace, the build preview, or the E-press
+        struct_prop("BodyInstance", "BodyInstance", "Objects.NamePropertyData", "NoCollision"),
+        struct_prop("RelativeLocation", "Vector", "Structs.VectorPropertyData",
+                    vec(snap_loc["X"], snap_loc["Y"] - 2.0, snap_loc["Z"])),
+        snap_rot,   # roll 90 -- exactly how a snapped connector sits on the face
+        struct_prop("RelativeScale3D", "Vector", "Structs.VectorPropertyData",
+                    vec(PORT_SCALE, PORT_SCALE, PORT_SCALE)),
+    ]
+    tmpl["Data"][1]["Value"][0]["Name"] = "CollisionProfileName"
+    exps.append(tmpl)
+    tmpl_ref = len(exps)
+
+    node = copy.deepcopy(node_donor)   # keeps ParentComponentOrVariableName = PlaceableRoot
+    node["ObjectName"] = "SCS_Node_13"
+    node["CreateBeforeSerializationDependencies"] = [tmpl_ref]
+    for p in node["Data"]:
+        if p.get("Name") == "ComponentClass":
+            p["Value"] = smc_cls
+        elif p.get("Name") == "ComponentTemplate":
+            p["Value"] = tmpl_ref
+        elif p.get("Name") == "InternalVariableName":
+            p["Value"] = "PortMesh"
+        elif p.get("Name") == "VariableGuid":
+            p["Value"][0]["Value"] = "{7B0DEB72-4EF9-01E7-BC13-31A5FE24776F}"
+    exps.append(node)
+    node_ref = len(exps)
+
+    scs = exps[scs_ref - 1]
+    for arr in ("RootNodes", "AllNodes"):
+        prop = next(p for p in scs["Data"] if p.get("Name") == arr)
+        entry = copy.deepcopy(prop["Value"][-1])
+        entry["Name"] = str(len(prop["Value"]))
+        entry["Value"] = node_ref
+        prop["Value"].append(entry)
+    scs["CreateBeforeSerializationDependencies"].append(node_ref)
+
+    for n in ("PortMesh", "PortMesh_GEN_VARIABLE", "SCS_Node_13", "RelativeScale3D",
+              "BodyInstance", "CollisionProfileName", "NoCollision", "StaticMesh"):
+        add_name(d, n)
+    # new EXPORT-DATA names (property names, NoCollision, PortMesh) sit past the package's
+    # stale NamesReferencedFromExportDataCount -- without this they are pruned on repack
+    # (proven live 2026-08-06: the nofix bisect variant tripped the round-trip name assert)
+    fix_name_count(d)
+
 def _stub_bytecode(export):
     export["ScriptBytecode"] = [
         {"$type": "UAssetAPI.Kismet.Bytecode.Expressions.EX_Return, UAssetAPI",
@@ -1701,6 +1836,7 @@ def build_sorting_chest():
             sys.exit(f"sorting chest: SNAP box at Y={v['Y']}, expected the furnace's ~63.6 -- "
                      "game update moved the connector, re-derive the crate-face offset")
         v["Y"] = 44.0
+        _add_port_mesh(d, snap)
 
     clone_asset(os.path.join(PLACE_DIR, "BP_EnergyFurnace_Placeable.uasset"),
                 os.path.join(PLACE_DIR, "BP_SortingChest_Placeable.uasset"),
@@ -2141,6 +2277,27 @@ def verify_pak():
                 if not any(str(e.get("ObjectName")) == want for e in imps):
                     sys.exit(f"{os.path.basename(rel)}: lost the {want} import edge -- the reader "
                              "chain would never load and the book would be a brick")
+        # the sorting chest's cooked wire-port: the SCS exports + their names must survive the
+        # round trip, or the port never spawns / fatals at load. (Asset-OBJECT imports like
+        # SM_CableConnector are NOT checkable here: retoc's to-legacy reconstruction drops every
+        # /Game asset-object import it cannot resolve locally -- SM_Crate_Wood is equally absent
+        # from this table while rendering fine in game. Script-class imports do survive.)
+        if "BP_SortingChest_Placeable" in rel:
+            dd = json.load(open(vj, encoding="utf-8"))
+            expn = {str(e.get("ObjectName")) for e in dd.get("Exports") or []}
+            for want in ("PortMesh_GEN_VARIABLE", "SCS_Node_13"):
+                if want not in expn:
+                    sys.exit(f"sorting chest: export {want} lost on repack -- the cooked "
+                             "wire-port would never spawn")
+            imps = dd.get("Imports") or []
+            if not any(str(e.get("ObjectName")) == "Default__StaticMeshComponent" for e in imps):
+                sys.exit("sorting chest: lost the Default__StaticMeshComponent archetype import "
+                         "-- the port template would fail to construct")
+            nm = {str(n) for n in dd.get("NameMap") or []}
+            for want in ("PortMesh", "PortMesh_GEN_VARIABLE", "SCS_Node_13", "NoCollision"):
+                if want not in nm:
+                    sys.exit(f"sorting chest: name '{want}' pruned on repack -- the port SCS "
+                             "node would misresolve at load")
 
     # The quick-craft contract, read back structurally: silently breakable, and the whole point of
     # the Tempest Handbook is that a new player finds it in the F menu.

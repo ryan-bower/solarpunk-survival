@@ -168,20 +168,31 @@ local function freeSlotCount(comp)
   return tonumber(v)
 end
 
--- Grow an OCCUPIED chest. The blocker was never ForceReplace -- it was that rebuilding an
--- occupied array needs the old slots, and reading struct-array elements from Lua wedges the
--- scheduler (proven live). The end-run (offline RE 2026-07-27 of BC_InventorySystem): the game
--- moves slots BETWEEN inventories by INDEX -- MoveItemDiffInv(TargetInventory, OriginIndex,
--- TargetIndex), plain BlueprintCallable, no reads required on our side. So: stand up a buffer
--- chest ON the same spot, move the slots across game-side, ForceReplace the now-EMPTY chest to
--- the new size, move the slots back, destroy the buffer (K2_DestroyActor -- the killGlow-proven
--- call). Every phase is verified by GetNrOfFreeSlots counts, and on any miscount the shuffle
--- stops WITH the items wherever they are -- worst case the player finds a second chest standing
--- in the same spot holding their goods, never a deletion.
+-- Resize an OCCUPIED chest (grow OR shrink). The blocker was never ForceReplace -- it was that
+-- rebuilding an occupied array needs the old slots, and reading struct-array elements from Lua
+-- wedges the scheduler (proven live). The end-run (offline RE 2026-07-27 of BC_InventorySystem):
+-- the game moves slots BETWEEN inventories by INDEX -- MoveItemDiffInv(TargetInventory,
+-- OriginIndex, TargetIndex), plain BlueprintCallable, no reads required on our side. So: stand
+-- up a buffer chest ON the same spot, move the slots across game-side, ForceReplace the
+-- now-EMPTY chest to the new size, move the slots back, destroy the buffer (K2_DestroyActor --
+-- the killGlow-proven call). Every phase is verified by GetNrOfFreeSlots counts, and on any
+-- miscount the shuffle stops WITH the items wherever they are -- worst case the player finds a
+-- second chest standing in the same spot holding their goods, never a deletion.
+--
+-- SHRINK (the sorting chest went 42 -> 21, user 2026-08-06) adds two rules: it refuses when the
+-- chest holds more stacks than the smaller size seats, and before moving back it runs the
+-- game's own Sort on the buffer (the chest UI's Sort button call) so every stack is compacted
+-- into the low indexes the smaller array still has. If Sort ever stops compacting, the tail
+-- stacks simply stay in the buffer chest standing on the same spot -- visible, never deleted.
 local function growOccupied(chest, comp, fn, len, want, free)
   if not ctx.config.get("qol_chest_grow_occupied") then return false end
   if ctx.log.isPoisoned("chest:spawn") then return false end
   local used = len - free
+  if used > want then
+    ctx.log.warn("qol: chest holds " .. used .. " stacks, more than the target " .. want ..
+                 " slots -- take some out and it will resize on its own")
+    return false
+  end
   local cls = ctx.uehelp.classByName(qmap().chestClass,
     qmap().chestClassPath and (qmap().chestClassPath .. "." .. qmap().chestClass) or nil)
   local loc; pcall(function() loc = ctx.uehelp.vec(chest:K2_GetActorLocation()) end)
@@ -236,6 +247,18 @@ local function growOccupied(chest, comp, fn, len, want, free)
     return false
   end
 
+  if want < len then
+    -- shrinking: compact the buffer game-side (the chest UI's own Sort button call) so all
+    -- `used` stacks sit below index `want` before the smaller array is stood up
+    ctx.log.step("qol.chest.shuffle.sort")
+    if ctx.uehelp.call(bComp, "Sort", 0) ~= true then
+      ctx.log.step("qol.chest.shuffle.rollback")
+      for i = 0, len - 1 do ctx.uehelp.call(bComp, "MoveItemDiffInv", comp, i, i) end
+      if freeSlotCount(bComp) == bLen then pcall(function() buffer:K2_DestroyActor() end) end
+      ctx.log.warn("qol: buffer Sort refused during a chest shrink; chest untouched")
+      return false
+    end
+  end
   local arr = {}
   for i = 1, want do arr[i] = {} end
   ctx.log.step("qol.chest.shuffle.grow")
@@ -247,7 +270,8 @@ local function growOccupied(chest, comp, fn, len, want, free)
   ctx.uehelp.set(comp, qmap().invSizeProp or "InventorySize", want)
 
   ctx.log.step("qol.chest.shuffle.back")
-  for i = 0, len - 1 do ctx.uehelp.call(bComp, "MoveItemDiffInv", comp, i, i) end
+  -- a shrunk chest only HAS `want` indexes; after the compaction every stack lives below that
+  for i = 0, math.min(len, want) - 1 do ctx.uehelp.call(bComp, "MoveItemDiffInv", comp, i, i) end
   if freeSlotCount(bComp) == bLen then
     pcall(function() buffer:K2_DestroyActor() end)
   else
@@ -256,12 +280,12 @@ local function growOccupied(chest, comp, fn, len, want, free)
                  "take them out and it can be demolished")
   end
   chestSized[fn] = true
-  ctx.log.info("qol: occupied chest grown " .. len .. " -> " .. want .. " slots (" .. used .. " stacks ride along)")
+  ctx.log.info("qol: occupied chest resized " .. len .. " -> " .. want .. " slots (" .. used .. " stacks ride along)")
   return true
 end
 
-local function sizeChest(chest)
-  local want = tonumber(ctx.config.get("qol_chest_size")) or 0
+local function sizeChest(chest, wantOverride)
+  local want = tonumber(wantOverride) or tonumber(ctx.config.get("qol_chest_size")) or 0
   if want <= 0 or not ctx.net.isHost() then return end
   if not ctx.uehelp.isValid(chest) then return end
   -- Component var NAMES differ per Blueprint (the sorting chest is a furnace clone whose
@@ -283,20 +307,19 @@ local function sizeChest(chest)
   if not fn or chestSized[fn] or fn:find("Default__", 1, true) then return end
   local len = -1
   pcall(function() len = #comp.Inventory end)
-  if len <= 0 or len >= want then
-    if len >= want then
-      -- The array is already big enough -- but the two can fall out of step: a chest was found
-      -- live carrying a 24-slot Inventory with InventorySize still reading 12 (the array grew in
-      -- an earlier pass and the count write did not land). Keep the declared size honest, or the
-      -- game is told a 24-slot chest only holds 12.
-      local sizeProp = qmap().invSizeProp or "InventorySize"
-      local okS, size = ctx.uehelp.get(comp, sizeProp)
-      if okS and tonumber(size) and tonumber(size) ~= len then
-        ctx.uehelp.set(comp, sizeProp, len)
-        ctx.log.info("qol: chest InventorySize " .. tostring(size) .. " -> " .. len .. " (repaired)")
-      end
-      chestSized[fn] = true
+  if len <= 0 then return end
+  if len == want then
+    -- The array is already right -- but the two can fall out of step: a chest was found
+    -- live carrying a 24-slot Inventory with InventorySize still reading 12 (the array grew in
+    -- an earlier pass and the count write did not land). Keep the declared size honest, or the
+    -- game is told a 24-slot chest only holds 12.
+    local sizeProp = qmap().invSizeProp or "InventorySize"
+    local okS, size = ctx.uehelp.get(comp, sizeProp)
+    if okS and tonumber(size) and tonumber(size) ~= len then
+      ctx.uehelp.set(comp, sizeProp, len)
+      ctx.log.info("qol: chest InventorySize " .. tostring(size) .. " -> " .. len .. " (repaired)")
     end
+    chestSized[fn] = true
     return
   end
   local free = freeSlotCount(comp)
@@ -326,18 +349,19 @@ local function sizeChest(chest)
   if okR then
     ctx.uehelp.set(comp, qmap().invSizeProp or "InventorySize", want)
     chestSized[fn] = true
-    ctx.log.info("qol: chest grown " .. len .. " -> " .. want .. " slots")
+    ctx.log.info("qol: chest resized " .. len .. " -> " .. want .. " slots")
   end
 end
 
 sweepChests = function()
   shuffledThisPass = false
   for _, c in ipairs(liveInstances(qmap().chestClass)) do sizeChest(c) end
-  -- The sorting chest is a chest too (user 2026-07-31: "it should look like a 6 row chest") --
-  -- same target size, and the grow doubles as the heal for sorters placed before the pak
-  -- template carried a full-size inventory (those shipped 2 furnace slots).
+  -- The sorting chest sizes like a chest but to its OWN target: 3 rows of 7 (user 2026-08-06,
+  -- "reduce the inv of the autosort chest down to 3 rows" -- it is a working buffer, not bulk
+  -- storage). The same pass heals 2-slot pre-template sorters up and 42-slot ones down.
   local sc = ctx.map.sortchest and ctx.map.sortchest.class
-  if sc then for _, c in ipairs(liveInstances(sc)) do sizeChest(c) end end
+  local sw = tonumber(ctx.config.get("sort_chest_size")) or 0
+  if sc and sw > 0 then for _, c in ipairs(liveInstances(sc)) do sizeChest(c, sw) end end
 end
 
 --------------------------------------------------------------------- backpack: a bigger pack
@@ -1822,6 +1846,50 @@ end
 -- whole number of 7-wide rows on every legal tier; anything else is left alone. The game's own
 -- sizing pass cannot undo this: UpdateBackpackDisplayIfRequired rebuilds only when the TIER
 -- changed since it last looked, and then this pass re-unifies 80 ms later.
+-- The chest window is ONE vertical stack -- pack section on TOP, chest section below --
+-- centered on screen in an auto-sized canvas slot (offline: W_ChestInventory CanvasPanelSlot_0,
+-- anchors .5/.5, alignment .5/.5, position (0,-50)). With a 6-row pack AND a 6-row chest the
+-- stack's desired height exceeds the 1080-unit design space (rig 2026-08-06: 714x1369), and
+-- since the box is CENTER-anchored the overflow clips at the SCREEN TOP -- which is the pack
+-- section: the user's "after closing and opening it its not showing my backpack's inv". Fit =
+-- uniform RenderScale on the stack, shrinking it just enough that both ends stay on screen
+-- (the -50 designer offset plus a hotbar reserve cost ~140 units of the height). Render
+-- transforms scale hit-testing with the pixels, so tiles stay clickable; the show/hide
+-- animation binds the two OVERLAY sections, never this box, so the two cannot fight. Runs
+-- deferred after each rebuild: desired size is only current after a layout prepass.
+local function fitChestWindows()
+  local m = qmap()
+  local lib = StaticFindObject("/Script/UMG.Default__WidgetLayoutLibrary")
+  local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+  if not (lib and pc) then return end
+  local designH
+  pcall(function()
+    local sz = lib:GetViewportSize(pc)
+    local sc = lib:GetViewportScale(pc)
+    if sz and sc and sc > 0 then designH = sz.Y / sc end
+  end)
+  if not designH or designH <= 0 then return end
+  for _, w in ipairs(FindAllOf(m.chestUiClass or "W_ChestInventory_C") or {}) do
+    pcall(function()
+      local fn = w:GetFullName()
+      if not (fn and fn:find("Transient", 1, true)) then return end
+      local main = w[m.chestUiMainBoxProp or "MainInventory"]
+      local ov = main and main:GetParent()
+      local vb = ov and ov:GetParent()
+      if not vb then return end
+      local h = 0
+      pcall(function() h = vb:GetDesiredSize().Y end)
+      if not (h and h > 0) then return end   -- the game's parked spare instance measures 0x0
+      local s = math.min(1, (designH - 140) / h)
+      vb:SetRenderScale({ X = s, Y = s })
+      if s < 1 then
+        ctx.log.debug(string.format("qol: chest window %.0f > %.0f units tall, scaled to %.2f",
+          h, designH - 140, s))
+      end
+    end)
+  end
+end
+
 local function rebuildChestGrids()
   local m = qmap()
   local cols = tonumber(m.chestGridCols) or 6
@@ -1885,6 +1953,8 @@ local function rebuildChestGrids()
       end)
     end
   end
+  -- after the grids settle into their real sizes, shrink-to-fit the whole window
+  deferOnly(150, fitChestWindows)
 end
 
 -- The check stays a plain table lookup on purpose -- armHooks is re-run on every Character
@@ -2192,13 +2262,15 @@ function F.init(c)
     defer(150, function() sizeChest(obj) end)
     defer(1200, function() sizeChest(obj) end)   -- second pass: save-load init ordering
   end)
-  -- the sorting chest grows like any chest (sweepChests reaches ones loaded from save; this
-  -- reaches ones PLACED mid-session -- the pak template ships vanilla-chest-sized, 12)
+  -- the sorting chest sizes like a chest but to sort_chest_size, 3 rows (sweepChests reaches
+  -- ones loaded from save; this reaches ones PLACED mid-session -- the pak template ships
+  -- vanilla-chest-sized, 12)
   local scCls = ctx.map.sortchest and ctx.map.sortchest.class
   if scCls then
+    local function sortWant() return tonumber(ctx.config.get("sort_chest_size")) or nil end
     ctx.uehelp.onNewInstance("/Script/Engine.Actor", scCls, function(obj)
-      defer(150, function() sizeChest(obj) end)
-      defer(1200, function() sizeChest(obj) end)
+      defer(150, function() sizeChest(obj, sortWant()) end)
+      defer(1200, function() sizeChest(obj, sortWant()) end)
     end)
   end
   -- a dock built mid-session is the first moment its recall hooks CAN arm (armHook resolves

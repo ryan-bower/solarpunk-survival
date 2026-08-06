@@ -187,6 +187,14 @@ local function sortPass(s)
   end
 end
 
+-- NO runtime wire-port dressing. The user's "no wire hookup port" (2026-08-06) is fixed in the
+-- CONTENT PAK: build_wand_pak.py cooks a PortMesh StaticMeshComponent (SM_CableConnector,
+-- no-collision, undersized) into the clone's SCS at the SNAP box spot. A first cut here
+-- spawned a StaticMeshActor and K2_AttachToActor'd it on every sorter -- the attach/spawn
+-- family this project has been killed by three times before (component rig, preview ghost,
+-- copper topper), and it struck again: uncatchable native AV within a second of the first
+-- pass (rig 2026-08-06). Per the copper-topper postmortem: cosmetics belong in the pak.
+
 -- Put every live sorter back on the idle draw. Used when the feature is switched off at
 -- runtime: the last pass may have left a loaded chest asking the network for the working
 -- wattage, and nothing else would ever write that property again.

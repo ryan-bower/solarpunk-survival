@@ -422,6 +422,10 @@ M.defaults = {
   sort_chest_tick     = 1.5,     -- secs between sorting passes (one target chest per pass)
   sort_chest_power_active = 500.0, -- power draw while it holds items to sort
   sort_chest_power_idle   = 100.0, -- power draw while empty
+  sort_chest_size     = 21,      -- sorter slots: 3 rows of 7 (user 2026-08-06: "reduce the inv
+                                 -- of the autosort chest down to 3 rows") -- it is a working
+                                 -- buffer, not bulk storage. qol's sweep sizes it (shrinking an
+                                 -- already-grown one; items survive via the buffer shuffle).
   -- Crafting AUTO-PULL (features/craft_pull.lua): recipes on screen fetch their missing
   -- materials from chests within range into your inventory, so the counts turn real.
   craft_pull          = true,
