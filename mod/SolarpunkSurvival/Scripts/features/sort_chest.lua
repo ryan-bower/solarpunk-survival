@@ -1,14 +1,21 @@
 -- The blue SORTING CHEST: a powered chest (pak clone of BP_EnergyFurnace_Placeable -- it ships
 -- with inventory + cable connector + energy device wired) that files its contents into nearby
--- chests. Drop items in; every pass it picks the next chest within sort_chest_range and calls
--- the game's own Quick Stack on it -- dstInv:QuickStack(sorterInv) pulls over exactly the item
--- classes that chest ALREADY holds (bytecode-verified), which is the user's sorting rule
--- verbatim. Items no nearby chest wants simply stay put; there is no fallback scatter.
+-- chests. Drop items in; a loaded, powered sorter sweeps EVERY chest within sort_chest_range
+-- closest-first in one pass, calling the game's own Quick Stack on each --
+-- dstInv:QuickStack(sorterInv) pulls over exactly the item classes that chest ALREADY holds
+-- (bytecode-verified), which is the user's sorting rule verbatim. Items no nearby chest wants
+-- simply stay put; there is no fallback scatter. A sweep that moves NOTHING settles the sorter:
+-- it then only re-sweeps every SETTLE_PASSES ticks (or the moment its item count changes),
+-- because QuickStack saves both inventories even on a no-op -- hammering every neighbor each
+-- tick forever is pure churn.
 --
 -- Power: the clone's device component draws sort_chest_power_active (as NEGATIVE
 -- CurPowerConsumption, the engine's sign convention) while it holds items, idling at
--- sort_chest_power_idle when empty. Sorting itself only proceeds while the network says
--- EnoughPower -- cutting the cable pauses mid-pile and resumes on re-power.
+-- sort_chest_power_idle when empty. Sorting only proceeds while the network says EnoughPower --
+-- cutting the cable pauses mid-pile and resumes on re-power -- and an UNREADABLE device also
+-- pauses it: "only work when powered" must fail closed, not free-run (warned once per sorter).
+-- While the local player is browsing the sorter's own inventory the pass skips it -- the game
+-- never mutates a chest mid-view, and neither do we.
 --
 -- Interact: the clone's OnInteractedWith trampoline is STUBBED at cook time (natively E does
 -- nothing), but the delegate still broadcasts through ProcessEvent, so the hook below fires and
@@ -20,8 +27,13 @@ local ctx
 local chainTok = 0      -- orphans stale sort chains
 local chainLive = false
 local dryPasses = 0     -- consecutive passes with no live sorter -> chain stops
-local rr = {}           -- sorterKey -> round-robin cursor over its target chests
+local st = {}           -- sorterKey -> { total = count when settled, cool = passes to skip }
+local blindWarned = {}  -- sorterKey -> true after the unreadable-device warn
 local hooked = {}       -- interact-redirect hook registry
+
+-- Passes a settled sorter waits before re-sweeping (a neighbor may have GAINED a matching
+-- item since). At the 1.5 s default tick this is ~30 s between retries of a stuck pile.
+local SETTLE_PASSES = 20
 
 local function smap() return ctx.map.sortchest or {} end
 local function stmap() return ctx.map.stock or {} end
@@ -57,6 +69,11 @@ local function liveSorters()
 end
 
 local function deviceOf(sorter)
+  -- Property read FIRST: GetEnergyComponent is just `Component = BPC_Device_...` (bytecode),
+  -- but OBJECT out-params never come back through the reflected-call table on this build
+  -- (rig 2026-08-06: call ok=true, out table empty -- scalar outs fill fine, objects don't).
+  local ok, c = ctx.uehelp.get(sorter, smap().deviceProp or "BPC_Device_EnergySystemComponent")
+  if ok and ctx.uehelp.isValid(c) then return c end
   local out = {}
   if not ctx.uehelp.call(sorter, smap().deviceGetFn, out) then return nil end
   local v = rawget(out, 1)
@@ -79,8 +96,26 @@ local function totalIn(inv)
   return tonumber(unwrap(out.TotalItems)) or 0
 end
 
--- One sorter, one pass: set the draw, and if powered + loaded, Quick Stack into the next
--- nearby chest on the rotation.
+-- Is the LOCAL chest UI currently showing this inventory? Reuses the qol mapping's widget
+-- names with the same literal fallbacks qol itself uses. Fail-open: any read error counts as
+-- "not open" -- worst case the guard is inert, which is exactly today's behavior.
+local function uiBrowsing(inv)
+  local qm = ctx.map.qol or {}
+  local open = false
+  pcall(function()
+    for _, w in ipairs(FindAllOf(qm.chestUiClass or "W_ChestInventory_C") or {}) do
+      local full = w:GetFullName()
+      if full and full:find("Transient", 1, true) and w:IsVisible()
+         and ctx.uehelp.sameObject(w[qm.chestUiInvRefProp or "ChestInventoryRef"], inv) then
+        open = true
+      end
+    end
+  end)
+  return open
+end
+
+-- One sorter, one pass: set the draw, and if powered + loaded + unwatched, sweep every nearby
+-- chest closest-first with Quick Stack until the pile is gone or no chest wants the rest.
 local function sortPass(s)
   local ledger = svc()
   if not ledger then return end
@@ -90,38 +125,65 @@ local function sortPass(s)
   local total = totalIn(inv)
   local wantsToSort = total > 0
   if dev then
+    blindWarned[s.key] = nil
     -- the draw states the chest's intent: loaded = working wattage even while the network
     -- can't feed it (that shortfall is exactly what keeps EnoughPower false); empty = idle
     ctx.uehelp.set(dev, smap().consumptionProp,
       -(wantsToSort and cfgn("sort_chest_power_active", 500.0)
                      or cfgn("sort_chest_power_idle", 100.0)))
   end
-  if not wantsToSort then rr[s.key] = nil return end
-  if dev and hasPower(dev) ~= true then return end -- unpowered: pause, keep re-checking
+  if not wantsToSort then st[s.key] = nil return end
+  if not dev then
+    -- power gate fails CLOSED: a sorter whose energy component cannot be read must pause,
+    -- not sort for free ("it should only work when powered")
+    if not blindWarned[s.key] then
+      blindWarned[s.key] = true
+      ctx.log.warn("sort_chest: energy device unreadable on a loaded sorter (" ..
+        tostring(smap().deviceProp) .. "/" .. tostring(smap().deviceGetFn) ..
+        " both missed) -- sorting paused")
+    end
+    return
+  end
+  if hasPower(dev) ~= true then return end -- unpowered: pause, keep re-checking
+  if uiBrowsing(inv) then return end       -- player is looking inside; hands off till close
+  local prev = st[s.key]
+  if prev and prev.total == total and prev.cool > 0 then
+    prev.cool = prev.cool - 1
+    return
+  end
   local loc = ctx.identity.locationOf(s.actor)
   if not loc then return end
   local r = cfgn("sort_chest_range", 5000.0)
-  local targets = {}
+  local moved, fed = 0, 0
   for _, t in ipairs(ledger.chestsNear(loc, r * r, s.key)) do
     -- only PLAIN chests receive; two sorters must never ping-pong a pile between them
-    if t.entry.cls ~= smap().class then targets[#targets + 1] = t end
-  end
-  if #targets == 0 then return end
-  local idx = ((rr[s.key] or 0) % #targets) + 1
-  rr[s.key] = idx
-  local t = targets[idx]
-  local chest = ledger.actorOf(t.key, t.entry)
-  local dstInv = chest and ledger.invOf(chest)
-  if not dstInv then return end
-  local before = totalIn(inv)
-  if ctx.uehelp.call(dstInv, stmap().quickStackFn, inv, {}) then
-    local moved = before - totalIn(inv)
-    if moved > 0 then
-      ledger.invalidate(t.key)
-      ledger.invalidate(s.key)
-      ctx.log.info(string.format("sort_chest: filed %d item(s) into a chest %dm away",
-        moved, math.floor(math.sqrt(t.d2) / 100)))
+    if t.entry.cls ~= smap().class then
+      local chest = ledger.actorOf(t.key, t.entry)
+      local dstInv = chest and ledger.invOf(chest)
+      if dstInv then
+        local before = totalIn(inv)
+        if ctx.uehelp.call(dstInv, stmap().quickStackFn, inv, {}) then
+          local after = totalIn(inv)
+          if after < before then
+            moved = moved + (before - after)
+            fed = fed + 1
+            ledger.invalidate(t.key)
+            if after == 0 then break end
+          end
+        end
+      end
     end
+  end
+  if moved > 0 then
+    ledger.invalidate(s.key)
+    ctx.log.info(string.format("sort_chest: filed %d item(s) into %d chest(s)", moved, fed))
+  end
+  local left = totalIn(inv)
+  if left > 0 and moved == 0 then
+    -- nothing in range wants what's left: keep it here (the user's rule) and settle down
+    st[s.key] = { total = left, cool = SETTLE_PASSES }
+  else
+    st[s.key] = nil
   end
 end
 
@@ -135,7 +197,7 @@ local function releaseDraw()
       ctx.uehelp.set(dev, smap().consumptionProp, -cfgn("sort_chest_power_idle", 100.0))
     end
   end
-  rr = {}
+  st = {}
 end
 
 local function startChain()
@@ -302,6 +364,18 @@ function F.init(c)
         local sorters = liveSorters()
         ctx.log.info(string.format("sort_chest: %d sorter(s), chain %s",
           #sorters, chainLive and "running" or "parked"))
+        local ledger = svc()
+        for _, s in ipairs(sorters) do
+          local inv = ledger and ledger.invOf(s.actor)
+          local dev = deviceOf(s.actor)
+          local p = st[s.key]
+          ctx.log.info(string.format("  sorter: %s item(s), device %s, powered %s%s",
+            inv and tostring(totalIn(inv)) or "?",
+            dev and "ok" or "MISSING",
+            dev and tostring(hasPower(dev)) or "-",
+            p and (", settled (" .. p.cool .. " passes to retry)") or ""))
+        end
+        st = {}   -- forget every settle: the next tick re-sweeps immediately
         startChain()
       end)
       return true

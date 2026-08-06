@@ -279,7 +279,7 @@ do
   ok(m.qol.slotGridLibPath:find(":", 1, true) == nil and m.qol.slotGridLibPath:find("_C$") ~= nil,
      "mapping: grid library path is a class path (CDO derived from it at rebuild time)")
   eq(m.qol.chestGridRows, 2, "mapping: stock chest grid rows (reference)")
-  eq(m.qol.chestGridCols, 6, "mapping: chest grid columns the rebuild preserves")
+  eq(m.qol.chestGridCols, 7, "mapping: rebuilt chest grid is 7 wide (6x7, the pack-grid width)")
   eq(m.qol.chestUiClass, "W_ChestInventory_C", "mapping: the chest UI widget class")
   eq(m.qol.chestUiPanelProp, "ChestInventory", "mapping: the grid panel property")
   eq(m.qol.chestUiSlotsProp, "ChestSlots", "mapping: the slot-widget array the fill loop reads")
@@ -1218,6 +1218,8 @@ do
         if p == "BC_InventorySystem" then return true end end return false end)(),
      "stock: furnace-donor inv property (the sorting chest's) in invPropAlts")
   eq(m.sortchest.class, "BP_SortingChest_Placeable_C", "sortchest: pak clone class name pinned")
+  eq(m.sortchest.deviceProp, "BPC_Device_EnergySystemComponent",
+     "sortchest: device read as a PROPERTY (object out-params don't marshal back)")
   ok(({ ["BP_SortingChest_Placeable_C"] = true })[m.sortchest.class] ~= nil
      and (function() for _, c in ipairs(m.stock.chestClasses) do
             if c == m.sortchest.class then return true end end return false end)(),
@@ -1242,10 +1244,17 @@ do
      "chest_index: gate sees its keys")
   ok(gate.check(m, { "sortchest.class", "stock.quickStackFn", "stock.totalFn" }),
      "sort_chest: gate sees its keys")
+  -- the sort pass skips a sorter while the local player browses it; that guard reads the
+  -- chest widget through the qol mapping (fallback literals exist, but pin the contract)
+  eq(m.qol.chestUiClass, "W_ChestInventory_C", "sort_chest: browse guard sees the chest UI class")
+  eq(m.qol.chestUiInvRefProp, "ChestInventoryRef", "sort_chest: browse guard reads the shown inv")
   ok(gate.check(m, { "craftpull.openFns", "craftpull.partSlotClasses", "craftpull.needTextProp",
        "stock.removeAmtFn" }),
      "craft_pull: gate sees its keys")
 
+  eq(config.get("qol_chest_size"), 42, "qol: chests grow to 42 = 6 rows of 7 (user 2026-08-06)")
+  eq(tonumber(config.get("qol_chest_size")) % m.qol.chestGridCols, 0,
+     "qol: chest size fills whole grid rows (a ragged last row is ghost-tile bait)")
   eq(config.get("sort_chest"), true, "sort_chest: enabled by default")
   eq(config.get("craft_pull"), true, "craft_pull: enabled by default")
   eq(config.get("sort_chest_power_active"), 500.0, "sort_chest: 500 draw while sorting (user spec)")

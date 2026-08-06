@@ -33,8 +33,8 @@ M.schema = {
                "windSoundPath", "possessFn" },
   stock    = { "chestClasses", "invProp", "invPropAlts", "invSysClass", "amtFn", "freeFn", "totalFn",
                "freeSlotsFn", "quickStackFn", "removeAmtFn", "addPlayerFn", "addFn" },
-  sortchest = { "class", "deviceGetFn", "hasPowerFn", "enoughProp", "consumptionProp",
-                "interactFnHint", "placeablePath" },
+  sortchest = { "class", "deviceProp", "deviceGetFn", "hasPowerFn", "enoughProp",
+                "consumptionProp", "interactFnHint", "placeablePath" },
   craftpull = { "openFns", "partSlotClasses", "needProp", "haveProp", "itemDataProp",
                 "itemActorField", "stationWidgets", "needTextProp" },
   smoke    = { "shipDamageVfxFn" },
@@ -678,7 +678,13 @@ M.profiles = {
       slotGridLibPath = "/Game/UI/Framework/BPL_UiFunctions.BPL_UiFunctions_C",
       slotGridFn      = "CreateItemSlotGrid",
       chestGridRows   = 2,                        -- stock grid, kept for reference/tests
-      chestGridCols   = 6,                        -- column count the rebuild preserves
+      chestGridCols   = 7,                        -- rebuild column count. Stock is 6, but the
+                                                  -- rebuilt grid is 7 wide so a 42-slot chest
+                                                  -- reads as 6 rows of 7 -- the same width the
+                                                  -- widget's own PLAYER grid uses, in the same
+                                                  -- auto-sizing UniformGridPanel/VerticalBox
+                                                  -- geometry (so it cannot clip where the
+                                                  -- player side doesn't)
       chestUiClass      = "W_ChestInventory_C",
       chestUiPanelProp  = "ChestInventory",       -- UniformGridPanel the slots live in
       chestUiSlotsProp  = "ChestSlots",           -- TArray<W_InventorySlot*> the fill loop reads
@@ -1024,9 +1030,17 @@ M.profiles = {
     },
     -- The blue auto-sort chest: OUR pak clone of BP_EnergyFurnace_Placeable (the donor already
     -- carries BC_InventorySystem + SNAP_CableConnector + BPC_Device_EnergySystemComponent +
-    -- GetEnergyComponent -- the whole powered-buildable wiring).
+    -- GetEnergyComponent -- the whole powered-buildable wiring). The clone's inventory template
+    -- is grown to 12 slots at cook time (vanilla-chest parity; the furnace's was 2, which left
+    -- ghost tiles in the 12-tile chest UI = the dupe-on-take bug) and qol's chest sweep then
+    -- grows live sorters to qol_chest_size like every other chest. The SNAP box is moved flush
+    -- with the crate face (Y 63.6 -> 44) so the cable connector snaps ON the chest, not in air.
     sortchest = {
       class           = "BP_SortingChest_Placeable_C",
+      -- the device COMPONENT var (name encoded in the clone's own BndEvt trampoline). Read as
+      -- a property: object OUT params do not marshal back through reflected calls (rig
+      -- 2026-08-06), so deviceGetFn below is only a fallback.
+      deviceProp      = "BPC_Device_EnergySystemComponent",
       deviceGetFn     = "GetEnergyComponent",   -- BPI_EnergyBasic impl (single OUT component)
       hasPowerFn      = "HasPower?",            -- device fn, single OUT bool (= EnoughPower)
       enoughProp      = "EnoughPower",          -- replicated bool on the device component

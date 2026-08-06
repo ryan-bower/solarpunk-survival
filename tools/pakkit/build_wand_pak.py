@@ -1201,8 +1201,9 @@ HANDBOOK_PAGES = [
      " stops politely; give it power again and it picks up where it left off."),
     ("Hand_S5P2", 5, "ICON_Workbench",
      "Two things about crafting."
-     "\n\nEvery chest holds twice what it used to, including the ones you already filled. Nothing"
-     " was tipped out on the floor to manage it."
+     "\n\nEvery chest is deeper than it was -- six full rows now, the same spread as a well-worn"
+     " pack -- including the ones you already filled. Nothing was tipped out on the floor to"
+     " manage it."
      "\n\nAnd with a bench, an energy bench or a kitchen open, simply looking at a recipe fetches"
      " its missing pieces out of the chests around you and into your pack. The one-of-five you"
      " would have gone walking for is five of five by the time you have read it. Fair warning:"
@@ -1552,7 +1553,13 @@ def build_book_bps(b):
 #     sort_chest.lua hooks the stub (codex-proven pattern) and opens the plain chest UI itself.
 #     No furnace widget ever flashes.
 #   * power: the device template's draw becomes idle-level; features/sort_chest.lua modulates
-#     CurPowerConsumption (-500 sorting / -100 idle, the engine's negative-draw convention).
+#     CurPowerConsumption (-500 sorting / -100 idle, the engine's negative-draw convention;
+#     the actual wattages are config -- sort_chest_power_active / sort_chest_power_idle).
+#   * inventory: grown 2 -> 12 slots + AllowQuickStack, matching BP_Chest_Buildable's template
+#     exactly (the chest UI's fixed 12-tile grid makes this correctness, not cosmetics -- see
+#     SORTCHEST_SLOTS below).
+#   * cable hookup: the SNAP_CableConnector box is pulled flush with the crate face so the
+#     small cable connector snaps onto it (see the _patch_placeable comment).
 SORTCHEST_STUBS = [
     "TrySmelting", "TryStartSmelting", "KickstartSmelting", "StartSmeltingTimer",
     "MULTI_StartSmeltingTimer", "SmeltItem", "TryFueling", "AbortSmelting",
@@ -1562,6 +1569,16 @@ SORTCHEST_STUBS = [
     "BndEvt__BP_SortingChest_Placeable_BPC_Device_EnergySystemComponent_K2Node_ComponentBoundEvent_4_OnEnergyNetworkUpdated__DelegateSignature",
     "BndEvt__BP_Furnance_BPC_InteractableLogic_K2Node_ComponentBoundEvent_0_OnInteractedWith__DelegateSignature",
 ]
+
+# W_ChestInventory's grid is built ONCE at Construct: CreateItemSlotGrid(..., 2, 6, ...) = 12
+# tiles, and BP_Chest_Buildable's inventory template is exactly 12 slots. The sorting chest must
+# match: FillInventoryInGridPanel only overwrites as many tiles as the bound inventory has
+# SLOTS, so the furnace donor's 2-slot template left 10 tiles frozen on the PREVIOUS chest's
+# items ("changes depending on the last chest you opened", 2026-08-06) -- and shift-clicking
+# such a ghost tile ran PlayerInventory.AddItem(staleItem) for real while the chest-side
+# clearing write landed out of range on the 2-slot array, a silent no-op: the item-dupe report,
+# byte-for-byte. 12 slots drives every tile every fill; no ghosts, no dupes, a normal chest UI.
+SORTCHEST_SLOTS = 12
 
 def _stub_bytecode(export):
     export["ScriptBytecode"] = [
@@ -1639,6 +1656,51 @@ def build_sorting_chest():
                 p["Value"] = -500
             elif p.get("Name") == "CurPowerConsumption":
                 p["Value"] = -100.0
+        # inventory template: grow the furnace's 2 slots to a chest's 12 (see SORTCHEST_SLOTS
+        # above for why 12 is load-bearing, not cosmetic). Property order must stay Inventory,
+        # InventorySize, AllowQuickStack -- the chest donor's own serialized order (unversioned
+        # cook writes by schema order).
+        invc = next(e for e in d["Exports"]
+                    if e.get("ObjectName") == "BC_InventorySystem_GEN_VARIABLE")
+        inv_arr = next(p for p in invc["Data"] if p.get("Name") == "Inventory")
+        slots = inv_arr["Value"]
+        if len(slots) != 2:
+            sys.exit(f"sorting chest: donor inventory has {len(slots)} slots, expected the "
+                     "furnace's 2 -- game update changed the template, re-check the grid math")
+        empty = copy.deepcopy(slots[0])
+        for f in empty["Value"]:
+            if f["Name"].split("_")[0] in ("Item", "Quantity") and not f.get("IsZero"):
+                sys.exit("sorting chest: donor slot 0 holds an item -- refusing to stamp it out")
+        while len(slots) < SORTCHEST_SLOTS:
+            s = copy.deepcopy(empty)
+            s["Name"] = str(len(slots))
+            slots.append(s)
+        size = next(p for p in invc["Data"] if p.get("Name") == "InventorySize")
+        size["Value"], size["IsZero"] = SORTCHEST_SLOTS, False
+        # the vanilla chest opts into Quick Stack (the Stack button + receiving deposits);
+        # match it -- same BoolPropertyData shape the chest template carries
+        if not any(p.get("Name") == "AllowQuickStack" for p in invc["Data"]):
+            invc["Data"].append({
+                "$type": "UAssetAPI.PropertyTypes.Objects.BoolPropertyData, UAssetAPI",
+                "Name": "AllowQuickStack", "ArrayIndex": 0, "PropertyGuid": None,
+                "IsZero": False, "PropertyTagFlags": "None", "PropertyTypeName": None,
+                "PropertyTagExtensions": "NoExtension", "Value": True})
+            add_name(d, "AllowQuickStack")
+        # the wire hookup, made findable: the donor's SNAP_CableConnector box (tag
+        # CableConnector, Building-channel overlap -- BC_BuildSystem.SnapTrace snaps a
+        # BP_CableConnectorSmall onto any such box) sits at Y=63.6, inside the furnace's fat
+        # footprint (Y-extent ~105) but ~21cm off the wood crate's face (Y-extent 42.5): an
+        # invisible snap target floating in mid-air, which read in-game as "no cable hookup at
+        # all" (2026-08-06). Pull it flush with the crate's +Y face so the connector snaps onto
+        # the chest's side like on any other machine.
+        snap = next(e for e in d["Exports"]
+                    if e.get("ObjectName") == "SNAP_CableConnector_GEN_VARIABLE")
+        rel = next(p for p in snap["Data"] if p.get("Name") == "RelativeLocation")
+        v = rel["Value"][0]["Value"]
+        if not (63.0 < v["Y"] < 65.0):
+            sys.exit(f"sorting chest: SNAP box at Y={v['Y']}, expected the furnace's ~63.6 -- "
+                     "game update moved the connector, re-derive the crate-face offset")
+        v["Y"] = 44.0
 
     clone_asset(os.path.join(PLACE_DIR, "BP_EnergyFurnace_Placeable.uasset"),
                 os.path.join(PLACE_DIR, "BP_SortingChest_Placeable.uasset"),
@@ -1750,17 +1812,15 @@ def patch_db_recipes():
                 ("BP_Diamond_Item_C", 2)])
     # the sorting chest: a chest's worth of wood, a machine's worth of iron, cobalt for the blue.
     # Appended AFTER the research-gated rows so their persisted RecipyIDs stay stable in saves.
-    # HIDDEN FOR NOW (user, 2026-07-30): locations=() offers it at NO station, so it shows in no
-    # crafting menu anywhere. The row itself must stay -- RecipyIDs are positional (removing it
-    # would shift TempestHandbook's persisted 10010) -- and it stays STARTING because saves
-    # already self-healed 10009 into UnlockedRecipys; an empty location list out-hides any
-    # unlock state. Placed chests and inventory items are untouched (DB_Items/DB_Buildables
-    # rows remain). To un-hide: locations=("NewEnumerator2",) -- the Energy Crafting Table,
-    # where every powered machine lives (at the plain Crafting Table it appeared under no
-    # category at all; see add_recipe's `locations` note).
+    # UN-HIDDEN (2026-08-06, with the 12-slot/dupe/connector overhaul): offered at the Energy
+    # Crafting Table only (NewEnumerator2) -- every powered machine lives there; at the plain
+    # Crafting Table it appeared under no category at all (see add_recipe's `locations` note).
+    # It was hidden 2026-07-30 via locations=() while broken; the row stayed STARTING the whole
+    # time because saves had already self-healed 10009 into UnlockedRecipys, so un-hiding is
+    # exactly this one location flip, no save migration.
     add_recipe("SortingChest", "BP_SortingChest_Item_C",
                [("BP_Log_Item_C", 4), ("BP_Iron_Item_C", 4), ("BP_Cobalt_Item_C", 2)],
-               starting=True, locations=())
+               starting=True, locations=("NewEnumerator2",))
     # The Tempest Handbook: the vanilla SurvivalGuide recipe verbatim (1 log + 2 leaves), left as
     # a HAND recipe -- quick-craft (F) AND bench -- and known from the start, so a brand-new
     # player can craft the thing that explains the mod in their first minute. Appended LAST so
@@ -2092,17 +2152,15 @@ def verify_pak():
         sys.exit("TempestHandbook: StartingRecipy is False -- it would need a research card")
     if "ECraftingLocations::NewEnumerator0" not in locs:
         sys.exit(f"TempestHandbook: not a quick-craft (F) recipe, locations = {sorted(locs)}")
-    # The sorting chest is HIDDEN for now (user, 2026-07-30): the row must survive (positional
-    # RecipyIDs) but be offered at NO station -- an empty location list hides it even from saves
-    # that already unlocked 10009. When un-hiding, flip this back to Energy-Crafting-Table only
-    # ({"ECraftingLocations::NewEnumerator2"} -- the plain table shows it in no category).
+    # The sorting chest is LIVE again (2026-08-06): Energy-Crafting-Table ONLY -- the plain
+    # table shows machine-type products in no category, and a hand location would put it in
+    # quick-craft. StartingRecipy stays True (saves self-healed 10009 long ago).
     sc = next(r for r in rrows if r["Name"] == "SortingChest")
     sc_locs = {e["Value"] for e in (field(sc, "CraftingLocations")["Value"] or [])}
     if not field(sc, "StartingRecipy")["Value"]:
-        sys.exit("SortingChest: StartingRecipy is False -- must stay starting so un-hiding "
-                 "later needs no save migration")
-    if sc_locs != set():
-        sys.exit(f"SortingChest: must be hidden (no stations), locations = {sorted(sc_locs)}")
+        sys.exit("SortingChest: StartingRecipy is False -- existing saves would lose the recipe")
+    if sc_locs != {"ECraftingLocations::NewEnumerator2"}:
+        sys.exit(f"SortingChest: must be Energy-Crafting-Table only, locations = {sorted(sc_locs)}")
     # The vanilla-rod replacement, read back structurally: the FishingRod recipe must yield the
     # mod clone (or crafting silently hands back the ladder-cursed vanilla rod), and the clone's
     # row must carry interaction=1 (or a UI close uncasts it -- the whole point of the swap).

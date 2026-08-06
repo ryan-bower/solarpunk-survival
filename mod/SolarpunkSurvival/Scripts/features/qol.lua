@@ -207,6 +207,17 @@ local function growOccupied(chest, comp, fn, len, want, free)
   local bLen = -1
   pcall(function() bLen = #bComp.Inventory end)   -- length-only read is proven safe
   if bLen < len then
+    -- A fresh buffer is a STOCK chest (12 slots): a source already grown past that would
+    -- never fit, so every occupied re-grow (e.g. 24 -> a larger qol_chest_size) aborted three
+    -- times and latched. The buffer is empty by construction, so the proven empty-grow applies.
+    local barr = {}
+    for i = 1, len do barr[i] = {} end
+    if ctx.uehelp.call(bComp, "ForceReplace Inventory", barr, true) == true then
+      ctx.uehelp.set(bComp, qmap().invSizeProp or "InventorySize", len)
+      pcall(function() bLen = #bComp.Inventory end)
+    end
+  end
+  if bLen < len then
     pcall(function() buffer:K2_DestroyActor() end)
     return false
   end
@@ -253,8 +264,19 @@ local function sizeChest(chest)
   local want = tonumber(ctx.config.get("qol_chest_size")) or 0
   if want <= 0 or not ctx.net.isHost() then return end
   if not ctx.uehelp.isValid(chest) then return end
-  local ok2, comp = ctx.uehelp.get(chest, ctx.map.wand and ctx.map.wand.inventorySystemProp or "InventorySystem")
-  if not (ok2 and ctx.uehelp.isValid(comp)) then return end
+  -- Component var NAMES differ per Blueprint (the sorting chest is a furnace clone whose
+  -- inventory lives under "BC_InventorySystem", not "InventorySystem" -- root-caused live
+  -- 2026-07-30), so fall through the same alt list the chest ledger uses.
+  local comp
+  local names = { ctx.map.wand and ctx.map.wand.inventorySystemProp or "InventorySystem" }
+  for _, alt in ipairs((ctx.map.stock and ctx.map.stock.invPropAlts) or {}) do
+    if alt ~= names[1] then names[#names + 1] = alt end
+  end
+  for _, n in ipairs(names) do
+    local ok2, c = ctx.uehelp.get(chest, n)
+    if ok2 and ctx.uehelp.isValid(c) then comp = c break end
+  end
+  if not comp then return end
   local fn; pcall(function() fn = comp:GetFullName() end)
   -- never the class template: ForceReplace on the CDO's component would hand a 24-slot array to
   -- every chest the game builds (and to the save serializer) from then on
@@ -311,6 +333,11 @@ end
 sweepChests = function()
   shuffledThisPass = false
   for _, c in ipairs(liveInstances(qmap().chestClass)) do sizeChest(c) end
+  -- The sorting chest is a chest too (user 2026-07-31: "it should look like a 6 row chest") --
+  -- same target size, and the grow doubles as the heal for sorters placed before the pak
+  -- template carried a full-size inventory (those shipped 2 furnace slots).
+  local sc = ctx.map.sortchest and ctx.map.sortchest.class
+  if sc then for _, c in ipairs(liveInstances(sc)) do sizeChest(c) end end
 end
 
 --------------------------------------------------------------------- backpack: a bigger pack
@@ -1810,7 +1837,12 @@ local function rebuildChestGrids()
         local invLen = inv and #inv.Inventory or 0
         local slots = w[m.chestUiSlotsProp or "ChestSlots"]
         local have = slots and #slots or 0
-        if invLen > 0 and invLen > have then
+        -- Rebuild on ANY size mismatch, not just too-small: the fill loop overwrites only
+        -- Inventory.Length tiles, so surplus tiles keep showing the PREVIOUS chest -- and those
+        -- ghost tiles are live buttons whose cached CurItem duplicates on take (user 2026-07-31,
+        -- via a 2-slot sorting chest under this 12+-tile grid). Compare whole rows: the builder
+        -- only makes ceil(len/cols)*cols tiles, so comparing invLen itself never converges.
+        if invLen > 0 and have ~= math.ceil(invLen / cols) * cols then
           local panel = w[m.chestUiPanelProp or "ChestInventory"]
           panel:ClearChildren()
           ctx.uehelp.call(cdo, m.slotGridFn, w, pc, panel, math.ceil(invLen / cols), cols, w, {})
@@ -2160,6 +2192,15 @@ function F.init(c)
     defer(150, function() sizeChest(obj) end)
     defer(1200, function() sizeChest(obj) end)   -- second pass: save-load init ordering
   end)
+  -- the sorting chest grows like any chest (sweepChests reaches ones loaded from save; this
+  -- reaches ones PLACED mid-session -- the pak template ships vanilla-chest-sized, 12)
+  local scCls = ctx.map.sortchest and ctx.map.sortchest.class
+  if scCls then
+    ctx.uehelp.onNewInstance("/Script/Engine.Actor", scCls, function(obj)
+      defer(150, function() sizeChest(obj) end)
+      defer(1200, function() sizeChest(obj) end)
+    end)
+  end
   -- a dock built mid-session is the first moment its recall hooks CAN arm (armHook resolves
   -- the function path off a live instance); armHooks is idempotent, so this costs nothing
   ctx.uehelp.onNewInstance("/Script/Engine.Actor", qmap().dockClass, function()

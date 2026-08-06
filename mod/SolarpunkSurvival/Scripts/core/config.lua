@@ -260,9 +260,12 @@ M.defaults = {
   qol_chest_grow_occupied = true,-- grow chests that HOLD things too, via the buffer shuffle
                                  -- (game-side index moves through a temporary chest; items are
                                  -- verified by count at every phase and never deleted)
-  qol_chest_size      = 24,      -- chest slots (stock 12). Host grows chests to this size
+  qol_chest_size      = 42,      -- chest slots (stock 12). Host grows chests to this size
                                  -- (the game's own bulk setter); an occupied chest grows on the
                                  -- next pass after it is emptied. Clients see it via replication.
+                                 -- 42 = 6 rows of 7 (user 2026-08-06: "like a normal expanded
+                                 -- chest, 6 rows of 7"), the full-backpack look; pairs with
+                                 -- mapping qol.chestGridCols = 7.
   qol_backpack_level  = 0,       -- backpack upgrade tier applied on world entry (-1 = leave alone).
                                  -- Only 0/1/3/7 are real tiers -> 29/36/43/50 slots; anything else
                                  -- the game rounds down to 29 and your save stops loading.
