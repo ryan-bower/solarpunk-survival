@@ -114,6 +114,152 @@ local function uiBrowsing(inv)
   return open
 end
 
+--------------------------------------------------------------- non-stackables
+-- Quick Stack cannot file these: BOTH its phases are bytecode-gated on MaxStackSize > 1
+-- (BC_InventorySystem decoded 2026-08-06 -- the user's weather station stayed in the sorter).
+-- They move with the game's own whole-slot MoveItemDiffInv instead, the buffer-shuffle-proven
+-- call, so savedata (durability etc.) rides along. The sorter's slots can never be READ from
+-- Lua (struct-array poison), so which non-stackables it holds is discovered by bisecting
+-- candidate classes through "Contains one Of Given Items" -- ~log2(N) calls per held class,
+-- one single call when it holds none. WHICH classes are non-stackable is baked offline from
+-- DB_Items (tools/pakkit/gen_nonstackables.py) because stack sizes live in row structs Lua
+-- must not touch at runtime.
+local NONSTACK = require("data.nonstackables")   -- class NAME -> full asset path
+
+-- Candidate class wrappers come from the game's own DB_Items map keys, fetched FRESH on
+-- every discovery, filtered by the baked name set -- the trash-slot-proven wrapper source
+-- for array marshals. Never from bulk classByName: 238 short-name resolves held in a table
+-- proved to be a stale-pointer lottery (rig 2026-08-06 -- Contains(full)=true while
+-- Contains(either half)=false, and a GetAmtOfItem sweep through the same wrappers finding
+-- NOTHING in an inventory provably holding two weather stations).
+local function nonstackCandidates()
+  local out = {}
+  local tm = ctx.map.trash or {}
+  local gi = tm.giClass and ctx.uehelp.findFirst(tm.giClass)
+  if not (gi and tm.dbItemsProp) then return out end
+  pcall(function()
+    local db = gi[tm.dbItemsProp]
+    if db and db.ForEach then
+      db:ForEach(function(k, _)
+        local cls = k
+        pcall(function() cls = k:get() end)
+        if cls ~= nil then
+          local nm
+          pcall(function() nm = cls:GetFName():ToString() end)
+          if nm and NONSTACK[nm] then out[#out + 1] = { cls = cls, name = nm } end
+        end
+      end)
+    end
+  end)
+  return out
+end
+
+local function containsAny(inv, entries)
+  local arr = {}
+  for i, e in ipairs(entries) do arr[i] = e.cls end
+  local out = {}
+  if not ctx.uehelp.call(inv, stmap().containsAnyFn, arr, out) then return false end
+  return unwrap(out.Contains) == true
+end
+
+-- Bisect `entries` down to the ones `inv` actually holds (at most `cap` of them).
+local function heldNonstack(inv, entries, cap, found)
+  found = found or {}
+  if #found >= cap or #entries == 0 then return found end
+  if not containsAny(inv, entries) then return found end
+  if #entries == 1 then
+    found[#found + 1] = entries[1]
+    return found
+  end
+  local mid = math.floor(#entries / 2)
+  local left, right = {}, {}
+  for i = 1, mid do left[i] = entries[i] end
+  for i = mid + 1, #entries do right[i - mid] = entries[i] end
+  heldNonstack(inv, left, cap, found)
+  heldNonstack(inv, right, cap, found)
+  return found
+end
+
+local function amtOf(ledger, inv, cls)
+  local out = {}
+  if not ctx.uehelp.call(inv, stmap().amtFn, ledger.probeFor(cls), out) then return 0 end
+  return math.floor(tonumber(unwrap(out.Amount)) or 0)
+end
+
+local function freeSlotsIn(inv)
+  local out = {}
+  if not ctx.uehelp.call(inv, stmap().freeSlotsFn, out) then return 0 end
+  local v = unwrap(out.FreeSlots)
+  if v == nil then local _, first = next(out) v = unwrap(first) end
+  return math.floor(tonumber(v) or 0)
+end
+
+-- File the sorter's non-stackables into chests that already hold that class. The receiving
+-- chest is compacted with the game's own Sort first, so its free slots are the TAIL and the
+-- first empty index is pure arithmetic (len - free) -- no slot struct is ever read, and
+-- MoveItemDiffInv only ever targets a provably EMPTY slot. Every move is verified by a
+-- recount; a move that lands nothing stops the loop cold (no churn, no repeats).
+local function fileNonstackables(s, inv, ledger, targets)
+  local cands = nonstackCandidates()
+  if #cands == 0 then return 0 end
+  local held = heldNonstack(inv, cands, 4)
+  ctx.log.debug("sort_chest: non-stackable discovery held " .. #held .. " class(es)")
+  if #held == 0 then return 0 end
+  local movedTotal, fed = 0, 0
+  local budget = 12                       -- whole-slot moves per pass; the next pass continues
+  for _, h in ipairs(held) do
+    -- the db-key wrapper stays in the Contains arrays (its proven marshal role); every
+    -- STRUCT probe below gets a fresh, path-exact wrapper resolved right before use
+    local cls = ctx.uehelp.classByName(h.name, NONSTACK[h.name])
+    local amt = cls and amtOf(ledger, inv, cls) or 0
+    for _, t in ipairs(targets) do
+      if amt <= 0 or budget <= 0 then break end
+      if t.entry.cls ~= smap().class then  -- sorters never feed each other
+        local chest = ledger.actorOf(t.key, t.entry)
+        local dstInv = chest and ledger.invOf(chest)
+        if dstInv and not uiBrowsing(dstInv)
+            and ledger.amtIn(t.key, t.entry, cls) > 0 then
+          local free = freeSlotsIn(dstInv)
+          if free > 0 and ctx.uehelp.call(dstInv, stmap().sortFn, 0) == true then
+            local len = 0
+            pcall(function() len = #dstInv.Inventory end)   -- length-only read: safe
+            local dstIdx = len - free
+            local before = amt
+            while amt > 0 and free > 0 and budget > 0 and dstIdx >= 0 and dstIdx < len do
+              local out = {}
+              if not ctx.uehelp.call(inv, stmap().firstIdxFn,
+                  ledger.probeFor(cls), out, {}) then break end
+              if unwrap(out.ContainsItem) ~= true then break end
+              local srcIdx = math.floor(tonumber(unwrap(out.Index)) or -1)
+              if srcIdx < 0 then break end
+              if not ctx.uehelp.call(inv, stmap().moveDiffFn,
+                  dstInv, srcIdx, math.floor(dstIdx)) then break end
+              local now = amtOf(ledger, inv, cls)
+              if now >= amt then break end       -- nothing landed: stop, never spin
+              movedTotal = movedTotal + (amt - now)
+              amt = now
+              free = free - 1
+              dstIdx = dstIdx + 1
+              budget = budget - 1
+            end
+            if amt < before then
+              fed = fed + 1
+              ledger.invalidate(t.key)
+            end
+          end
+        end
+      end
+    end
+  end
+  if movedTotal > 0 then
+    ledger.invalidate(s.key)
+    ctx.log.info(string.format(
+      "sort_chest: filed %d non-stackable item(s) into %d chest(s) (whole-slot moves)",
+      movedTotal, fed))
+  end
+  return movedTotal
+end
+
 -- One sorter, one pass: set the draw, and if powered + loaded + unwatched, sweep every nearby
 -- chest closest-first with Quick Stack until the pile is gone or no chest wants the rest.
 local function sortPass(s)
@@ -155,7 +301,8 @@ local function sortPass(s)
   if not loc then return end
   local r = cfgn("sort_chest_range", 5000.0)
   local moved, fed = 0, 0
-  for _, t in ipairs(ledger.chestsNear(loc, r * r, s.key)) do
+  local targets = ledger.chestsNear(loc, r * r, s.key)
+  for _, t in ipairs(targets) do
     -- only PLAIN chests receive; two sorters must never ping-pong a pile between them
     if t.entry.cls ~= smap().class then
       local chest = ledger.actorOf(t.key, t.entry)
@@ -177,6 +324,17 @@ local function sortPass(s)
   if moved > 0 then
     ledger.invalidate(s.key)
     ctx.log.info(string.format("sort_chest: filed %d item(s) into %d chest(s)", moved, fed))
+  end
+  -- what Quick Stack left behind may be non-stackables it refuses by design. Own pcall: the
+  -- chain swallows sortPass errors whole (pcall at the pass loop), and a silent death here
+  -- would read exactly like "the weather station just didn't move".
+  if totalIn(inv) > 0 then
+    local okNS, movedNS = pcall(fileNonstackables, s, inv, ledger, targets)
+    if okNS then
+      moved = moved + (movedNS or 0)
+    else
+      ctx.log.warn("sort_chest: non-stackable pass errored: " .. tostring(movedNS))
+    end
   end
   local left = totalIn(inv)
   if left > 0 and moved == 0 then

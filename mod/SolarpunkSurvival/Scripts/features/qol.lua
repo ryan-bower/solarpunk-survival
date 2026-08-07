@@ -1890,6 +1890,38 @@ local function fitChestWindows()
   end
 end
 
+-- The unified player grid has no second view left to switch to, but the widget can flip
+-- ITSELF to one: OpenCorrectInventoryForFocus auto-clicks the (hidden) backpack toggle
+-- whenever the remembered focus slot's inventory index disagrees with ShowBackpack -- and
+-- picking an item out of a bag row (index >= 29) to drop into a chest is exactly such a
+-- disagreement. The click lands on the EMPTIED Grid_BackpackInventory: a visible pane with
+-- zero slots, sticky across every chest because the widget instance is shared (user
+-- 2026-08-06, "backpack with no slots... even on other chests"). Undo is idempotent and
+-- cheap, so it runs on every open AND behind the toggle hook.
+local function normalizeChestPlayerView(w, m)
+  pcall(function() w[m.chestUiShowBackpackProp or "ShowBackpack"] = false end)
+  pcall(function() w[m.chestUiMainBoxProp or "MainInventory"]:SetVisibility(4) end)
+  pcall(function() w[m.chestUiBackpackBoxProp or "BackbackInventory"]:SetVisibility(1) end)
+  pcall(function() w[m.chestUiBackpackToggleProp or "KeyItemsToggle"]:SetVisibility(1) end)
+end
+
+local function normalizeChestViews()
+  local m = qmap()
+  for _, w in ipairs(FindAllOf(m.chestUiClass or "W_ChestInventory_C") or {}) do
+    pcall(function()
+      local fn = w:GetFullName()
+      if not (fn and fn:find("Transient", 1, true)) then return end
+      local inv = w[m.chestUiPlayerInvRefProp or "PlayerInventoryRef"]
+      local invLen = inv and #inv.Inventory or 0
+      local bag = invLen - (tonumber(m.invHotbarSlots) or 8)
+      local panel = w[m.chestUiPlayerPanelProp or "GRID_PlayerInventory"]
+      if bag > 21 and bag % 7 == 0 and panel:GetChildrenCount() >= bag then
+        normalizeChestPlayerView(w, m)
+      end
+    end)
+  end
+end
+
 local function rebuildChestGrids()
   local m = qmap()
   local cols = tonumber(m.chestGridCols) or 6
@@ -1936,19 +1968,28 @@ local function rebuildChestGrids()
           ctx.uehelp.call(cdo, m.slotGridPlayerFn or "CreateItemSlotGridForPlayer",
             w, pc, panel, math.floor(bag / 7), 7, w, {})
           local n = panel:GetChildrenCount()
+          if n == 0 then
+            -- our builder produced nothing (class chain mid-reload?): both panes are now bare,
+            -- which is worse than the split view. Hand the widget back to the game's own
+            -- rebuild -- rows-changed check is a plain != against this cache, so poisoning the
+            -- cache forces it unconditionally.
+            w[m.chestUiLastRowsProp or "LastPlayerInventoryRowCount"] = -1
+            ctx.uehelp.call(w, m.chestUiBackpackUpdateFn or "UpdateBackpackDisplayIfRequired")
+            ctx.log.warn("qol: player grid rebuild made 0 slots -- restored the vanilla split view")
+            return
+          end
           local refs = {}
           for i = 0, n - 1 do refs[#refs + 1] = panel:GetChildAt(i) end
           w[m.chestUiPlayerSlotsProp or "PlayerSlots"] = refs
-          -- the switch has nothing left to switch to: park the widget on the (now-complete)
-          -- main view and hide the button (1 = Collapsed, 4 = SelfHitTestInvisible -- the same
-          -- pair the widget's own open path writes)
-          pcall(function() w[m.chestUiShowBackpackProp or "ShowBackpack"] = false end)
-          pcall(function() w[m.chestUiMainBoxProp or "MainInventory"]:SetVisibility(4) end)
-          pcall(function() w[m.chestUiBackpackBoxProp or "BackbackInventory"]:SetVisibility(1) end)
-          pcall(function() w[m.chestUiBackpackToggleProp or "KeyItemsToggle"]:SetVisibility(1) end)
+          -- park the widget on the (now-complete) main view and hide the switch
+          normalizeChestPlayerView(w, m)
           ctx.uehelp.call(w, m.chestUiPlayerSyncFn or "SyncAndFill_Player")
           ctx.log.info("qol: chest UI player grid rebuilt " .. have .. " -> " .. n ..
             " slots (the whole pack, no backpack switch)")
+        elseif bag > 21 and panel:GetChildrenCount() >= bag then
+          -- already unified from an earlier open -- but OpenCorrectInventoryForFocus may have
+          -- auto-toggled the widget onto the emptied backpack pane since then. Undo per open.
+          normalizeChestPlayerView(w, m)
         end
       end)
     end
@@ -2047,6 +2088,15 @@ local function armHooks()
   -- grid is rebuilt from outside just after each open -- see rebuildChestGrids above.
   armHook(pl.controllerClass, qmap().openChestUiFn, "qol.chestui", function()
     deferOnly(80, rebuildChestGrids)
+  end)
+  -- The backpack toggle can also fire MID-open, without a chest UI open event:
+  -- OpenCorrectInventoryForFocus synthesizes a click on it whenever the remembered focus
+  -- slot disagrees with ShowBackpack (grabbing a bag-row item to feed the sorter is the
+  -- repro). Bound events broadcast via CallMulticastDelegate -> ProcessEvent, so the click
+  -- is hookable wherever it comes from -- and the undo runs a beat later, AFTER the
+  -- ubergraph's own visibility writes, so it always gets the last word.
+  armHook(qmap().chestUiClass, qmap().chestUiToggleFn, "qol.chesttoggle", function()
+    deferOnly(30, normalizeChestViews)
   end)
   -- Hold-to-crouch: the pawn's own LeftControl Pressed/Released pair is the key-up signal UE4SS
   -- cannot give us. Both bodies are state-only -- they record the edge and schedule the reconcile.

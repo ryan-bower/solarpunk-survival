@@ -1268,6 +1268,52 @@ do
   eq(config.get("craft_pull_range"), 5000.0, "craft_pull: 50 m radius (user spec)")
   ok(config.get("chest_index_ttl") > 0, "chest_index: cached counts expire")
 
+  -- Non-stackable filing (user 2026-08-06 "weather station didn't transfer"): Quick Stack's
+  -- merge AND new-stack phases are both bytecode-gated on MaxStackSize > 1, so the sorter runs
+  -- a manual whole-slot pass for these classes. Pin the call contract it rides on.
+  eq(m.stock.firstIdxFn, "GetFirstIndexForItem", "stock: source-slot finder pinned")
+  eq(m.stock.moveDiffFn, "MoveItemDiffInv", "stock: whole-slot cross-inventory move pinned")
+  eq(m.stock.containsAnyFn, "Contains one Of Given Items",
+     "stock: bisection probe keeps its real spaces")
+  eq(m.stock.sortFn, "Sort", "stock: compaction call pinned (first-empty = len - free)")
+  ok(gate.check(m, { "stock.firstIdxFn", "stock.moveDiffFn", "stock.containsAnyFn",
+       "stock.sortFn" }),
+     "sort_chest: non-stackable pass gate sees its keys")
+  -- the baked MaxStackSize<=1 map (tools/pakkit/gen_nonstackables.py): NAME -> asset path.
+  -- Discovery filters the game's own DB_Items keys by NAME; the path re-resolves any single
+  -- class exactly (bulk short-name classByName wrappers = stale-pointer lottery, rig
+  -- 2026-08-06).
+  local okNS, NS = pcall(require, "data.nonstackables")
+  ok(okNS and type(NS) == "table", "nonstackables: baked map loads")
+  local nsCount = 0
+  for _ in pairs(NS) do nsCount = nsCount + 1 end
+  ok(nsCount > 200, "nonstackables: map looks complete (vanilla alone has 229)")
+  ok(type(NS["BP_WeatherStation_Item_C"]) == "string"
+     and NS["BP_WeatherStation_Item_C"]:find("^/Game/") ~= nil,
+     "nonstackables: the weather station maps to a full asset path (the report)")
+  ok(NS["BP_SortingChest_Item_C"] ~= nil, "nonstackables: pak rows present (STAGED db source)")
+  ok(NS["BP_Log_Item_C"] == nil, "nonstackables: stackables stayed out")
+  local pathsOk = true
+  for name, path in pairs(NS) do
+    if path:sub(-#name - 1) ~= ("." .. name) then pathsOk = false break end
+  end
+  ok(pathsOk, "nonstackables: every path ends .<ClassName> (classByName-exact)")
+  -- discovery leans on the trash mapping's DB handle -- pin that cross-feature contract
+  ok(gate.check(m, { "trash.giClass", "trash.dbItemsProp" }),
+     "sort_chest: non-stackable discovery sees the DB_Items handle")
+
+  -- Empty-backpack-pane fix (user 2026-08-06): OpenCorrectInventoryForFocus synthesizes a
+  -- KeyItemsToggle click that flips the shared chest widget onto the backpack grid the unify
+  -- pass emptied. qol undoes it per open + behind this hook, and self-heals a 0-slot rebuild
+  -- through the vanilla builder.
+  ok((m.qol.chestUiToggleFn or ""):find("KeyItemsToggle", 1, true) ~= nil
+     and (m.qol.chestUiToggleFn or ""):find("On Clicked", 1, true) ~= nil,
+     "qol: toggle bound-event FName pinned WITH its embedded space")
+  eq(m.qol.chestUiBackpackUpdateFn, "UpdateBackpackDisplayIfRequired",
+     "qol: vanilla grid builder pinned (the 0-slot self-heal path)")
+  eq(m.qol.chestUiLastRowsProp, "LastPlayerInventoryRowCount",
+     "qol: rows cache pinned (-1 poison forces the vanilla rebuild)")
+
   ok(pcall(require, "features.chest_index"), "chest_index: module loads")
   ok(pcall(require, "features.sort_chest"), "sort_chest: module loads")
   ok(pcall(require, "features.craft_pull"), "craft_pull: module loads")

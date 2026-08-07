@@ -32,7 +32,8 @@ M.schema = {
                "boostAdditionProp", "cameraProp", "fovProp", "speedFxProp", "windSound",
                "windSoundPath", "possessFn" },
   stock    = { "chestClasses", "invProp", "invPropAlts", "invSysClass", "amtFn", "freeFn", "totalFn",
-               "freeSlotsFn", "quickStackFn", "removeAmtFn", "addPlayerFn", "addFn" },
+               "freeSlotsFn", "quickStackFn", "removeAmtFn", "addPlayerFn", "addFn",
+               "firstIdxFn", "moveDiffFn", "containsAnyFn", "sortFn" },
   sortchest = { "class", "deviceProp", "deviceGetFn", "hasPowerFn", "enoughProp",
                 "consumptionProp", "interactFnHint", "placeablePath" },
   craftpull = { "openFns", "partSlotClasses", "needProp", "haveProp", "itemDataProp",
@@ -103,6 +104,7 @@ M.schema = {
                "chestUiBackpackPanelProp", "chestUiPlayerSlotsProp", "chestUiPlayerInvRefProp",
                "chestUiPlayerSyncFn", "chestUiBackpackToggleProp", "chestUiMainBoxProp",
                "chestUiBackpackBoxProp", "chestUiShowBackpackProp", "invHotbarSlots",
+               "chestUiToggleFn", "chestUiBackpackUpdateFn", "chestUiLastRowsProp",
                "overlayProp", "overlayShowHotbarFn", "overlayShowShipCtlFn",
                "crouchKeyEventFns", "deathLootStampFns", "deathLootLocProp",
                "backpackTierFn", "playerdataProp", "playerdataTierField", "playerdataInvIdField",
@@ -708,6 +710,15 @@ M.profiles = {
       chestUiBackpackBoxProp  = "BackbackInventory",     -- box holding the backpack grid (sic)
       chestUiShowBackpackProp = "ShowBackpack",          -- which box the open path shows
       invHotbarSlots          = 8,                       -- leading inventory entries = hotbar
+      -- The empty-backpack-pane trap (bytecode RE 2026-08-06): OpenCorrectInventoryForFocus
+      -- compares (focus slot index < 29) == ShowBackpack and, when EQUAL, synthesizes a click
+      -- on KeyItemsToggle -- flipping the shared widget onto the backpack grid our unify pass
+      -- emptied. The bound event broadcasts via CallMulticastDelegate -> ProcessEvent, so it
+      -- is hookable; the space in "On Clicked" is part of the real FName.
+      chestUiToggleFn = "BndEvt__W_ChestInventory_KeyItemsToggle_K2Node_ComponentBoundEvent_0_On Clicked__DelegateSignature",
+      chestUiBackpackUpdateFn = "UpdateBackpackDisplayIfRequired", -- vanilla grid (re)builder
+      chestUiLastRowsProp     = "LastPlayerInventoryRowCount",     -- its rows-changed cache;
+                                                                   -- write -1 to force rebuild
       -- Driving the airship swaps the bottom-of-screen hotbar for the airship control icons;
       -- the giveaway is SERVER_LeaveAirship's client path, which undoes exactly this pair on
       -- stepping off (offline RE 2026-07-27). Both are events on the player overlay widget.
@@ -1027,6 +1038,14 @@ M.profiles = {
       removeAmtFn  = "Remove Item Amt",            -- (slot struct, Save bool, out Success)
       addPlayerFn  = "AddItemForPlayer",           -- (slot struct, Save, Plop, outs) -- plop included
       addFn        = "AddItem",                    -- (slot struct, Save, outs) -- the restore path
+      -- The non-stackable sort pass (2026-08-06: Quick Stack's merge AND new-stack phases are
+      -- both bytecode-gated on MaxStackSize > 1, so it can never file a weather station).
+      firstIdxFn    = "GetFirstIndexForItem",      -- (slot struct in, outs Index + ContainsItem)
+      -- src:MoveItemDiffInv(TargetInv, OriginIdx, TargetIdx): whole-slot move incl. savedata;
+      -- occupied target bounces the slot back as leftover (harmless). growOccupied-proven.
+      moveDiffFn    = "MoveItemDiffInv",
+      containsAnyFn = "Contains one Of Given Items", -- (class array in, out Contains) -- trash-proven
+      sortFn        = "Sort",                      -- (SortMode int): 0 compacts stacks to low indexes
     },
     -- The blue auto-sort chest: OUR pak clone of BP_EnergyFurnace_Placeable (the donor already
     -- carries BC_InventorySystem + SNAP_CableConnector + BPC_Device_EnergySystemComponent +
