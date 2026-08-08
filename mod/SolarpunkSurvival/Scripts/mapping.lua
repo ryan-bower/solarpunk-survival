@@ -1045,7 +1045,15 @@ M.profiles = {
       -- occupied target bounces the slot back as leftover (harmless). growOccupied-proven.
       moveDiffFn    = "MoveItemDiffInv",
       containsAnyFn = "Contains one Of Given Items", -- (class array in, out Contains) -- trash-proven
-      sortFn        = "Sort",                      -- (SortMode int): 0 compacts stacks to low indexes
+      -- Sort(FirstSlot int) -- NOT a sort MODE: the int is the index compaction starts from, and
+      -- everything from it up is re-packed toward it. Two teeth: (1) on a PLAYER inventory
+      -- FirstSlot 0 drags the 8 hotbar entries into the pack, so the hotbar slots are the
+      -- FirstSlot floor there; (2) it is a whole-array REWRITE that saves, and its bytecode
+      -- drops any stack whose GetItemByActor row lookup misses ("Unknown Item" ErrorPrint, slot
+      -- never written back) -- so it is only ever safe on an inventory WE own. qol's occupied
+      -- resize calls it on its own buffer chest; the sorter deliberately does not call it on the
+      -- player's storage (it asks GetFirstIndexForItem for a free index instead).
+      sortFn        = "Sort",
     },
     -- The blue auto-sort chest: OUR pak clone of BP_EnergyFurnace_Placeable (the donor already
     -- carries BC_InventorySystem + SNAP_CableConnector + BPC_Device_EnergySystemComponent +

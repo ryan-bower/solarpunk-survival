@@ -28,6 +28,12 @@ ue4ss.log
 # calls DumpUSMAP), so it is worth keeping locally -- but it is the game's data, not ours.
 *.usmap
 
+# Same rule, same reason: a UAssetAPI dump of the game's DB_Items DataTable. Worth keeping
+# locally (tools/pakkit/gen_nonstackables.py --allow-vanilla reads it when no staged build is
+# around) but it is 3 MB of the game's data. tools/pakkit/.gitignore already excludes it there;
+# putting a copy under vendor/ was a way around our own rule, not an exception to it.
+db_items.json
+
 # The live exec channel + RE scratch (cmd.txt/result.txt, save backups): runtime game data,
 # machine-local by nature
 /dump/

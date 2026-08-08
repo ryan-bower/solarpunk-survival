@@ -1275,16 +1275,33 @@ do
   eq(m.stock.moveDiffFn, "MoveItemDiffInv", "stock: whole-slot cross-inventory move pinned")
   eq(m.stock.containsAnyFn, "Contains one Of Given Items",
      "stock: bisection probe keeps its real spaces")
-  eq(m.stock.sortFn, "Sort", "stock: compaction call pinned (first-empty = len - free)")
+  eq(m.stock.sortFn, "Sort", "stock: compaction call pinned (qol's buffer shuffle only)")
+  eq(m.stock.freeSlotsFn, "GetNrOfFreeSlots", "stock: free-slot count pinned (the tail fallback)")
   ok(gate.check(m, { "stock.firstIdxFn", "stock.moveDiffFn", "stock.containsAnyFn",
-       "stock.sortFn" }),
+       "stock.amtFn", "stock.freeSlotsFn" }),
      "sort_chest: non-stackable pass gate sees its keys")
+  -- The destination index comes from GetFirstIndexForItem probed with an UNSET item class (its
+  -- bytecode compares slot.Item to the probe's with == and nothing else, so nullptr matches the
+  -- first empty slot). The sorter must never call Sort on a chest it does not own: Sort rewrites
+  -- and saves the whole array and drops rows GetItemByActor cannot resolve.
+  local scH = io.open(ROOT .. "features/sort_chest.lua", "r")
+  local scSrc = scH and scH:read("a") or ""
+  if scH then scH:close() end
+  ok(#scSrc > 0 and scSrc:find("stmap().sortFn", 1, true) == nil,
+     "sort_chest: never compacts a chest it is only filing into")
+  -- one bisection over "Contains one Of Given Items", and it is the tested one
+  ok(scSrc:find('require("features.trash_slot").bisect', 1, true) ~= nil,
+     "sort_chest: reuses trash_slot's tested bisection, no second copy")
   -- the baked MaxStackSize<=1 map (tools/pakkit/gen_nonstackables.py): NAME -> asset path.
   -- Discovery filters the game's own DB_Items keys by NAME; the path re-resolves any single
   -- class exactly (bulk short-name classByName wrappers = stale-pointer lottery, rig
   -- 2026-08-06).
   local okNS, NS = pcall(require, "data.nonstackables")
   ok(okNS and type(NS) == "table", "nonstackables: baked map loads")
+  -- pcall leaves NS as the error STRING on failure, and the file is GENERATED (CI does not even
+  -- byte-compile its generator). Walking it unguarded turned one missing file into a traceback
+  -- that took every later assertion -- including the qol pins below -- with it.
+  if not okNS or type(NS) ~= "table" then NS = {} end
   local nsCount = 0
   for _ in pairs(NS) do nsCount = nsCount + 1 end
   ok(nsCount > 200, "nonstackables: map looks complete (vanilla alone has 229)")

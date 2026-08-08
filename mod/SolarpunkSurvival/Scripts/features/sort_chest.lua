@@ -126,63 +126,128 @@ end
 -- must not touch at runtime.
 local NONSTACK = require("data.nonstackables")   -- class NAME -> full asset path
 
--- Candidate class wrappers come from the game's own DB_Items map keys, fetched FRESH on
--- every discovery, filtered by the baked name set -- the trash-slot-proven wrapper source
--- for array marshals. Never from bulk classByName: 238 short-name resolves held in a table
--- proved to be a stale-pointer lottery (rig 2026-08-06 -- Contains(full)=true while
--- Contains(either half)=false, and a GetAmtOfItem sweep through the same wrappers finding
--- NOTHING in an inventory provably holding two weather stations).
+-- The bisection itself is trash_slot's. It is the same probe over the same game call, and
+-- trash's is the copy tests/spec.lua exercises headless ("extracted so the algorithm is
+-- testable"); a second hand-rolled one only meant a fix to either could miss the other.
+local bisect = require("features.trash_slot").bisect
+
+local NS_CAP = 8        -- held classes discovered per pass (see the rotation below)
+local NS_BUDGET = 12    -- whole-slot moves per pass; the next pass continues
+
+local nsRot = {}        -- sorterKey -> where the candidate rotation starts next pass
+local nsLinear = false  -- the class-array probe refused; scan one class at a time this session
+local pathWarned = {}   -- class name -> true after the "cannot resolve" warn
+local candWarnedAt = -1e9
+
+-- Candidate class wrappers come from the game's own DB_Items map keys, filtered by the baked
+-- name set -- the trash-slot-proven wrapper source for array marshals. Never from bulk
+-- classByName: 238 short-name resolves held in a table proved to be a stale-pointer lottery
+-- (rig 2026-08-06 -- Contains(full)=true while Contains(either half)=false, and a GetAmtOfItem
+-- sweep through the same wrappers finding NOTHING in an inventory provably holding two weather
+-- stations).
+--
+-- MEMOIZED PER WORLD, not per pass: the walk is a full DB_Items ForEach with two reflected
+-- calls per key (~600 of them) and a settled sorter was paying it on every retry. The cache key
+-- is the local controller's fullname -- the same world-change signal the interact hook uses --
+-- because a UClass wrapper kept ACROSS a world load is a stale pointer waiting to be
+-- dereferenced, which is the one thing this list must never hand out.
+local candCache = { tag = nil, list = nil }
+
+local function worldTag()
+  local pcNow
+  pcall(function()
+    local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
+    pcNow = pc and pc:GetFullName() or nil
+  end)
+  return pcNow
+end
+
 local function nonstackCandidates()
+  local tag = worldTag()
+  if candCache.list and candCache.tag == tag then return candCache.list end
   local out = {}
   local tm = ctx.map.trash or {}
   local gi = tm.giClass and ctx.uehelp.findFirst(tm.giClass)
-  if not (gi and tm.dbItemsProp) then return out end
-  pcall(function()
-    local db = gi[tm.dbItemsProp]
-    if db and db.ForEach then
-      db:ForEach(function(k, _)
-        local cls = k
-        pcall(function() cls = k:get() end)
-        if cls ~= nil then
-          local nm
-          pcall(function() nm = cls:GetFName():ToString() end)
-          if nm and NONSTACK[nm] then out[#out + 1] = { cls = cls, name = nm } end
-        end
-      end)
+  if gi and tm.dbItemsProp then
+    pcall(function()
+      local db = gi[tm.dbItemsProp]
+      if db and db.ForEach then
+        db:ForEach(function(k, _)
+          local cls = k
+          pcall(function() cls = k:get() end)
+          if cls ~= nil then
+            local nm
+            pcall(function() nm = cls:GetFName():ToString() end)
+            if nm and NONSTACK[nm] then out[#out + 1] = { cls = cls, name = nm } end
+          end
+        end)
+      end
+    end)
+  end
+  if #out == 0 then
+    -- SAY SO. These key wrappers "fail every direct method call yet marshal fine as arguments"
+    -- (the chest_index lesson), so a build where GetFName refuses filters every candidate out
+    -- and the whole feature goes inert with literally zero output -- indistinguishable from the
+    -- bug it exists to fix. trash's discoverClass warns for exactly this reason. Throttled:
+    -- a settled sorter retries this every ~30 s.
+    if os.clock() - candWarnedAt > 60 then
+      candWarnedAt = os.clock()
+      ctx.log.warn("sort_chest: DB_Items gave no non-stackable classes (" ..
+        tostring(tm.giClass) .. "/" .. tostring(tm.dbItemsProp) ..
+        ") -- non-stackables cannot be filed")
     end
-  end)
+    return out
+  end
+  if tag then candCache.tag, candCache.list = tag, out end
   return out
 end
 
+-- A wrapper for ONE class, resolved from the baked ASSET PATH. uehelp.classByName is a
+-- SHORT-NAME FindObject that only uses the path as a LoadAsset hint on a miss -- i.e. the very
+-- lookup the comment above calls a stale-pointer lottery, and after a world reload it can hand
+-- back the GC-pending old copy living under the same name. StaticFindObject takes the full
+-- object path and cannot pick the wrong one. A total miss is WARNED, not swallowed: silently
+-- treating it as "holds none" is how a discovered class does nothing, pass after pass.
+local function classExact(name)
+  local path = NONSTACK[name]
+  local c
+  if path then
+    pcall(function() c = StaticFindObject(path) end)
+    if not ctx.uehelp.isValid(c) and LoadAsset then
+      pcall(LoadAsset, path)
+      pcall(function() c = StaticFindObject(path) end)
+    end
+  end
+  if ctx.uehelp.isValid(c) then return c end
+  c = ctx.uehelp.classByName(name, path)
+  if ctx.uehelp.isValid(c) then return c end
+  if not pathWarned[name] then
+    pathWarned[name] = true
+    ctx.log.warn("sort_chest: cannot resolve " .. tostring(name) .. " (" .. tostring(path) ..
+      ") -- that non-stackable will not be filed")
+  end
+  return nil
+end
+
+-- Does `inv` hold any of these classes? nil = the reflected call ITSELF failed (a marshal
+-- refusal on the class array, a stale system) -- callers must treat that as UNKNOWN, never as
+-- "no". trash_slot's own containsAny says so verbatim and keeps a linear-scan fallback for it;
+-- collapsing it to false here meant one refused marshal silenced the whole feature at debug
+-- level, reading exactly like the pre-fix bug.
 local function containsAny(inv, entries)
   local arr = {}
   for i, e in ipairs(entries) do arr[i] = e.cls end
   local out = {}
-  if not ctx.uehelp.call(inv, stmap().containsAnyFn, arr, out) then return false end
+  if not ctx.uehelp.call(inv, stmap().containsAnyFn, arr, out) then return nil end
   return unwrap(out.Contains) == true
 end
 
--- Bisect `entries` down to the ones `inv` actually holds (at most `cap` of them).
-local function heldNonstack(inv, entries, cap, found)
-  found = found or {}
-  if #found >= cap or #entries == 0 then return found end
-  if not containsAny(inv, entries) then return found end
-  if #entries == 1 then
-    found[#found + 1] = entries[1]
-    return found
-  end
-  local mid = math.floor(#entries / 2)
-  local left, right = {}, {}
-  for i = 1, mid do left[i] = entries[i] end
-  for i = mid + 1, #entries do right[i - mid] = entries[i] end
-  heldNonstack(inv, left, cap, found)
-  heldNonstack(inv, right, cap, found)
-  return found
-end
-
+-- Count of `cls` in `inv`. nil = the count call itself failed -- NEVER 0. craft_pull's invAmt
+-- returns nil for exactly this reason: an unreadable recount read as "none left" credits a move
+-- that never happened and reports a finished sort over items still sitting in the chest.
 local function amtOf(ledger, inv, cls)
   local out = {}
-  if not ctx.uehelp.call(inv, stmap().amtFn, ledger.probeFor(cls), out) then return 0 end
+  if not ctx.uehelp.call(inv, stmap().amtFn, ledger.probeFor(cls), out) then return nil end
   return math.floor(tonumber(unwrap(out.Amount)) or 0)
 end
 
@@ -194,58 +259,145 @@ local function freeSlotsIn(inv)
   return math.floor(tonumber(v) or 0)
 end
 
--- File the sorter's non-stackables into chests that already hold that class. The receiving
--- chest is compacted with the game's own Sort first, so its free slots are the TAIL and the
--- first empty index is pure arithmetic (len - free) -- no slot struct is ever read, and
--- MoveItemDiffInv only ever targets a provably EMPTY slot. Every move is verified by a
--- recount; a move that lands nothing stops the loop cold (no churn, no repeats).
+-- Which candidates does `inv` hold (at most `cap`)? Repeated bisection: each round costs
+-- ~log2(N) set probes and drops the class it found. Second return is `probeAlive` -- false when
+-- the probe path gave up, which the caller answers with a linear scan.
+local function heldNonstack(inv, entries, cap)
+  local found, list = {}, entries
+  local probe = function(sub) return containsAny(inv, sub) end
+  while #found < cap and #list > 0 do
+    local hit, alive = bisect(list, probe)
+    if not alive then return found, false end
+    if not hit then break end
+    found[#found + 1] = hit
+    local rest = {}
+    for _, e in ipairs(list) do if e ~= hit then rest[#rest + 1] = e end end
+    list = rest
+  end
+  return found, true
+end
+
+-- The linear fallback for a refused class-array marshal: one GetAmtOfItem per candidate, the
+-- same trade trash_slot makes when its own bisection probe stops answering.
+local function heldLinear(ledger, inv, entries, cap)
+  local found = {}
+  for _, e in ipairs(entries) do
+    if #found >= cap then break end
+    local n = amtOf(ledger, inv, e.cls)
+    if n and n > 0 then found[#found + 1] = e end
+  end
+  return found
+end
+
+-- The first EMPTY index in `inv`, asked of the game -- no Sort, no struct read.
+-- GetFirstIndexForItem walks the array comparing each slot's Item CLASS to the probe's with ==
+-- and nothing else (bytecode: CallFunc_EqualEqual_ClassClass over Array_Get_Item), so a probe
+-- whose Item is left unset (nullptr) matches the first slot holding nothing.
+--
+-- This REPLACES calling the game's Sort on the receiving chest. Sort is not a read: it rewrites
+-- that chest's whole array, merges stacks, clears the tail and saves -- and its bytecode DROPS
+-- any stack whose GetItemByActor row lookup misses ("Unknown Item" ErrorPrint, the slot never
+-- written back). Running it on the player's own storage just to make our first-empty arithmetic
+-- work was a silent item-loss path, and it re-ordered chests the player had arranged by hand.
+-- We now only ever write INTO a destination, never rewrite one.
+local function firstEmptyIdx(ledger, inv)
+  local out = {}
+  if not ctx.uehelp.call(inv, stmap().firstIdxFn, ledger.probeFor(nil), out, {}) then return nil end
+  if unwrap(out.ContainsItem) ~= true then return nil end
+  local i = math.floor(tonumber(unwrap(out.Index)) or -1)
+  return (i >= 0) and i or nil
+end
+
+-- Fallback when that probe refuses: the tail arithmetic, WITHOUT compacting anything. It is
+-- right on a chest whose slots are already packed low (the common case) and merely wrong on a
+-- fragmented one -- and wrong is harmless, because MoveItemDiffInv bounces off an occupied
+-- target and the recount after every move refuses to credit a move that landed nothing.
+local function tailIdx(inv)
+  local free = freeSlotsIn(inv)
+  if free <= 0 then return nil end
+  local len = 0
+  pcall(function() len = #inv.Inventory end)   -- length-only read: safe
+  local i = len - free
+  return (i >= 0 and i < len) and i or nil
+end
+
+-- File the sorter's non-stackables into chests that already hold that class. Nothing here reads
+-- a slot struct and nothing here REWRITES a destination chest: the target index comes from the
+-- game's own first-empty probe, and every move is verified by a recount -- a move that lands
+-- nothing, or whose recount cannot be read, stops the loop cold (no churn, no false credit).
 local function fileNonstackables(s, inv, ledger, targets)
   local cands = nonstackCandidates()
-  if #cands == 0 then return 0 end
-  local held = heldNonstack(inv, cands, 4)
+  if #cands == 0 then return 0 end        -- nonstackCandidates already warned
+  -- ROTATE the candidate order per pass. The cap bounds DISCOVERY, so with a fixed order the
+  -- first `cap` held classes are the only ones ever looked at: four machines no neighbour wants
+  -- hid a fifth item forever -- the exact symptom this pass exists to cure. The next pass starts
+  -- just PAST the last class this one discovered, so anything the cap cut off leads immediately
+  -- and nothing can starve.
+  local rot = (nsRot[s.key] or 0) % #cands
+  local ordered, pos = {}, {}
+  for i = 1, #cands do
+    ordered[i] = cands[((rot + i - 1) % #cands) + 1]
+    pos[ordered[i]] = i
+  end
+
+  local held
+  if not nsLinear then
+    local alive
+    held, alive = heldNonstack(inv, ordered, NS_CAP)
+    if not alive then
+      nsLinear = true
+      ctx.log.info("sort_chest: the class-array probe refused to marshal -- " ..
+        "using linear scans for the rest of the session")
+    end
+  end
+  if nsLinear then held = heldLinear(ledger, inv, ordered, NS_CAP) end
+  local last = 0
+  for _, e in ipairs(held) do last = math.max(last, pos[e] or 0) end
+  nsRot[s.key] = (rot + last) % #cands
   ctx.log.debug("sort_chest: non-stackable discovery held " .. #held .. " class(es)")
   if #held == 0 then return 0 end
   local movedTotal, fed = 0, 0
-  local budget = 12                       -- whole-slot moves per pass; the next pass continues
+  local budget = NS_BUDGET
   for _, h in ipairs(held) do
-    -- the db-key wrapper stays in the Contains arrays (its proven marshal role); every
-    -- STRUCT probe below gets a fresh, path-exact wrapper resolved right before use
-    local cls = ctx.uehelp.classByName(h.name, NONSTACK[h.name])
-    local amt = cls and amtOf(ledger, inv, cls) or 0
+    -- the db-key wrapper stays in the Contains arrays (its proven marshal role); every STRUCT
+    -- probe below gets a wrapper resolved from the baked asset path, exactly
+    local cls = classExact(h.name)
+    local amt = cls and amtOf(ledger, inv, cls) or nil
     for _, t in ipairs(targets) do
-      if amt <= 0 or budget <= 0 then break end
+      if not amt or amt <= 0 or budget <= 0 then break end
       if t.entry.cls ~= smap().class then  -- sorters never feed each other
         local chest = ledger.actorOf(t.key, t.entry)
         local dstInv = chest and ledger.invOf(chest)
-        if dstInv and not uiBrowsing(dstInv)
-            and ledger.amtIn(t.key, t.entry, cls) > 0 then
-          local free = freeSlotsIn(dstInv)
-          if free > 0 and ctx.uehelp.call(dstInv, stmap().sortFn, 0) == true then
-            local len = 0
-            pcall(function() len = #dstInv.Inventory end)   -- length-only read: safe
-            local dstIdx = len - free
-            local before = amt
-            while amt > 0 and free > 0 and budget > 0 and dstIdx >= 0 and dstIdx < len do
-              local out = {}
-              if not ctx.uehelp.call(inv, stmap().firstIdxFn,
-                  ledger.probeFor(cls), out, {}) then break end
-              if unwrap(out.ContainsItem) ~= true then break end
-              local srcIdx = math.floor(tonumber(unwrap(out.Index)) or -1)
-              if srcIdx < 0 then break end
-              if not ctx.uehelp.call(inv, stmap().moveDiffFn,
-                  dstInv, srcIdx, math.floor(dstIdx)) then break end
-              local now = amtOf(ledger, inv, cls)
-              if now >= amt then break end       -- nothing landed: stop, never spin
-              movedTotal = movedTotal + (amt - now)
-              amt = now
-              free = free - 1
-              dstIdx = dstIdx + 1
-              budget = budget - 1
-            end
-            if amt < before then
-              fed = fed + 1
-              ledger.invalidate(t.key)
-            end
+        -- The rule -- "only into a chest that already holds this class" -- is read LIVE off the
+        -- chest. The ledger's cached count carries a 20 s TTL that only OUR OWN moves patch, so
+        -- a chest the player just emptied by hand still reads as holding one, and the item would
+        -- land somewhere it no longer belongs. Quick Stack enforces the same rule atomically;
+        -- this path has to earn it.
+        if dstInv and not uiBrowsing(dstInv) and (amtOf(ledger, dstInv, cls) or 0) > 0 then
+          local before = amt
+          while amt and amt > 0 and budget > 0 do
+            local dstIdx = firstEmptyIdx(ledger, dstInv) or tailIdx(dstInv)
+            if not dstIdx then break end             -- chest full, or both probes refused
+            local out = {}
+            if not ctx.uehelp.call(inv, stmap().firstIdxFn,
+                ledger.probeFor(cls), out, {}) then break end
+            if unwrap(out.ContainsItem) ~= true then break end
+            local srcIdx = math.floor(tonumber(unwrap(out.Index)) or -1)
+            if srcIdx < 0 then break end
+            if not ctx.uehelp.call(inv, stmap().moveDiffFn,
+                dstInv, srcIdx, math.floor(dstIdx)) then break end
+            local now = amtOf(ledger, inv, cls)
+            if now == nil then break end       -- recount unreadable: never credit the move
+            if now >= amt then break end       -- nothing landed: stop, never spin
+            movedTotal = movedTotal + (amt - now)
+            amt = now
+            budget = budget - 1
+          end
+          if amt and amt < before then
+            fed = fed + 1
+            -- the class and the exact delta are both known here, so patch the ledger instead of
+            -- blowing the whole chest's entry away and paying for a re-read
+            ledger.noteMove(t.key, cls, before - amt)
           end
         end
       end
@@ -302,21 +454,23 @@ local function sortPass(s)
   local r = cfgn("sort_chest_range", 5000.0)
   local moved, fed = 0, 0
   local targets = ledger.chestsNear(loc, r * r, s.key)
+  -- one recount per target, not two: this target's "after" is the next one's "before"
+  local remain = total
   for _, t in ipairs(targets) do
     -- only PLAIN chests receive; two sorters must never ping-pong a pile between them
     if t.entry.cls ~= smap().class then
       local chest = ledger.actorOf(t.key, t.entry)
       local dstInv = chest and ledger.invOf(chest)
       if dstInv then
-        local before = totalIn(inv)
         if ctx.uehelp.call(dstInv, stmap().quickStackFn, inv, {}) then
           local after = totalIn(inv)
-          if after < before then
-            moved = moved + (before - after)
+          if after < remain then
+            moved = moved + (remain - after)
             fed = fed + 1
             ledger.invalidate(t.key)
-            if after == 0 then break end
           end
+          remain = after
+          if remain == 0 then break end
         end
       end
     end
@@ -328,15 +482,16 @@ local function sortPass(s)
   -- what Quick Stack left behind may be non-stackables it refuses by design. Own pcall: the
   -- chain swallows sortPass errors whole (pcall at the pass loop), and a silent death here
   -- would read exactly like "the weather station just didn't move".
-  if totalIn(inv) > 0 then
+  local left = remain
+  if left > 0 then
     local okNS, movedNS = pcall(fileNonstackables, s, inv, ledger, targets)
     if okNS then
       moved = moved + (movedNS or 0)
     else
       ctx.log.warn("sort_chest: non-stackable pass errored: " .. tostring(movedNS))
     end
+    left = totalIn(inv)
   end
-  local left = totalIn(inv)
   if left > 0 and moved == 0 then
     -- nothing in range wants what's left: keep it here (the user's rule) and settle down
     st[s.key] = { total = left, cool = SETTLE_PASSES }
@@ -414,11 +569,7 @@ end
 -- "new world, the class hooks died" signal.
 local hookWorldPc = nil
 local function worldChanged()
-  local pcNow
-  pcall(function()
-    local pc = ctx.uehelp.localController(ctx.map.player and ctx.map.player.controllerClass)
-    pcNow = pc and pc:GetFullName() or nil
-  end)
+  local pcNow = worldTag()
   if pcNow and pcNow ~= hookWorldPc then
     hookWorldPc = pcNow
     return true

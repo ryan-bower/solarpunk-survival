@@ -1973,9 +1973,17 @@ local function rebuildChestGrids()
             -- which is worse than the split view. Hand the widget back to the game's own
             -- rebuild -- rows-changed check is a plain != against this cache, so poisoning the
             -- cache forces it unconditionally.
-            w[m.chestUiLastRowsProp or "LastPlayerInventoryRowCount"] = -1
+            --
+            -- The poke is pcall'd on its OWN: a bare property write raises when the name is not
+            -- on the widget, and THIS pcall block would swallow it -- taking the rebuild call
+            -- and the warning down with it, leaving the player looking at two empty grids with
+            -- nothing in the log to say why.
+            local poked = pcall(function()
+              w[m.chestUiLastRowsProp or "LastPlayerInventoryRowCount"] = -1
+            end)
             ctx.uehelp.call(w, m.chestUiBackpackUpdateFn or "UpdateBackpackDisplayIfRequired")
-            ctx.log.warn("qol: player grid rebuild made 0 slots -- restored the vanilla split view")
+            ctx.log.warn("qol: player grid rebuild made 0 slots -- handed the widget back to the"
+              .. " vanilla split view (rows cache poked: " .. tostring(poked) .. ")")
             return
           end
           local refs = {}

@@ -10,9 +10,16 @@ must never read at runtime (struct-instance access wedges the Lua scheduler) -- 
 is baked offline from the same DB_Items this repo cooks.
 
 Source of truth: the STAGED (patched) DB_Items -- it carries the pak's own rows (SortingChest,
-wands, books, rods) on top of vanilla. Falls back to vendor/db_items.json (vanilla dump) with
-a warning if the staged asset is missing. Rerun after any build that adds item rows:
+wands, books, rods) on top of vanilla. Rerun after any build that adds item rows:
     python tools/pakkit/gen_nonstackables.py
+
+Every staged input is a local build artifact (staged/, the usmap, wandsmith.exe are all
+gitignored game-derived content), so on a fresh clone there is NOTHING to read and this script
+EXITS rather than quietly producing a map. It used to fall through to a vanilla dump without a
+word, which regenerated the committed 238-class map as the 229-class vanilla one -- dropping
+BP_SortingChest_Item_C, the wands, the books and the rods, i.e. silently un-fixing the sorter.
+The vanilla fallback is still there but has to be asked for:
+    python tools/pakkit/gen_nonstackables.py --allow-vanilla
 """
 import json
 import os
@@ -40,8 +47,12 @@ VENDOR_JSON = os.path.join(REPO, "vendor", "db_items.json")
 OUT_LUA = os.path.join(REPO, "mod", "SolarpunkSurvival", "Scripts", "data", "nonstackables.lua")
 
 
-def load_db():
-    if os.path.isfile(STAGED_DB) and os.path.isfile(WS) and os.path.isfile(USMAP):
+def load_db(allow_vanilla):
+    missing = [label for label, path in (("staged DB_Items", STAGED_DB),
+                                         ("wandsmith.exe", WS),
+                                         ("Solarpunk.usmap", USMAP))
+               if not os.path.isfile(path)]
+    if not missing:
         tmp = os.path.join(tempfile.gettempdir(), "gen_nonstackables_db_items.json")
         r = subprocess.run([WS, "tojson", USMAP, STAGED_DB, tmp, "VER_UE5_6", PRELOADS],
                            capture_output=True, text=True)
@@ -49,11 +60,22 @@ def load_db():
             with open(tmp, encoding="utf-8") as f:
                 return json.load(f), "staged DB_Items (patched)"
         print(r.stdout + r.stderr)
-        print("!! staged tojson failed; falling back to the vanilla vendor dump")
+        print("!! staged tojson failed (exit %d)" % r.returncode)
+    else:
+        # NAME what is missing. The silent version of this branch is what let a fresh clone
+        # regenerate the map without any pak rows and call it a success.
+        print("!! no staged DB_Items build here -- missing: " + ", ".join(missing))
+        print("   (all three are gitignored build artifacts; run tools/pakkit/build_wand_pak.py"
+              " first, or pass --allow-vanilla if you really want the vanilla-only map)")
+    if not allow_vanilla:
+        sys.exit("refusing to regenerate from the vanilla dump: it would DROP the pak's own"
+                 " rows (BP_SortingChest_Item_C, wands, books, rods) from nonstackables.lua."
+                 " Re-run with --allow-vanilla to do it anyway.")
     if os.path.isfile(VENDOR_JSON):
         with open(VENDOR_JSON, encoding="utf-8") as f:
             return json.load(f), "vendor/db_items.json (VANILLA -- pak rows missing!)"
-    sys.exit("no DB_Items source found (need tools/pakkit/staged or vendor/db_items.json)")
+    sys.exit("no DB_Items source found (need a tools/pakkit/staged build, or the local"
+             " vendor/db_items.json dump -- it is game-derived and not committed)")
 
 
 def fname(v):
@@ -61,7 +83,7 @@ def fname(v):
 
 
 def main():
-    db, src = load_db()
+    db, src = load_db("--allow-vanilla" in sys.argv[1:])
     table = next(e for e in db["Exports"] if e.get("Table"))
     imports = db["Imports"]
     rows = []
